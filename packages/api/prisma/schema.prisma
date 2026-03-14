@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Department {
+  id        String               @id @default(cuid())
+  name      String               @unique
+  path      String               @db.VarChar(500)
+  areas     Area[]
+  contacts  Contact[]
+  campaigns CampaignDepartment[]
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+}
+
+model Area {
+  id            String     @id @default(cuid())
+  name          String
+  fileName      String
+  filePath      String     @db.VarChar(500)
+  columnMapping Json?
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  contacts      Contact[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([departmentId, name])
+}
+
+model Contact {
+  id            String     @id @default(cuid())
+  seqNo         String?
+  storeName     String
+  freezerId     String?
+  phoneRaw      String
+  phoneNorm     String
+  phoneValid    Boolean    @default(true)
+  exchangeCount Int?
+  awardCount    Int?
+  totalCount    Int?
+  areaId        String
+  area          Area       @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  departmentId  String
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  messages      Message[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([areaId, phoneNorm])
+}
+
+model Campaign {
+  id             String               @id @default(cuid())
+  name           String
+  template       String               @db.Text
+  bulan          String
+  status         String               @default("DRAFT")
+  departments    CampaignDepartment[]
+  messages       Message[]
+  totalCount     Int                  @default(0)
+  sentCount      Int                  @default(0)
+  deliveredCount Int                  @default(0)
+  readCount      Int                  @default(0)
+  failedCount    Int                  @default(0)
+  replyCount     Int                  @default(0)
+  scheduledAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+}
+
+model CampaignDepartment {
+  campaignId   String
+  departmentId String
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, departmentId])
+}
+
+model Message {
+  id          String    @id @default(cuid())
+  campaignId  String
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contactId   String
+  contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  phone       String
+  body        String    @db.Text
+  status      String    @default("PENDING")
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  readAt      DateTime?
+  failedAt    DateTime?
+  failReason  String?   @db.Text
+  reply       Reply?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+model Reply {
+  id              String   @id @default(cuid())
+  messageId       String   @unique
+  message         Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  phone           String
+  body            String   @db.Text
+  claudeCategory  String?
+  claudeSentiment String?
+  claudeSummary   String?  @db.Text
+  claudeRaw       Json?
+  receivedAt      DateTime @default(now())
+}
+
+model DailySendLog {
+  id        String   @id @default(cuid())
+  date      String   @unique
+  count     Int      @default(0)
+  updatedAt DateTime @updatedAt
+}

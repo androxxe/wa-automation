@@ -1,0 +1,120 @@
+import { useEffect, useState } from 'react'
+import { apiFetch } from '@/lib/utils'
+
+interface Contact {
+  id: string
+  seqNo: string | null
+  storeName: string
+  freezerId: string | null
+  phoneRaw: string
+  phoneNorm: string
+  phoneValid: boolean
+  exchangeCount: number | null
+  department: { name: string }
+  area: { name: string }
+}
+
+interface ContactsPage {
+  contacts: Contact[]
+  total: number
+  page: number
+  limit: number
+}
+
+export default function Contacts() {
+  const [data, setData] = useState<ContactsPage | null>(null)
+  const [page, setPage] = useState(1)
+  const [phoneValid, setPhoneValid] = useState<string>('')
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    setLoading(true)
+    const params = new URLSearchParams({ page: String(page), limit: '50' })
+    if (phoneValid) params.set('phoneValid', phoneValid)
+
+    apiFetch<ContactsPage>(`/api/contacts?${params}`)
+      .then(setData)
+      .catch(console.error)
+      .finally(() => setLoading(false))
+  }, [page, phoneValid])
+
+  const totalPages = data ? Math.ceil(data.total / 50) : 1
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Contacts</h2>
+          <p className="text-muted-foreground">
+            {data ? `${data.total.toLocaleString()} total` : 'Loading...'}
+          </p>
+        </div>
+        <select
+          value={phoneValid}
+          onChange={(e) => { setPhoneValid(e.target.value); setPage(1) }}
+          className="text-sm border rounded-md px-3 py-1.5 bg-background"
+        >
+          <option value="">All phones</option>
+          <option value="true">Valid only</option>
+          <option value="false">Invalid only</option>
+        </select>
+      </div>
+
+      <div className="rounded-lg border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
+            <tr>
+              {['No', 'Store Name', 'Department', 'Area', 'Phone (raw)', 'Phone (normalized)', 'Valid', 'Exchange'].map((h) => (
+                <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {loading && (
+              <tr>
+                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td>
+              </tr>
+            )}
+            {!loading && data?.contacts.map((c) => (
+              <tr key={c.id} className="hover:bg-accent/50 transition-colors">
+                <td className="px-4 py-2.5 font-mono text-xs">{c.seqNo ?? '—'}</td>
+                <td className="px-4 py-2.5 font-medium">{c.storeName}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{c.department.name}</td>
+                <td className="px-4 py-2.5 text-muted-foreground">{c.area.name}</td>
+                <td className="px-4 py-2.5 font-mono text-xs">{c.phoneRaw}</td>
+                <td className="px-4 py-2.5 font-mono text-xs">{c.phoneNorm}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${c.phoneValid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
+                    {c.phoneValid ? 'valid' : 'invalid'}
+                  </span>
+                </td>
+                <td className="px-4 py-2.5 text-muted-foreground">{c.exchangeCount ?? '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination */}
+      <div className="flex items-center justify-between text-sm">
+        <button
+          type="button"
+          onClick={() => setPage((p) => Math.max(1, p - 1))}
+          disabled={page <= 1}
+          className="px-3 py-1 rounded border disabled:opacity-40"
+        >
+          Previous
+        </button>
+        <span className="text-muted-foreground">Page {page} of {totalPages}</span>
+        <button
+          type="button"
+          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          disabled={page >= totalPages}
+          className="px-3 py-1 rounded border disabled:opacity-40"
+        >
+          Next
+        </button>
+      </div>
+    </div>
+  )
+}
