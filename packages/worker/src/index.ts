@@ -141,10 +141,23 @@ const worker = new Worker<MessageJob>(
 worker.on('failed', async (job, err) => {
   if (!job) return
   console.error(`[worker] job ${job.id} failed:`, err)
+
+  const failReason = String(err)
+
   await db.message.update({
     where: { id: job.data.messageId },
-    data: { status: 'FAILED', failedAt: new Date(), failReason: String(err) },
+    data: { status: 'FAILED', failedAt: new Date(), failReason },
   }).catch(() => {})
+
+  // If the failure is because the number is not on WhatsApp,
+  // mark the contact as invalid so it's excluded from future campaigns.
+  if (failReason.includes('tidak terdaftar')) {
+    await db.contact.update({
+      where: { id: job.data.contactId },
+      data: { phoneValid: false, waChecked: true },
+    }).catch(() => {})
+    console.log(`[worker] contact ${job.data.contactId} (${job.data.phone}) marked invalid — tidak terdaftar di WA`)
+  }
 })
 
 // ─── Phone-check worker ───────────────────────────────────────────────────────

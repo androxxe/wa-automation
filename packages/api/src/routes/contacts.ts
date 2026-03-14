@@ -34,15 +34,20 @@ router.get('/', async (req, res) => {
 })
 
 // POST /api/contacts/validate-wa
-// Queues background phone-check jobs for all (or area-filtered) contacts.
-// Worker checks each number against WhatsApp Web and updates contact.phoneValid.
+// Queues background phone-check jobs.
+// By default only queues unchecked contacts (waChecked=false, phoneValid=true).
+// Pass { recheck: true } to force-revalidate already-checked contacts too.
 router.post('/validate-wa', async (req, res) => {
   try {
-    const { areaId } = req.body as { areaId?: string }
+    const { areaId, recheck = false } = req.body as { areaId?: string; recheck?: boolean }
 
     const contacts = await db.contact.findMany({
       where: {
         ...(areaId && { areaId }),
+        // Only re-check format-valid phones — format-invalid are already known bad.
+        // Unless recheck=true, skip contacts already checked.
+        phoneValid: recheck ? undefined : true,
+        waChecked: recheck ? undefined : false,
       },
       select: { id: true, phoneNorm: true },
     })

@@ -73,16 +73,22 @@ export default function Contacts() {
     loadContacts()
   }, [loadContacts])
 
-  const handleValidateWA = async () => {
+  const handleValidateWA = async (recheck = false) => {
     setValidating(true)
     setValidateMsg(null)
     try {
       const result = await apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ recheck }),
       })
-      setValidateMsg(`${result.queued} nomor diantrekan untuk dicek. Status akan diperbarui otomatis.`)
-      setTimeout(loadContacts, 3000)
+      if (result.queued === 0) {
+        setValidateMsg('Tidak ada nomor yang perlu dicek.')
+      } else {
+        setValidateMsg(
+          `${result.queued} nomor diantrekan untuk dicek${recheck ? ' (ulang)' : ''}. Status akan diperbarui otomatis.`
+        )
+        setTimeout(loadContacts, 3000)
+      }
     } catch (err) {
       setValidateMsg(`Gagal: ${err instanceof Error ? err.message : String(err)}`)
     } finally {
@@ -114,11 +120,21 @@ export default function Contacts() {
           </select>
           <button
             type="button"
-            onClick={handleValidateWA}
+            onClick={() => handleValidateWA(false)}
             disabled={validating}
+            title="Cek nomor yang belum pernah divalidasi"
             className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
           >
             {validating ? 'Mengantrekan...' : 'Validasi WA'}
+          </button>
+          <button
+            type="button"
+            onClick={() => handleValidateWA(true)}
+            disabled={validating}
+            title="Cek ulang semua nomor termasuk yang sudah divalidasi"
+            className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
+          >
+            Cek Ulang Semua
           </button>
         </div>
       </div>
