@@ -46,6 +46,7 @@ export interface ReplyAnalysis {
   category: ReplyCategory
   sentiment: ReplySentiment
   summary: string
+  jawaban: 1 | 0 | null  // AI-determined binary answer: 1=Ya, 0=Tidak, null=unclear
 }
 
 // ─── Browser status ───────────────────────────────────────────────────────────

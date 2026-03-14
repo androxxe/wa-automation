@@ -4,13 +4,13 @@ import { db } from '../lib/db'
 import { messageQueue } from '../lib/queue'
 import type { MessageJob } from '@aice/shared'
 
-const router = Router()
+const router: import('express').Router = Router()
 
 // GET /api/campaigns
 router.get('/', async (_req, res) => {
   try {
     const campaigns = await db.campaign.findMany({
-      include: { departments: { include: { department: true } } },
+      include: { areas: { include: { area: { include: { department: true } } } } },
       orderBy: { createdAt: 'desc' },
     })
     res.json({ ok: true, data: campaigns })
@@ -24,7 +24,7 @@ const CreateCampaign = z.object({
   name: z.string().min(1),
   template: z.string().min(1),
   bulan: z.string().min(1),
-  departmentNames: z.array(z.string()).min(1),
+  areaIds: z.array(z.string()).min(1),
 })
 
 router.post('/', async (req, res) => {
@@ -33,27 +33,15 @@ router.post('/', async (req, res) => {
     res.status(400).json({ ok: false, error: parsed.error.message })
     return
   }
-  const { name, template, bulan, departmentNames } = parsed.data
+  const { name, template, bulan, areaIds } = parsed.data
   try {
-    // Resolve department names to DB IDs — upsert so campaign creation works
-    // even before contacts have been imported for a department
-    const departments = await Promise.all(
-      departmentNames.map((deptName) =>
-        db.department.upsert({
-          where: { name: deptName },
-          update: {},
-          create: { name: deptName, path: '' },
-        }),
-      ),
-    )
-
     const campaign = await db.campaign.create({
       data: {
         name,
         template,
         bulan,
-        departments: {
-          create: departments.map((d) => ({ departmentId: d.id })),
+        areas: {
+          create: areaIds.map((id) => ({ areaId: id })),
         },
       },
     })
@@ -68,7 +56,7 @@ router.get('/:id', async (req, res) => {
   try {
     const campaign = await db.campaign.findUnique({
       where: { id: req.params.id },
-      include: { departments: { include: { department: true } } },
+      include: { areas: { include: { area: { include: { department: true } } } } },
     })
     if (!campaign) {
       res.status(404).json({ ok: false, error: 'Campaign not found' })
@@ -120,7 +108,7 @@ router.post('/:id/enqueue', async (req, res) => {
   try {
     const campaign = await db.campaign.findUnique({
       where: { id: req.params.id },
-      include: { departments: true },
+      include: { areas: true },
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Not found' }); return }
     if (!['DRAFT', 'PAUSED'].includes(campaign.status)) {
@@ -128,19 +116,23 @@ router.post('/:id/enqueue', async (req, res) => {
       return
     }
 
-    const departmentIds = campaign.departments.map((d) => d.departmentId)
-    const contacts = await db.contact.findMany({
-      where: { departmentId: { in: departmentIds }, phoneValid: true },
+    const areaIds = campaign.areas.map((a) => a.areaId)
+    const contactsWithArea = await db.contact.findMany({
+      where: { areaId: { in: areaIds }, phoneValid: true },
+      include: { area: true, department: true },
     })
 
     // Create Message records and enqueue jobs
     const jobs: Array<{ name: string; data: MessageJob }> = []
-    for (const contact of contacts) {
+
+    for (const contact of contactsWithArea) {
       // Render template
       const body = campaign.template
         .replace('{{no}}', contact.seqNo ?? '')
         .replace('{{nama_toko}}', contact.storeName)
         .replace('{{bulan}}', campaign.bulan)
+        .replace('{{area}}', contact.area.name)
+        .replace('{{department}}', contact.department.name)
 
       const message = await db.message.create({
         data: {
@@ -164,10 +156,10 @@ router.post('/:id/enqueue', async (req, res) => {
       })
     }
 
-    await messageQueue.addBulk(jobs)
+    await messageQueue.addBulk(jobs as never)
     await db.campaign.update({
       where: { id: campaign.id },
-      data: { status: 'RUNNING', totalCount: contacts.length, startedAt: new Date() },
+      data: { status: 'RUNNING', totalCount: contactsWithArea.length, startedAt: new Date() },
     })
 
     res.json({ ok: true, data: { enqueued: jobs.length } })

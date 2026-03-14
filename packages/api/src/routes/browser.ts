@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { redis } from '../lib/queue'
 
-const router = Router()
+const router: import('express').Router = Router()
 
 // GET /api/browser/status
 router.get('/status', async (_req, res) => {

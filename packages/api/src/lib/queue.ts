@@ -9,7 +9,7 @@ export const redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:637
 })
 
 export const messageQueue = new Queue<MessageJob>(QUEUE_NAME, {
-  connection: redis,
+  connection: redis as never, // ioredis version mismatch between bullmq and app — safe at runtime
   defaultJobOptions: {
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },

@@ -138,12 +138,100 @@ worker.on('failed', async (job, err) => {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
+// ─── Reply polling loop ───────────────────────────────────────────────────────
+
+const REPLY_POLL_INTERVAL = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
+
+async function getSentPhones(): Promise<Set<string>> {
+  const messages = await db.message.findMany({
+    where: { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+    select: { phone: true },
+  })
+  return new Set(messages.map((m) => m.phone))
+}
+
+async function handleReply(params: {
+  phone: string
+  text: string
+  screenshotPath: string | null
+}) {
+  const { phone, text, screenshotPath } = params
+
+  // Find the latest sent message to this phone without a reply yet
+  const message = await db.message.findFirst({
+    where: {
+      phone,
+      status: { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply: null,
+    },
+    orderBy: { sentAt: 'desc' },
+    include: { campaign: true },
+  })
+
+  if (!message) {
+    console.log(`[worker] no pending message found for ${phone}, skipping reply`)
+    return
+  }
+
+  // Save reply to DB
+  const reply = await db.reply.create({
+    data: {
+      messageId: message.id,
+      phone,
+      body: text,
+      screenshotPath,
+    },
+  })
+
+  // Update campaign reply count
+  await db.campaign.update({
+    where: { id: message.campaignId },
+    data: { replyCount: { increment: 1 } },
+  })
+
+  console.log(`[worker] reply saved for ${phone} — message: "${text.slice(0, 50)}"`)
+
+  // Trigger Claude analysis via API
+  try {
+    const apiUrl = `http://localhost:${process.env.PORT ?? 3001}`
+    await fetch(`${apiUrl}/api/analyze/reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        replyId: reply.id,
+        replyText: text,
+        bulan: message.campaign.bulan,
+      }),
+    })
+  } catch (err) {
+    console.warn('[worker] analyze/reply call failed:', err)
+  }
+}
+
+function startReplyPolling() {
+  console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s`)
+
+  const poll = async () => {
+    if (browserManager.status !== 'connected') return
+    try {
+      const sentPhones = await getSentPhones()
+      if (sentPhones.size === 0) return
+      await browserManager.pollReplies(handleReply, sentPhones)
+    } catch (err) {
+      console.error('[worker] reply poll error:', err)
+    }
+  }
+
+  setInterval(poll, REPLY_POLL_INTERVAL)
+}
+
 async function main() {
   await validateStartup()
   setStatusPublisher(redis)
   await browserManager.launch()
   console.log(`[worker] browser status: ${browserManager.status}`)
   console.log(`[worker] listening on queue: ${QUEUE_NAME}`)
+  startReplyPolling()
 }
 
 main().catch((err) => {

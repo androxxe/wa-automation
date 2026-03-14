@@ -183,9 +183,7 @@ Static per-campaign template with variable substitution. Variables use `{{variab
 ### Default Template
 
 ```
-Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor?
-Terimakasih atas konfirmasinya,
-Have an aice day!
+Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stick ke distributor?
 ```
 
 ### Available Variables
@@ -221,27 +219,27 @@ datasource db {
 }
 
 model Department {
-  id        String               @id @default(cuid())
-  name      String               @unique
-  path      String               @db.VarChar(500)
+  id        String    @id @default(cuid())
+  name      String    @unique
+  path      String    @db.VarChar(500)
   areas     Area[]
   contacts  Contact[]
-  campaigns CampaignDepartment[]
-  createdAt DateTime             @default(now())
-  updatedAt DateTime             @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 model Area {
-  id            String     @id @default(cuid())
+  id            String         @id @default(cuid())
   name          String
   fileName      String
-  filePath      String     @db.VarChar(500)
-  columnMapping Json?                        // Claude-mapped column keys
+  filePath      String         @db.VarChar(500)
+  columnMapping Json?                          // Claude-mapped column keys
   departmentId  String
-  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department    Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   contacts      Contact[]
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  campaigns     CampaignArea[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
   @@unique([departmentId, name])
 }
@@ -269,12 +267,12 @@ model Contact {
 }
 
 model Campaign {
-  id             String               @id @default(cuid())
+  id             String         @id @default(cuid())
   name           String
-  template       String               @db.Text
+  template       String         @db.Text
   bulan          String
-  status         String               @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
-  departments    CampaignDepartment[]
+  status         String         @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
+  areas          CampaignArea[]
   messages       Message[]
   totalCount     Int                  @default(0)
   sentCount      Int                  @default(0)
@@ -289,13 +287,13 @@ model Campaign {
   updatedAt      DateTime             @updatedAt
 }
 
-model CampaignDepartment {
-  campaignId   String
-  departmentId String
-  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+model CampaignArea {
+  campaignId String
+  areaId     String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  area       Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
 
-  @@id([campaignId, departmentId])
+  @@id([campaignId, areaId])
 }
 
 model Message {
@@ -327,6 +325,7 @@ model Reply {
   claudeSentiment String?  // "positive" | "neutral" | "negative"
   claudeSummary   String?  @db.Text
   claudeRaw       Json?    // full Claude response for debugging
+  screenshotPath  String?  @db.VarChar(500) // relative to OUTPUT_FOLDER
   receivedAt      DateTime @default(now())
 }
 
@@ -356,7 +355,8 @@ model DailySendLog {
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/files/scan` | Scan DATA_FOLDER, return dept/area tree |
+| `GET` | `/api/files/scan` | Scan DATA_FOLDER, return dept/area tree (folder-based) |
+| `GET` | `/api/files/areas` | Return imported areas from DB grouped by department (with IDs) |
 | `POST` | `/api/files/parse` | Parse a single xlsx, return headers + sample rows |
 | `POST` | `/api/analyze/headers` | Send headers+samples to Claude, get column mapping suggestion |
 | `POST` | `/api/files/import` | Confirm mapping, normalize phones, save to DB |
@@ -482,15 +482,16 @@ Polling every 10s for 3 minutes after each send.
 A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
 
 ```
-1. Scan chat list for items with unread badge (blue circle with count)
+1. Scan chat list for items with unread badge
 2. For each unread chat:
-   a. Extract phone number from chat metadata
-   b. Match to Contact in DB
-   c. If matched: click chat, read latest incoming message text from DOM
-   d. Create Reply record in DB
-   e. Call POST /api/analyze/reply → Claude analyzes → CSV report generated
-   f. Emit SSE event to UI
-3. An immediate poll is also triggered after each outgoing message send
+   a. Click the chat, extract phone number from the header
+   b. FILTER — skip if phone is NOT in our sent-messages list
+      (prevents processing random incoming messages on your personal WhatsApp)
+   c. Read last incoming message text from DOM
+   d. Take a screenshot of the chat → save to OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg
+   e. Create Reply record in DB (with screenshotPath)
+   f. POST /api/analyze/reply → Claude analyzes → CSV report regenerated
+3. Only phones we have a SENT/DELIVERED/READ message to are processed
 ```
 
 ---
@@ -510,36 +511,29 @@ Worker detects reply
 
 ### Jawaban determination
 
-Binary answer is determined by two-pass logic:
+`jawaban` is determined entirely by Claude (Job 2). No keyword matching. Claude returns `jawaban` directly in its JSON response alongside `category`, `sentiment`, and `summary`.
 
-**Pass 1 — keyword matching on raw reply text (priority)**
-
-Negative keywords checked before positive to avoid false positives (e.g. "ya, tidak ada" → 0):
-
-| Jawaban | Keywords |
+| Claude `jawaban` | Meaning |
 |---|---|
-| `0` | tidak tau, tidak tahu, nggak tau, belum ada, tidak ada, nggak ada, tidak dapat, nggak dapat, tidak pernah, tidak, nggak, ngga, ndak, gak, no |
-| `1` | sudah ada, pernah ada, ada penukaran, benar ada, iya ada, ya ada, sudah, benar, betul, pernah, iya, yes, ya |
+| `1` | Store confirmed they did the exchange (Ya/confirmed) |
+| `0` | Store denied the exchange (Tidak/denied) |
+| `null` | Unclear, question, or off-topic — excluded from CSV report |
 
-**Pass 2 — Claude category fallback**
-
-| claudeCategory | Jawaban |
-|---|---|
-| `confirmed` | `1` |
-| `denied` | `0` |
-| `question` / `unclear` / `other` | excluded from report |
+Claude handles all informal Indonesian variations: "iya", "betul", "sudah", "ada" → 1; "tidak", "belum", "ngga", "gak", "blm", "ndak" → 0.
 
 ### CSV Output Format
 
-Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}.csv`:
+Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}_{YYYY-MM-DD}.csv` — date suffix shows when the file was last generated. Same date = overwritten. New date = new file alongside previous ones.
 
 ```csv
-Nama Toko,Nomor HP Toko,Jawaban
-Toko ABC,+628121234567,1
-Toko XYZ,+628121234568,0
+Nama Toko,Nomor HP Toko,Jawaban,Screenshot
+Toko ABC,+628121234567,1,/path/to/output/screenshots/628121234567_2026-03-14T08-30-00.jpg
+Toko XYZ,+628121234568,0,/path/to/output/screenshots/628121234568_2026-03-14T09-15-00.jpg
 ```
 
 - Only contacts with a clear `1` or `0` are included
+- `Screenshot` column contains the absolute path to the `.jpg` file — open in any image viewer
+- Screenshots saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
 - File is fully rewritten on each reply (idempotent)
 - Triggered automatically on every analyzed reply
 - Can be manually triggered via `POST /api/export/report`
@@ -672,12 +666,12 @@ Return JSON only:
 
 ### Job 2 — Reply Analysis (on each incoming reply)
 
-```
-You are analyzing a WhatsApp reply from an Indonesian small business owner
-in response to a confirmation request about ice cream stick exchange
-(penukaran stick es krim).
+Returns `jawaban` (1/0/null) directly — no separate keyword matching step.
 
-Context: The sender asked if the store performed a stick exchange in month {{bulan}}.
+```
+You are analyzing a WhatsApp reply from an Indonesian small business owner.
+They were asked: "Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah
+melakukan penukaran Stick ke distributor?"
 
 Reply: "{{reply_text}}"
 
@@ -685,8 +679,14 @@ Return JSON only:
 {
   "category": "confirmed" | "denied" | "question" | "unclear" | "other",
   "sentiment": "positive" | "neutral" | "negative",
-  "summary": "<one sentence in Indonesian>"
+  "summary": "<one sentence in Indonesian summarising the reply>",
+  "jawaban": 1 | 0 | null
 }
+
+jawaban rules:
+- 1    = store confirmed they did the exchange (category is "confirmed")
+- 0    = store denied they did the exchange (category is "denied")
+- null = cannot determine a clear yes or no (question/unclear/other)
 ```
 
 ### Job 3 — Message Variation (before each send)
@@ -749,9 +749,12 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 
 ### `/campaigns/new` — Create Campaign
 1. Name + `{{bulan}}` field
-2. Select target departments (checkbox tree)
-3. Message template editor
-4. Submit → status = DRAFT; "Start Campaign" button on detail page
+2. Message template editor
+3. Select target areas — **Department → Area tree** (collapsible, per-area checkboxes with dept-level select-all)
+4. Selected area count shown live
+5. Submit → status = DRAFT; "Start Campaign" button on detail page
+
+Campaign targets specific **areas** (not whole departments). Contacts are filtered by `areaId` at enqueue time.
 
 ### `/campaigns/:id` — Campaign Detail
 - Progress: sent / delivered / read / failed
@@ -787,12 +790,13 @@ Written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx`:
 Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}.csv`:
 
 ```csv
-Nama Toko,Nomor HP Toko,Jawaban
-Toko ABC,+628121234567,1
-Toko XYZ,+628121234568,0
+Nama Toko,Nomor HP Toko,Jawaban,Screenshot
+Toko ABC,+628121234567,1,/path/to/output/screenshots/628121234567_2026-03-14.jpg
+Toko XYZ,+628121234568,0,
 ```
 
-`Jawaban`: `1` = confirmed (Ya/Yes), `0` = denied (Tidak/Nggak). Contacts with unclear replies are excluded.
+`Jawaban` is set by Claude (Job 2) — `1` = confirmed, `0` = denied, absent = unclear (excluded from CSV).
+Filename includes `YYYY-MM-DD` so you can track when data was last updated.
 
 ---
 

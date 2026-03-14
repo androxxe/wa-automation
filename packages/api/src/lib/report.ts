@@ -4,80 +4,20 @@ import { db } from './db'
 
 const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
 
-// ─── Keyword matching ─────────────────────────────────────────────────────────
-//
-// Check longer / more-specific phrases first so "tidak tau" beats "tidak"
-// and "nggak dapat" beats "nggak".
-
-const POSITIVE_KEYWORDS = [
-  'sudah ada',
-  'pernah ada',
-  'ada penukaran',
-  'benar ada',
-  'iya ada',
-  'ya ada',
-  'sudah',
-  'benar',
-  'betul',
-  'pernah',
-  'iya',
-  'yes',
-  'ya',
-]
-
-const NEGATIVE_KEYWORDS = [
-  'tidak tau',
-  'tidak tahu',
-  'nggak tau',
-  'nggak tahu',
-  'ngga tau',
-  'belum ada',
-  'tidak ada',
-  'nggak ada',
-  'ngga ada',
-  'gak ada',
-  'tidak dapat',
-  'nggak dapat',
-  'ngga dapat',
-  'tidak pernah',
-  'belum pernah',
-  'tidak',
-  'nggak',
-  'ngga',
-  'ndak',
-  'gak',
-  'blm',
-  'no',
-]
-
 export type Jawaban = 1 | 0
 
 /**
- * Determine 1 (positive) or 0 (negative) from a reply.
- * Returns null if the reply is ambiguous / no clear answer.
- *
- * Priority:
- *   1. Keyword matching on raw reply text (longer phrases checked first)
- *   2. Claude's claudeCategory as fallback
+ * Determine Jawaban purely from Claude's category.
+ *   confirmed → 1 (Ya)
+ *   denied    → 0 (Tidak)
+ *   anything else → null (excluded from report)
  */
 export function determineJawaban(
-  body: string | null | undefined,
   claudeCategory: string | null | undefined,
 ): Jawaban | null {
-  if (body) {
-    const lower = body.toLowerCase().trim()
-
-    // Negative takes priority over positive to avoid false positives
-    // (e.g. "ya, tidak ada" should be 0)
-    if (NEGATIVE_KEYWORDS.some((k) => lower.includes(k))) return 0
-    if (POSITIVE_KEYWORDS.some((k) => lower.includes(k))) return 1
-  }
-
-  // Fallback to Claude's analysis
   if (claudeCategory === 'confirmed') return 1
   if (claudeCategory === 'denied') return 0
-
-  return null // question / unclear / other — excluded from report
+  return null
 }
 
 // ─── CSV helpers ──────────────────────────────────────────────────────────────
@@ -126,30 +66,49 @@ export async function generateAreaReport(areaId: string): Promise<string | null>
   const dept = area.department
 
   // Build rows — only contacts with a clear answer
-  const rows: Array<{ namaToko: string; nomorHp: string; jawaban: Jawaban }> = []
+  const rows: Array<{
+    namaToko: string
+    nomorHp: string
+    jawaban: Jawaban
+    screenshotPath: string
+  }> = []
 
   for (const contact of contacts) {
     const reply = contact.messages[0]?.reply
-    const jawaban = determineJawaban(reply?.body, reply?.claudeCategory)
-    if (jawaban === null) continue
+    // Use AI-determined jawaban stored on the reply record.
+    // null means Claude couldn't classify (question/unclear/other) — excluded.
+    if (reply?.jawaban == null) continue
+    const jawaban = reply.jawaban as Jawaban
+
+    // Screenshot path: relative to OUTPUT_FOLDER, stored in reply.screenshotPath
+    // Full path = OUTPUT_FOLDER/{screenshotPath}
+    const screenshotPath = reply?.screenshotPath
+      ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
+      : ''
 
     rows.push({
       namaToko: contact.storeName,
       nomorHp: contact.phoneNorm,
       jawaban,
+      screenshotPath,
     })
   }
 
   if (rows.length === 0) return null
 
-  // Write CSV
+  // Write CSV — filename includes date so users can see when data was last updated.
+  // Same date = file is overwritten. New date = new file alongside previous ones.
+  const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
   const dir = path.join(OUTPUT_FOLDER, dept.name)
   fs.mkdirSync(dir, { recursive: true })
 
-  const csvPath = path.join(dir, `${area.name}.csv`)
-  const header = 'Nama Toko,Nomor HP Toko,Jawaban'
+  const csvPath = path.join(dir, `${area.name}_${today}.csv`)
+  // Screenshot column stores the absolute path to the .jpg file.
+  // Images can't be embedded in CSV — open the path in any viewer.
+  const header = 'Nama Toko,Nomor HP Toko,Jawaban,Screenshot'
   const lines = rows.map(
-    (r) => `${csvEscape(r.namaToko)},${csvEscape(r.nomorHp)},${r.jawaban}`,
+    (r) =>
+      `${csvEscape(r.namaToko)},${csvEscape(r.nomorHp)},${r.jawaban},${csvEscape(r.screenshotPath)}`,
   )
 
   fs.writeFileSync(csvPath, [header, ...lines].join('\n'), 'utf-8')

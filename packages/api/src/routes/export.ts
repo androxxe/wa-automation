@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { buildResponseWorkbook, writeOutputFiles } from '../lib/exporter'
 import { generateAreaReport, generateAllReports } from '../lib/report'
 
-const router = Router()
+const router: import('express').Router = Router()
 
 // GET /api/export/responses — download xlsx
 router.get('/responses', async (req, res) => {

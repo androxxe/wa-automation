@@ -5,7 +5,24 @@ import { mapHeaders } from '../lib/claude'
 import { normalizePhone } from '../lib/phone'
 import { db } from '../lib/db'
 
-const router = Router()
+const router: import('express').Router = Router()
+
+// GET /api/files/areas — return all imported areas from DB grouped by department
+router.get('/areas', async (_req, res) => {
+  try {
+    const departments = await db.department.findMany({
+      include: {
+        areas: {
+          orderBy: { name: 'asc' },
+        },
+      },
+      orderBy: { name: 'asc' },
+    })
+    res.json({ ok: true, data: departments })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
 
 // GET /api/files/scan — scan DATA_FOLDER and return department/area tree
 router.get('/scan', (_req, res) => {

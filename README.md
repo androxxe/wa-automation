@@ -163,16 +163,12 @@ Invalid numbers are flagged and excluded from campaigns.
 
 1. Go to **Campaigns → New Campaign**
 2. Fill in name, bulan (month), and message template
-3. Select target departments
+3. Select target areas from the **Department → Area tree** — expand a department and check individual areas, or check the department row to select all its areas
 4. Click **Create Campaign** — saved as `DRAFT`
 
 **Default template:**
 ```
-Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat
-di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada
-melakukan penukaran Stick ke distributor?
-Terimakasih atas konfirmasinya,
-Have an aice day!
+Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stick ke distributor?
 ```
 
 Available variables: `{{nama_toko}}` `{{bulan}}` `{{department}}` `{{area}}`
@@ -194,6 +190,8 @@ Use **Pause**, **Resume**, or **Cancel** at any time.
 ### Step 5 — Replies and export
 
 - Replies are detected automatically every 60s by the worker (DOM polling on WhatsApp Web)
+- **Only replies from contacts we sent to** are processed — random messages on your personal WhatsApp are ignored
+- A screenshot of the chat is saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
 - Each reply is analyzed by Claude: category (`confirmed` / `denied` / `question` / `unclear`) and sentiment
 - A binary **Jawaban** (`1` = Ya/Yes, `0` = Tidak/Nggak) is determined from keyword matching + Claude category
 - A CSV report is auto-generated to `OUTPUT_FOLDER/{Department}/{Area}.csv` after every analyzed reply
@@ -203,10 +201,11 @@ Use **Pause**, **Resume**, or **Cancel** at any time.
 
 **CSV format:**
 ```csv
-Nama Toko,Nomor HP Toko,Jawaban
-Toko ABC,+628121234567,1
-Toko XYZ,+628121234568,0
+Nama Toko,Nomor HP Toko,Jawaban,Screenshot
+Toko ABC,+628121234567,1,/path/to/output/screenshots/628121234567_2026-03-14.jpg
+Toko XYZ,+628121234568,0,
 ```
+The `Screenshot` column is a file path to a `.jpg` — open it in any image viewer. Images can't be embedded in CSV files.
 
 ---
 

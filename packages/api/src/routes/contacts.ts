@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { db } from '../lib/db'
 
-const router = Router()
+const router: import('express').Router = Router()
 
 // GET /api/contacts
 router.get('/', async (req, res) => {

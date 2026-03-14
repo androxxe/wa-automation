@@ -47,23 +47,32 @@ export async function analyzeReply(
   replyText: string,
   bulan: string,
 ): Promise<ReplyAnalysis> {
-  const prompt = `You are analyzing a WhatsApp reply from an Indonesian small business owner
-in response to a confirmation request about ice cream stick exchange (penukaran stick es krim).
-
-Context: The sender asked if the store performed a stick exchange in month ${bulan}.
+  const prompt = `You are analyzing a WhatsApp reply from an Indonesian small business owner.
+They were asked: "Apakah benar bahwa pada bulan ${bulan} toko bapak/ibu telah melakukan penukaran Stick ke distributor?"
 
 Reply: "${replyText}"
 
-Return JSON only:
+Your job:
+1. Determine if they confirmed (Ya/Yes) or denied (Tidak/No) the stick exchange
+2. Handle informal Indonesian: "iya", "betul", "sudah", "ada" = confirmed; "tidak", "belum", "ngga", "gak", "blm", "ndak" = denied
+3. If the reply is a question, unclear, or off-topic, set jawaban to null
+
+Return JSON only — no explanation:
 {
   "category": "confirmed" | "denied" | "question" | "unclear" | "other",
   "sentiment": "positive" | "neutral" | "negative",
-  "summary": "<one sentence in Indonesian>"
-}`
+  "summary": "<one sentence in Indonesian summarising the reply>",
+  "jawaban": 1 | 0 | null
+}
+
+jawaban rules:
+- 1  = store confirmed they did the exchange (category is "confirmed")
+- 0  = store denied they did the exchange (category is "denied")
+- null = cannot determine a clear yes or no (question/unclear/other)`
 
   const message = await client.messages.create({
     model: MODEL,
-    max_tokens: 256,
+    max_tokens: 300,
     messages: [{ role: 'user', content: prompt }],
   })
 

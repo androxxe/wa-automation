@@ -8,27 +8,27 @@ datasource db {
 }
 
 model Department {
-  id        String               @id @default(cuid())
-  name      String               @unique
-  path      String               @db.VarChar(500)
+  id        String    @id @default(cuid())
+  name      String    @unique
+  path      String    @db.VarChar(500)
   areas     Area[]
   contacts  Contact[]
-  campaigns CampaignDepartment[]
-  createdAt DateTime             @default(now())
-  updatedAt DateTime             @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
 }
 
 model Area {
-  id            String     @id @default(cuid())
+  id            String        @id @default(cuid())
   name          String
   fileName      String
-  filePath      String     @db.VarChar(500)
+  filePath      String        @db.VarChar(500)
   columnMapping Json?
   departmentId  String
-  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department    Department    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   contacts      Contact[]
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  campaigns     CampaignArea[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   @@unique([departmentId, name])
 }
@@ -56,33 +56,33 @@ model Contact {
 }
 
 model Campaign {
-  id             String               @id @default(cuid())
+  id             String         @id @default(cuid())
   name           String
-  template       String               @db.Text
+  template       String         @db.Text
   bulan          String
-  status         String               @default("DRAFT")
-  departments    CampaignDepartment[]
+  status         String         @default("DRAFT")
+  areas          CampaignArea[]
   messages       Message[]
-  totalCount     Int                  @default(0)
-  sentCount      Int                  @default(0)
-  deliveredCount Int                  @default(0)
-  readCount      Int                  @default(0)
-  failedCount    Int                  @default(0)
-  replyCount     Int                  @default(0)
+  totalCount     Int            @default(0)
+  sentCount      Int            @default(0)
+  deliveredCount Int            @default(0)
+  readCount      Int            @default(0)
+  failedCount    Int            @default(0)
+  replyCount     Int            @default(0)
   scheduledAt    DateTime?
   startedAt      DateTime?
   completedAt    DateTime?
-  createdAt      DateTime             @default(now())
-  updatedAt      DateTime             @updatedAt
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
 }
 
-model CampaignDepartment {
-  campaignId   String
-  departmentId String
-  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+model CampaignArea {
+  campaignId String
+  areaId     String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  area       Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
 
-  @@id([campaignId, departmentId])
+  @@id([campaignId, areaId])
 }
 
 model Message {
@@ -114,6 +114,8 @@ model Reply {
   claudeSentiment String?
   claudeSummary   String?  @db.Text
   claudeRaw       Json?
+  jawaban         Int?     // 1 = confirmed (Ya), 0 = denied (Tidak), null = unclear
+  screenshotPath  String?  @db.VarChar(500)
   receivedAt      DateTime @default(now())
 }
 

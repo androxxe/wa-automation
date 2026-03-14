@@ -1,41 +1,78 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/utils'
-import type { DepartmentTree } from '@aice/shared'
 
-const DEFAULT_TEMPLATE = `Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
-Terimakasih atas konfirmasinya, 
-Have an aice day!`
+const DEFAULT_TEMPLATE = `Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stick ke distributor?`
+
+interface AreaItem {
+  id: string
+  name: string
+}
+
+interface DeptWithAreas {
+  id: string
+  name: string
+  areas: AreaItem[]
+}
 
 export default function NewCampaign() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [bulan, setBulan] = useState('')
   const [template, setTemplate] = useState(DEFAULT_TEMPLATE)
-  const [tree, setTree] = useState<DepartmentTree[]>([])
-  const [selectedDepts, setSelectedDepts] = useState<Set<string>>(new Set())
+  const [depts, setDepts] = useState<DeptWithAreas[]>([])
+  const [selectedAreas, setSelectedAreas] = useState<Set<string>>(new Set())
+  const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    apiFetch<DepartmentTree[]>('/api/files/scan').then(setTree).catch(console.error)
+    apiFetch<DeptWithAreas[]>('/api/files/areas')
+      .then((data) => {
+        setDepts(data)
+        // Expand all departments by default
+        setExpandedDepts(new Set(data.map((d) => d.id)))
+      })
+      .catch(console.error)
   }, [])
 
-  // Fetch department IDs from the API (we need DB ids not folder names)
-  // For now we use dept names — the API upserts by name
-  function toggleDept(deptName: string) {
-    setSelectedDepts((prev) => {
+  function toggleArea(areaId: string) {
+    setSelectedAreas((prev) => {
       const next = new Set(prev)
-      if (next.has(deptName)) next.delete(deptName)
-      else next.add(deptName)
+      if (next.has(areaId)) next.delete(areaId)
+      else next.add(areaId)
       return next
     })
   }
 
+  function toggleDept(dept: DeptWithAreas) {
+    const allSelected = dept.areas.every((a) => selectedAreas.has(a.id))
+    setSelectedAreas((prev) => {
+      const next = new Set(prev)
+      if (allSelected) {
+        for (const a of dept.areas) next.delete(a.id)
+      } else {
+        for (const a of dept.areas) next.add(a.id)
+      }
+      return next
+    })
+  }
+
+  function toggleExpand(deptId: string) {
+    setExpandedDepts((prev) => {
+      const next = new Set(prev)
+      if (next.has(deptId)) next.delete(deptId)
+      else next.add(deptId)
+      return next
+    })
+  }
+
+  const totalSelected = selectedAreas.size
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!name || !bulan || !template || selectedDepts.size === 0) {
-      setError('All fields are required and at least one department must be selected')
+    if (!name || !bulan || !template || selectedAreas.size === 0) {
+      setError('All fields are required and at least one area must be selected')
       return
     }
 
@@ -48,7 +85,7 @@ export default function NewCampaign() {
           name,
           template,
           bulan,
-          departmentNames: Array.from(selectedDepts),
+          areaIds: Array.from(selectedAreas),
         }),
       })
       navigate(`/campaigns/${campaign.id}`)
@@ -100,30 +137,78 @@ export default function NewCampaign() {
             id="camp-template"
             value={template}
             onChange={(e) => setTemplate(e.target.value)}
-            rows={6}
+            rows={5}
             className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
           />
           <p className="text-xs text-muted-foreground">
-            Variables: {'{{no}}'} {'{{nama_toko}}'} {'{{bulan}}'} {'{{department}}'} {'{{area}}'}
+            Variables: {'{{nama_toko}}'} {'{{bulan}}'} {'{{department}}'} {'{{area}}'}
           </p>
         </div>
 
+        {/* Department → Area tree */}
         <div className="space-y-2">
-          <p className="text-sm font-medium">Target departments</p>
-          <div className="rounded-lg border divide-y max-h-64 overflow-y-auto">
-            {tree.map((dept) => (
-              <label key={dept.name} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-accent transition-colors">
-                <input
-                  type="checkbox"
-                  checked={selectedDepts.has(dept.name)}
-                  onChange={() => toggleDept(dept.name)}
-                  className="rounded"
-                />
-                <span className="text-sm">{dept.name}</span>
-                <span className="text-xs text-muted-foreground ml-auto">{dept.areas.length} areas</span>
-              </label>
-            ))}
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium">Target areas</p>
+            {totalSelected > 0 && (
+              <span className="text-xs text-primary font-medium">{totalSelected} area{totalSelected !== 1 ? 's' : ''} selected</span>
+            )}
           </div>
+
+          {depts.length === 0 ? (
+            <div className="rounded-lg border px-4 py-6 text-sm text-muted-foreground text-center">
+              No areas found — import contacts first
+            </div>
+          ) : (
+            <div className="rounded-lg border divide-y max-h-80 overflow-y-auto">
+              {depts.map((dept) => {
+                const allSelected = dept.areas.length > 0 && dept.areas.every((a) => selectedAreas.has(a.id))
+                const someSelected = dept.areas.some((a) => selectedAreas.has(a.id))
+                const expanded = expandedDepts.has(dept.id)
+
+                return (
+                  <div key={dept.id}>
+                    {/* Department row */}
+                    <div className="flex items-center gap-2 px-3 py-2.5 bg-muted/50">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected }}
+                        onChange={() => toggleDept(dept)}
+                        className="rounded"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => toggleExpand(dept.id)}
+                        className="flex-1 flex items-center gap-2 text-left"
+                      >
+                        <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">{dept.name}</span>
+                        <span className="text-xs text-muted-foreground ml-auto">
+                          {dept.areas.filter((a) => selectedAreas.has(a.id)).length}/{dept.areas.length}
+                        </span>
+                        <span className="text-xs text-muted-foreground">{expanded ? '▲' : '▼'}</span>
+                      </button>
+                    </div>
+
+                    {/* Area rows */}
+                    {expanded && dept.areas.map((area) => (
+                      <label
+                        key={area.id}
+                        className="flex items-center gap-3 pl-8 pr-4 py-2 cursor-pointer hover:bg-accent transition-colors"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedAreas.has(area.id)}
+                          onChange={() => toggleArea(area.id)}
+                          className="rounded"
+                        />
+                        <span className="text-sm">{area.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
 
         <div className="flex gap-3 pt-2">

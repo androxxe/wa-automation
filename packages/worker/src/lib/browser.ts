@@ -94,23 +94,59 @@ class BrowserManager {
     this._status = await this._detectStatus()
     const shot = await this.screenshot()
     await publishBrowserStatus(this._status, shot)
+    console.log(`[browser] initial status: ${this._status}`)
+
+    // Keep polling in background every 15s so status stays fresh
+    this._startPolling()
+  }
+
+  private _pollTimer: ReturnType<typeof setInterval> | null = null
+
+  private _startPolling() {
+    if (this._pollTimer) return
+    this._pollTimer = setInterval(async () => {
+      if (!this.page) return
+      const prev = this._status
+      this._status = await this._detectStatus()
+      if (this._status !== prev) {
+        console.log(`[browser] status changed: ${prev} → ${this._status}`)
+      }
+      const shot = await this.screenshot()
+      await publishBrowserStatus(this._status, shot)
+    }, 15000)
   }
 
   private async _detectStatus(): Promise<BrowserStatus> {
     if (!this.page) return 'disconnected'
     try {
+      // Check connected state — multiple selectors in case WA updates their DOM
       const connected = await this.page
-        .waitForSelector('[data-testid="chat-list"]', { timeout: 8000 })
+        .waitForSelector(
+          '[data-testid="chat-list"], #side, [aria-label="Chat list"], ._aigs',
+          { timeout: 30000 },
+        )
         .then(() => true)
         .catch(() => false)
       if (connected) return 'connected'
 
+      // Check QR code — multiple selectors
       const qr = await this.page
-        .waitForSelector('canvas[aria-label="Scan this QR code to link a device"]', { timeout: 5000 })
+        .waitForSelector(
+          'canvas[aria-label="Scan this QR code to link a device"], [data-testid="qrcode"], canvas[aria-label="QR code"]',
+          { timeout: 8000 },
+        )
         .then(() => true)
         .catch(() => false)
       if (qr) return 'qr'
 
+      const url = this.page.url()
+      // Save screenshot to disk for debugging
+      try {
+        const debugPath = path.resolve('browser-debug.jpg')
+        await this.page.screenshot({ path: debugPath, type: 'jpeg', quality: 80 })
+        console.log(`[browser] still loading — url: ${url}`)
+        console.log(`[browser] debug screenshot saved → ${debugPath}`)
+      } catch {}
       return 'loading'
     } catch {
       return 'loading'
@@ -137,30 +173,191 @@ class BrowserManager {
 
   async sendMessage(phone: string, body: string): Promise<void> {
     const page = await this.getPage()
-    const url = `https://web.whatsapp.com/send?phone=${phone.replace('+', '')}&text=`
+    const number = phone.replace('+', '')
+    const url = `https://web.whatsapp.com/send?phone=${number}&text=`
+
     await page.goto(url, { waitUntil: 'domcontentloaded' })
+
+    // Wait for any "opening chat" loading overlay to disappear
     await page.waitForTimeout(3000)
 
-    const inputSelector = '[data-testid="conversation-compose-box-input"]'
-    await page.waitForSelector(inputSelector, { timeout: 20000 })
-    await page.click(inputSelector)
+    // Handle "Phone number shared via url is invalid" alert if present
+    const invalidAlert = await page
+      .waitForSelector('[data-testid="popup-contents"]', { timeout: 5000 })
+      .then(() => true)
+      .catch(() => false)
+    if (invalidAlert) {
+      throw new Error(`WhatsApp says phone number ${phone} is invalid or not on WhatsApp`)
+    }
 
-    for (const char of body) {
-      await page.keyboard.type(char, { delay: 80 + Math.random() * 100 })
+    // Compose box — try multiple selectors across WA Web versions
+    const inputSelector = [
+      '[data-testid="conversation-compose-box-input"]',
+      'div[contenteditable="true"][data-tab="10"]',
+      'div[contenteditable="true"][aria-label="Type a message"]',
+      'footer div[contenteditable="true"]',
+    ].join(', ')
+
+    await page.waitForSelector(inputSelector, { timeout: 30000 })
+    await page.click(inputSelector)
+    await page.waitForTimeout(500)
+
+    // Type character by character.
+    // '\n' must use Shift+Enter — plain Enter sends the message in WhatsApp Web.
+    const lines = body.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      for (const char of lines[i]) {
+        await page.keyboard.type(char, { delay: 80 + Math.random() * 100 })
+      }
+      if (i < lines.length - 1) {
+        await page.keyboard.press('Shift+Enter')
+        await page.waitForTimeout(300 + Math.random() * 300)
+      }
     }
 
     await page.waitForTimeout(1000 + Math.random() * 2000)
-    await page.click('[data-testid="send"]')
-    await page.waitForTimeout(1000)
+
+    // Send button — try multiple selectors
+    const sendSelector = [
+      '[data-testid="send"]',
+      'button[aria-label="Send"]',
+      'span[data-testid="send"]',
+    ].join(', ')
+
+    await page.click(sendSelector)
+    await page.waitForTimeout(1500)
+  }
+
+  /**
+   * Poll WhatsApp Web for unread replies.
+   *
+   * Strategy:
+   *   1. Scan chat list for unread badges
+   *   2. Click each unread chat, extract the phone number from the header
+   *   3. FILTER — only process if the phone matches a contact we actually sent to
+   *      (prevents processing random incoming messages on your personal WhatsApp)
+   *   4. Read the last incoming message text
+   *   5. Take a screenshot of the chat and save to OUTPUT_FOLDER/screenshots/
+   *   6. Call onReply so the worker can persist the Reply record + trigger analysis
+   */
+  async pollReplies(
+    onReply: (params: {
+      phone: string
+      text: string
+      screenshotPath: string | null
+    }) => Promise<void>,
+    sentPhones: Set<string>,   // phones we have sent to — filter guard
+  ): Promise<void> {
+    const page = await this.getPage()
+
+    // Scan chat list for unread items
+    const chatItems = await page.$$(
+      '[data-testid="cell-frame-container"], [data-testid="chat-list-item-container"]',
+    )
+
+    for (const item of chatItems) {
+      // Check for unread badge
+      const unreadBadge = await item.$(
+        '[data-testid="icon-unread-count"], [aria-label*="unread"], span[data-testid="chat-list-unread"]',
+      )
+      if (!unreadBadge) continue
+
+      // Click the chat
+      await item.click()
+      await page.waitForTimeout(1500)
+
+      // Extract phone from chat header — try multiple approaches
+      let phone: string | null = null
+
+      // Approach 1: header subtitle often shows the phone number
+      const subtitleEl = await page.$(
+        '[data-testid="conversation-info-header-subtitle"], [data-testid="contact-info-subtitle"]',
+      )
+      if (subtitleEl) {
+        const text = (await subtitleEl.textContent())?.replace(/\s/g, '') ?? ''
+        if (/^\+?\d{8,15}$/.test(text)) phone = text.startsWith('+') ? text : `+${text}`
+      }
+
+      // Approach 2: click header to open contact info, grab phone
+      if (!phone) {
+        const headerTitle = await page.$('[data-testid="conversation-info-header"]')
+        if (headerTitle) {
+          const text = (await headerTitle.textContent())?.replace(/\s/g, '') ?? ''
+          if (/^\+?\d{8,15}$/.test(text)) phone = text.startsWith('+') ? text : `+${text}`
+        }
+      }
+
+      if (!phone) {
+        console.log('[browser] could not extract phone from chat, skipping')
+        continue
+      }
+
+      // ── FILTER: only process if we actually sent to this number ──────────
+      if (!sentPhones.has(phone)) {
+        console.log(`[browser] skipping ${phone} — not in our sent list`)
+        continue
+      }
+
+      // Read last incoming message text
+      const messageEls = await page.$$(
+        '[data-testid="msg-container"] [data-testid="msg-text"], ' +
+        '[data-testid="conversation-compose-box-input"] ~ * [data-testid="msg-text"]',
+      )
+
+      // Get all message texts and find the last incoming one
+      let lastText = ''
+      for (const el of messageEls) {
+        const text = await el.textContent()
+        if (text?.trim()) lastText = text.trim()
+      }
+
+      if (!lastText) {
+        console.log(`[browser] no message text found for ${phone}, skipping`)
+        continue
+      }
+
+      // Take screenshot and save to disk
+      const screenshotPath = await this._saveReplyScreenshot(phone)
+
+      console.log(`[browser] reply from ${phone}: "${lastText.slice(0, 50)}"`)
+      await onReply({ phone, text: lastText, screenshotPath })
+    }
+  }
+
+  private async _saveReplyScreenshot(phone: string): Promise<string | null> {
+    const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER
+    if (!OUTPUT_FOLDER || !this.page) return null
+
+    try {
+      const dir = path.join(OUTPUT_FOLDER, 'screenshots')
+      fs.mkdirSync(dir, { recursive: true })
+
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+      const filename = `${phone.replace('+', '')}_${timestamp}.jpg`
+      const fullPath = path.join(dir, filename)
+
+      await this.page.screenshot({ path: fullPath, type: 'jpeg', quality: 80 })
+
+      // Return path relative to OUTPUT_FOLDER for storage in DB/CSV
+      return `screenshots/${filename}`
+    } catch (err) {
+      console.warn('[browser] screenshot failed:', err)
+      return null
+    }
   }
 
   async close(): Promise<void> {
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer)
+      this._pollTimer = null
+    }
     if (this.context) {
       await this.context.close()
       this.context = null
       this.page = null
       this._status = 'disconnected'
     }
+    await publishBrowserStatus('disconnected', null)
   }
 }
 
