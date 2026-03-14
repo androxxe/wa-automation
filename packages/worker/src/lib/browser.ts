@@ -46,6 +46,20 @@ class BrowserManager {
   private context: BrowserContext | null = null
   private page: Page | null = null
   private _status: BrowserStatus = 'disconnected'
+  private _browserLock = false
+
+  /** Serialise all browser interactions so send & check don't collide */
+  private async _withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
+    while (this._browserLock) {
+      await new Promise((r) => setTimeout(r, 500))
+    }
+    this._browserLock = true
+    try {
+      return await fn()
+    } finally {
+      this._browserLock = false
+    }
+  }
 
   get status(): BrowserStatus {
     return this._status
@@ -172,6 +186,7 @@ class BrowserManager {
   }
 
   async sendMessage(phone: string, body: string): Promise<void> {
+    return this._withBrowserLock(async () => {
     const page = await this.getPage()
     const number = phone.replace('+', '')
     const url = `https://web.whatsapp.com/send?phone=${number}&text=`
@@ -186,13 +201,16 @@ class BrowserManager {
       })
       .catch(() => {})
 
-    // Handle "Phone number shared via url is invalid" alert if present
+    // Handle "Nomor tidak terdaftar / Phone number invalid" popup
     const invalidAlert = await page
       .waitForSelector('[data-testid="popup-contents"]', { timeout: 5000 })
       .then(() => true)
       .catch(() => false)
     if (invalidAlert) {
-      throw new Error(`WhatsApp says phone number ${phone} is invalid or not on WhatsApp`)
+      // Dismiss the popup so it doesn't block the next navigation
+      await page.click('[data-testid="popup-contents"] button').catch(() => {})
+      await page.waitForTimeout(500)
+      throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
     }
 
     // Compose box — try multiple selectors across WA Web versions
@@ -231,6 +249,45 @@ class BrowserManager {
 
     await page.click(sendSelector)
     await page.waitForTimeout(1500)
+    }) // end _withBrowserLock
+  }
+
+  /**
+   * Check whether a phone number is registered on WhatsApp.
+   * Navigates to the send URL and looks for the "not registered" popup.
+   * Returns true if the number is on WA, false if not.
+   */
+  async checkPhoneRegistered(phone: string): Promise<boolean> {
+    return this._withBrowserLock(async () => {
+      const page = await this.getPage()
+      const number = phone.replace('+', '')
+      const url = `https://web.whatsapp.com/send?phone=${number}&text=`
+
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
+
+      // Wait for "Starting Chat..." overlay to disappear
+      await page
+        .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
+          state: 'hidden',
+          timeout: 10000,
+        })
+        .catch(() => {})
+
+      // Check for "Nomor tidak terdaftar" popup
+      const popup = await page
+        .waitForSelector('[data-testid="popup-contents"]', { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
+
+      if (popup) {
+        // Dismiss the popup before returning
+        await page.click('[data-testid="popup-contents"] button').catch(() => {})
+        await page.waitForTimeout(300)
+        return false
+      }
+
+      return true
+    })
   }
 
   /**

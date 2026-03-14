@@ -3,6 +3,40 @@ import { useParams } from 'react-router-dom'
 import { apiFetch } from '@/lib/utils'
 import type { CampaignStatus, MessageStatus } from '@aice/shared'
 
+// ─── Fail-reason modal ────────────────────────────────────────────────────────
+
+function FailReasonModal({ reason, onClose }: { reason: string; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* Backdrop */}
+      <button
+        type="button"
+        aria-label="Close"
+        className="absolute inset-0 bg-black/40 cursor-default"
+        onClick={onClose}
+        onKeyDown={(e) => e.key === 'Escape' && onClose()}
+      />
+      {/* Panel */}
+      <div className="relative bg-background rounded-lg shadow-lg border w-full max-w-md mx-4 p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <span className="text-red-500 text-lg" aria-hidden="true">&#x26A0;</span>
+          <h3 className="font-semibold text-sm">Pesan gagal dikirim</h3>
+        </div>
+        <p className="text-sm text-muted-foreground break-words">{reason}</p>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 text-sm rounded-md bg-primary text-primary-foreground"
+          >
+            Tutup
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 interface Campaign {
   id: string
   name: string
@@ -23,6 +57,7 @@ interface Message {
   phone: string
   status: MessageStatus
   sentAt: string | null
+  failReason: string | null
   contact: { storeName: string; seqNo: string | null }
   reply: { body: string; claudeCategory: string | null } | null
 }
@@ -41,6 +76,7 @@ export default function CampaignDetail() {
   const [messages, setMessages] = useState<Message[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
+  const [failModal, setFailModal] = useState<string | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
 
   const loadCampaign = () =>
@@ -78,6 +114,8 @@ export default function CampaignDetail() {
   const totalPages = Math.ceil(total / 50)
 
   return (
+    <>
+    {failModal && <FailReasonModal reason={failModal} onClose={() => setFailModal(null)} />}
     <div className="space-y-6">
       <div className="flex items-start justify-between">
         <div>
@@ -164,13 +202,24 @@ export default function CampaignDetail() {
                 <td className="px-4 py-2.5">{m.contact.storeName}</td>
                 <td className="px-4 py-2.5 font-mono text-xs">{m.phone}</td>
                 <td className="px-4 py-2.5">
-                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    m.status === 'READ' ? 'bg-green-100 text-green-700'
-                    : m.status === 'DELIVERED' ? 'bg-blue-100 text-blue-700'
-                    : m.status === 'SENT' ? 'bg-indigo-100 text-indigo-700'
-                    : m.status === 'FAILED' ? 'bg-red-100 text-red-600'
-                    : 'bg-gray-100 text-gray-600'
-                  }`}>{m.status}</span>
+                  {m.status === 'FAILED' && m.failReason ? (
+                    <button
+                      type="button"
+                      title={m.failReason}
+                      onClick={() => setFailModal(m.failReason)}
+                      className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 cursor-pointer underline-offset-2 hover:underline"
+                    >
+                      FAILED &#x2139;
+                    </button>
+                  ) : (
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      m.status === 'READ' ? 'bg-green-100 text-green-700'
+                      : m.status === 'DELIVERED' ? 'bg-blue-100 text-blue-700'
+                      : m.status === 'SENT' ? 'bg-indigo-100 text-indigo-700'
+                      : m.status === 'FAILED' ? 'bg-red-100 text-red-600'
+                      : 'bg-gray-100 text-gray-600'
+                    }`}>{m.status}</span>
+                  )}
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground text-xs">
                   {m.sentAt ? new Date(m.sentAt).toLocaleTimeString() : '—'}
@@ -194,5 +243,6 @@ export default function CampaignDetail() {
         </div>
       </div>
     </div>
+    </>
   )
 }

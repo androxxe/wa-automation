@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import { Worker, type Job } from 'bullmq'
-import type { MessageJob } from '@aice/shared'
+import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
 import { browserManager, setStatusPublisher } from './lib/browser'
@@ -14,6 +14,7 @@ import {
 } from './lib/scheduler'
 
 const QUEUE_NAME = 'whatsapp-messages'
+const PHONE_CHECK_QUEUE_NAME = 'phone-check'
 const DAILY_SEND_CAP = parseInt(process.env.DAILY_SEND_CAP ?? '150', 10)
 const BREAK_EVERY = parseInt(process.env.MID_SESSION_BREAK_EVERY ?? '30', 10)
 
@@ -144,6 +145,47 @@ worker.on('failed', async (job, err) => {
     where: { id: job.data.messageId },
     data: { status: 'FAILED', failedAt: new Date(), failReason: String(err) },
   }).catch(() => {})
+})
+
+// ─── Phone-check worker ───────────────────────────────────────────────────────
+// Processes jobs from the `phone-check` queue (queued via POST /api/contacts/validate-wa).
+// Checks each phone number against WhatsApp Web and updates contact.phoneValid in DB.
+
+const phoneCheckWorker = new Worker<PhoneCheckJob>(
+  PHONE_CHECK_QUEUE_NAME,
+  async (job: Job<PhoneCheckJob>) => {
+    const { phone, contactId } = job.data
+
+    // Wait for browser to be ready — up to 5 minutes
+    const start = Date.now()
+    while (browserManager.status !== 'connected') {
+      if (Date.now() - start > 5 * 60 * 1000) {
+        throw new Error('Browser not connected — cannot check phone')
+      }
+      await sleep(5000)
+      await browserManager.getStatus()
+    }
+
+    const registered = await browserManager.checkPhoneRegistered(phone)
+
+    if (contactId) {
+      await db.contact.update({
+        where: { id: contactId },
+        data: { phoneValid: registered },
+      }).catch(() => {})
+    }
+
+    console.log(`[phone-check] ${phone} → ${registered ? 'terdaftar' : 'TIDAK terdaftar'}`)
+    return { phone, registered }
+  },
+  {
+    connection: redis as never,
+    concurrency: 1,
+  },
+)
+
+phoneCheckWorker.on('failed', (job, err) => {
+  console.error(`[phone-check] job failed for ${job?.data.phone}:`, err)
 })
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
@@ -280,7 +322,7 @@ main().catch((err) => {
 
 async function shutdown() {
   console.log('[worker] shutting down gracefully...')
-  await worker.close()
+  await Promise.all([worker.close(), phoneCheckWorker.close()])
   await db.$disconnect()
   redis.disconnect()
   // Close browser last and give Chrome 2s to flush session to disk

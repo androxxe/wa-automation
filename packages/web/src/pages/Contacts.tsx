@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { apiFetch } from '@/lib/utils'
 
 interface Contact {
@@ -26,17 +26,40 @@ export default function Contacts() {
   const [page, setPage] = useState(1)
   const [phoneValid, setPhoneValid] = useState<string>('')
   const [loading, setLoading] = useState(false)
+  const [validating, setValidating] = useState(false)
+  const [validateMsg, setValidateMsg] = useState<string | null>(null)
 
-  useEffect(() => {
+  const loadContacts = useCallback(() => {
     setLoading(true)
     const params = new URLSearchParams({ page: String(page), limit: '50' })
     if (phoneValid) params.set('phoneValid', phoneValid)
-
     apiFetch<ContactsPage>(`/api/contacts?${params}`)
       .then(setData)
       .catch(console.error)
       .finally(() => setLoading(false))
   }, [page, phoneValid])
+
+  useEffect(() => {
+    loadContacts()
+  }, [loadContacts])
+
+  const handleValidateWA = async () => {
+    setValidating(true)
+    setValidateMsg(null)
+    try {
+      const result = await apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      })
+      setValidateMsg(`${result.queued} nomor diantrekan untuk dicek. Status akan diperbarui otomatis.`)
+      // Refresh after a short delay to reflect any immediate updates
+      setTimeout(loadContacts, 3000)
+    } catch (err) {
+      setValidateMsg(`Gagal: ${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setValidating(false)
+    }
+  }
 
   const totalPages = data ? Math.ceil(data.total / 50) : 1
 
@@ -49,16 +72,32 @@ export default function Contacts() {
             {data ? `${data.total.toLocaleString()} total` : 'Loading...'}
           </p>
         </div>
-        <select
-          value={phoneValid}
-          onChange={(e) => { setPhoneValid(e.target.value); setPage(1) }}
-          className="text-sm border rounded-md px-3 py-1.5 bg-background"
-        >
-          <option value="">All phones</option>
-          <option value="true">Valid only</option>
-          <option value="false">Invalid only</option>
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={phoneValid}
+            onChange={(e) => { setPhoneValid(e.target.value); setPage(1) }}
+            className="text-sm border rounded-md px-3 py-1.5 bg-background"
+          >
+            <option value="">All phones</option>
+            <option value="true">Valid only</option>
+            <option value="false">Invalid only</option>
+          </select>
+          <button
+            type="button"
+            onClick={handleValidateWA}
+            disabled={validating}
+            className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
+          >
+            {validating ? 'Mengantrekan...' : 'Validasi WA'}
+          </button>
+        </div>
       </div>
+
+      {validateMsg && (
+        <div className="text-sm rounded-md border px-4 py-2.5 bg-muted text-muted-foreground">
+          {validateMsg}
+        </div>
+      )}
 
       <div className="rounded-lg border overflow-hidden">
         <table className="w-full text-sm">

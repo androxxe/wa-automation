@@ -27,6 +27,16 @@ export interface MessageJob {
   body: string    // rendered template (pre-variation)
 }
 
+export interface PhoneCheckJob {
+  phone: string       // +62...
+  contactId?: string  // if provided, worker updates contact.phoneValid
+}
+
+export interface PhoneCheckResult {
+  phone: string
+  registered: boolean
+}
+
 // ─── Claude response shapes ───────────────────────────────────────────────────
 
 export interface ColumnMapping {
