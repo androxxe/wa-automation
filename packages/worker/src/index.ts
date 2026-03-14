@@ -196,6 +196,18 @@ async function handleReply(params: {
     },
   })
 
+  // Mark message as READ (a reply implies the message was read)
+  if (message.status !== 'READ') {
+    await db.message.update({
+      where: { id: message.id },
+      data: { status: 'READ', readAt: new Date() },
+    })
+    await db.campaign.update({
+      where: { id: message.campaignId },
+      data: { readCount: { increment: 1 } },
+    })
+  }
+
   // Update campaign reply count
   await db.campaign.update({
     where: { id: message.campaignId },
