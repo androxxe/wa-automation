@@ -1,10 +1,17 @@
 /**
  * Normalize Indonesian mobile numbers to E.164 format (+62...).
  *
- * Rules:
- *   0821...     → +62821...
- *   62821...    → +62821...
- *   +62821...   → +62821... (unchanged)
+ * Handles all real-world formats found in xlsx files:
+ *
+ *   Input               Normalized
+ *   ──────────────────  ──────────────────
+ *   08xxxxxxxxx         +628xxxxxxxxx       (standard local format)
+ *   8xxxxxxxxx          +628xxxxxxxxx       (Excel stripped leading zero)
+ *   628xxxxxxxxx        +628xxxxxxxxx       (already has country code, no +)
+ *   +628xxxxxxxxx       +628xxxxxxxxx       (already E.164)
+ *   8.21167464117E+11   +62821167464117     (Excel scientific notation)
+ *   0821 1674 6411 7    +62821167464117     (spaces)
+ *   0821-1674-6411      +6282116746411      (dashes)
  *
  * Validation: after +62 the remaining digits must be 8–12 digits.
  */
@@ -17,32 +24,56 @@ export interface PhoneResult {
 }
 
 export function normalizePhone(raw: string): PhoneResult {
-  // Strip whitespace, dashes, parentheses, dots
-  let digits = raw.replace(/[\s\-().+]/g, '')
+  let input = String(raw).trim()
 
-  if (!digits) {
+  if (!input) {
     return { raw, normalized: raw, valid: false, reason: 'empty' }
   }
 
-  // Convert to +62 form
-  if (digits.startsWith('0')) {
-    digits = '62' + digits.slice(1)
+  // ── Handle scientific notation (e.g. 8.21167464117E+11) ──────────────────
+  if (/^[\d.]+[eE][+\-]?\d+$/.test(input)) {
+    // Parse as float then convert to integer string
+    const num = parseFloat(input)
+    if (!isNaN(num) && isFinite(num)) {
+      input = Math.round(num).toString()
+    }
   }
 
-  if (!digits.startsWith('62')) {
-    return { raw, normalized: raw, valid: false, reason: 'not an Indonesian number' }
+  // ── Strip non-digit characters except leading + ───────────────────────────
+  const hasPlus = input.startsWith('+')
+  let digits = input.replace(/\D/g, '')
+
+  if (!digits) {
+    return { raw, normalized: raw, valid: false, reason: 'empty after stripping non-digits' }
+  }
+
+  // ── Normalise to 62xxxxxxxxx form ─────────────────────────────────────────
+
+  if (hasPlus && digits.startsWith('62')) {
+    // +62... → already correct, keep as-is
+  } else if (digits.startsWith('62')) {
+    // 62... → keep as-is
+  } else if (digits.startsWith('0')) {
+    // 08... → strip leading 0, prepend 62
+    digits = '62' + digits.slice(1)
+  } else if (digits.startsWith('8')) {
+    // 8... → Excel stripped the leading 0; prepend 62
+    digits = '62' + digits
+  } else {
+    return { raw, normalized: raw, valid: false, reason: 'unrecognised format' }
   }
 
   const normalized = '+' + digits
 
-  // After +62, remaining digits must be 8–12 digits
+  // ── Validate suffix length ─────────────────────────────────────────────────
+  // After +62 the subscriber number must be 8–12 digits
   const suffix = digits.slice(2)
   if (!/^\d{8,12}$/.test(suffix)) {
     return {
       raw,
       normalized,
       valid: false,
-      reason: `suffix length ${suffix.length} out of range 8–12`,
+      reason: `subscriber number is ${suffix.length} digit(s) — expected 8–12`,
     }
   }
 
