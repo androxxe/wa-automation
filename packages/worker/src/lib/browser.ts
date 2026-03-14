@@ -178,8 +178,13 @@ class BrowserManager {
 
     await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-    // Wait for any "opening chat" loading overlay to disappear
-    await page.waitForTimeout(3000)
+    // Wait for "Starting Chat..." overlay to disappear
+    await page
+      .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
+        state: 'hidden',
+        timeout: 10000,
+      })
+      .catch(() => {})
 
     // Handle "Phone number shared via url is invalid" alert if present
     const invalidAlert = await page
@@ -240,87 +245,89 @@ class BrowserManager {
    *   5. Take a screenshot of the chat and save to OUTPUT_FOLDER/screenshots/
    *   6. Call onReply so the worker can persist the Reply record + trigger analysis
    */
+  /**
+   * Poll for replies by navigating directly to each unreplied contact's chat.
+   * This avoids brittle chat-list DOM scraping and works regardless of whether
+   * the contact has a saved name (not a phone number) in the list.
+   *
+   * sentPhones should only contain phones WITHOUT a reply yet (pre-filtered by caller).
+   */
   async pollReplies(
     onReply: (params: {
       phone: string
       text: string
       screenshotPath: string | null
     }) => Promise<void>,
-    sentPhones: Set<string>,   // phones we have sent to — filter guard
+    sentPhones: Set<string>,
   ): Promise<void> {
     const page = await this.getPage()
 
-    // Scan chat list for unread items
-    const chatItems = await page.$$(
-      '[data-testid="cell-frame-container"], [data-testid="chat-list-item-container"]',
-    )
+    for (const phone of sentPhones) {
+      const number = phone.replace('+', '')
+      const url = `https://web.whatsapp.com/send?phone=${number}`
 
-    for (const item of chatItems) {
-      // Check for unread badge
-      const unreadBadge = await item.$(
-        '[data-testid="icon-unread-count"], [aria-label*="unread"], span[data-testid="chat-list-unread"]',
-      )
-      if (!unreadBadge) continue
+      await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-      // Click the chat
-      await item.click()
+      // Wait for "Starting Chat..." overlay to disappear.
+      // This overlay appears when opening a chat via send?phone= URL.
+      await page
+        .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
+          state: 'hidden',
+          timeout: 10000,
+        })
+        .catch(() => {}) // not present on all WA Web versions — ignore
+
+      // Wait for the compose box to confirm the chat is fully loaded
+      const chatLoaded = await page
+        .waitForSelector(
+          [
+            'footer div[contenteditable="true"]',
+            '[data-testid="conversation-compose-box-input"]',
+            'div[contenteditable="true"][data-tab="10"]',
+          ].join(', '),
+          { timeout: 20000 },
+        )
+        .then(() => true)
+        .catch(() => false)
+
+      if (!chatLoaded) {
+        console.log(`[poll] chat failed to load for ${phone}, skipping`)
+        continue
+      }
+
+      // Extra buffer after compose box appears — messages render slightly after
       await page.waitForTimeout(1500)
 
-      // Extract phone from chat header — try multiple approaches
-      let phone: string | null = null
+      // Get the last incoming message text using page.evaluate
+      // Incoming = .message-in, Outgoing = .message-out
+      const lastIncoming = await page.evaluate((): string | null => {
+        // Try specific incoming class first
+        const incomingMsgs = document.querySelectorAll(
+          '.message-in [data-testid="msg-text"], ' +
+          '[data-id] .copyable-text[data-pre-plain-text]',
+        )
 
-      // Approach 1: header subtitle often shows the phone number
-      const subtitleEl = await page.$(
-        '[data-testid="conversation-info-header-subtitle"], [data-testid="contact-info-subtitle"]',
-      )
-      if (subtitleEl) {
-        const text = (await subtitleEl.textContent())?.replace(/\s/g, '') ?? ''
-        if (/^\+?\d{8,15}$/.test(text)) phone = text.startsWith('+') ? text : `+${text}`
-      }
-
-      // Approach 2: click header to open contact info, grab phone
-      if (!phone) {
-        const headerTitle = await page.$('[data-testid="conversation-info-header"]')
-        if (headerTitle) {
-          const text = (await headerTitle.textContent())?.replace(/\s/g, '') ?? ''
-          if (/^\+?\d{8,15}$/.test(text)) phone = text.startsWith('+') ? text : `+${text}`
+        if (incomingMsgs.length > 0) {
+          return incomingMsgs[incomingMsgs.length - 1]?.textContent?.trim() ?? null
         }
-      }
 
-      if (!phone) {
-        console.log('[browser] could not extract phone from chat, skipping')
+        // Fallback: all msg-text elements not inside message-out
+        const allTexts = document.querySelectorAll('[data-testid="msg-text"]')
+        const incoming = Array.from(allTexts).filter(
+          (el) => !el.closest('.message-out'),
+        )
+        return incoming[incoming.length - 1]?.textContent?.trim() ?? null
+      })
+
+      if (!lastIncoming) {
+        console.log(`[poll] no incoming message found for ${phone}`)
         continue
       }
 
-      // ── FILTER: only process if we actually sent to this number ──────────
-      if (!sentPhones.has(phone)) {
-        console.log(`[browser] skipping ${phone} — not in our sent list`)
-        continue
-      }
+      console.log(`[poll] ${phone} → "${lastIncoming.slice(0, 60)}"`)
 
-      // Read last incoming message text
-      const messageEls = await page.$$(
-        '[data-testid="msg-container"] [data-testid="msg-text"], ' +
-        '[data-testid="conversation-compose-box-input"] ~ * [data-testid="msg-text"]',
-      )
-
-      // Get all message texts and find the last incoming one
-      let lastText = ''
-      for (const el of messageEls) {
-        const text = await el.textContent()
-        if (text?.trim()) lastText = text.trim()
-      }
-
-      if (!lastText) {
-        console.log(`[browser] no message text found for ${phone}, skipping`)
-        continue
-      }
-
-      // Take screenshot and save to disk
       const screenshotPath = await this._saveReplyScreenshot(phone)
-
-      console.log(`[browser] reply from ${phone}: "${lastText.slice(0, 50)}"`)
-      await onReply({ phone, text: lastText, screenshotPath })
+      await onReply({ phone, text: lastIncoming, screenshotPath })
     }
   }
 

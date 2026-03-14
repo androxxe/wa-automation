@@ -43,7 +43,17 @@ const worker = new Worker<MessageJob>(
   async (job: Job<MessageJob>) => {
     const { messageId, phone, body, campaignId } = job.data
 
-    // 0. Wait until browser is connected — poll every 10s, up to 10 min
+    // 0a. Verify message still exists — stale jobs remain in Redis after db:fresh
+    const messageExists = await db.message.findUnique({
+      where: { id: messageId },
+      select: { id: true },
+    })
+    if (!messageExists) {
+      console.warn(`[worker] message ${messageId} not found in DB — stale job, skipping`)
+      return
+    }
+
+    // 0b. Wait until browser is connected — poll every 10s, up to 10 min
     const BROWSER_WAIT_INTERVAL = 10_000
     const BROWSER_WAIT_TIMEOUT = 10 * 60 * 1000
     const browserWaitStart = Date.now()
@@ -103,15 +113,15 @@ const worker = new Worker<MessageJob>(
     // 6. Send via Playwright
     await browserManager.sendMessage(phone, variedBody)
 
-    // 7. Update message status
-    await db.message.update({
+    // 7. Update message status (updateMany never throws if record is missing)
+    await db.message.updateMany({
       where: { id: messageId },
       data: { status: 'SENT', sentAt: new Date(), body: variedBody },
     })
     await incrementDailyCount()
 
     // 8. Update campaign sent count
-    await db.campaign.update({
+    await db.campaign.updateMany({
       where: { id: campaignId },
       data: { sentCount: { increment: 1 } },
     })
@@ -142,9 +152,12 @@ worker.on('failed', async (job, err) => {
 
 const REPLY_POLL_INTERVAL = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
 
-async function getSentPhones(): Promise<Set<string>> {
+async function getUnrepliedPhones(): Promise<Set<string>> {
   const messages = await db.message.findMany({
-    where: { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
+    where: {
+      status: { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply: null,  // only contacts we haven't received a reply from yet
+    },
     select: { phone: true },
   })
   return new Set(messages.map((m) => m.phone))
@@ -212,16 +225,26 @@ function startReplyPolling() {
   console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s`)
 
   const poll = async () => {
-    if (browserManager.status !== 'connected') return
+    if (browserManager.status !== 'connected') {
+      console.log(`[poll] skipping — browser not connected (${browserManager.status})`)
+      return
+    }
     try {
-      const sentPhones = await getSentPhones()
-      if (sentPhones.size === 0) return
-      await browserManager.pollReplies(handleReply, sentPhones)
+      const unrepliedPhones = await getUnrepliedPhones()
+      if (unrepliedPhones.size === 0) {
+        console.log('[poll] all contacts have replied, nothing to check')
+        return
+      }
+      console.log(`[poll] checking ${unrepliedPhones.size} unreplied contact(s)...`)
+      await browserManager.pollReplies(handleReply, unrepliedPhones)
+      console.log('[poll] done')
     } catch (err) {
       console.error('[worker] reply poll error:', err)
     }
   }
 
+  // Run immediately on startup to catch any replies that came in while worker was down
+  poll()
   setInterval(poll, REPLY_POLL_INTERVAL)
 }
 
