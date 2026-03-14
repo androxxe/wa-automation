@@ -193,22 +193,35 @@ class BrowserManager {
 
     await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-    // Wait for "Starting Chat..." overlay to disappear
+    // Wait for "Starting Chat..." overlay to disappear (do NOT include
+    // data-animate-modal-popup here — that same attribute is used by the
+    // "invalid number" popup which we actively want to detect below)
     await page
-      .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
+      .waitForSelector('[data-testid="startup"]', {
         state: 'hidden',
         timeout: 10000,
       })
       .catch(() => {})
 
-    // Handle "Nomor tidak terdaftar / Phone number invalid" popup
+    // Handle "Nomor tidak terdaftar / Phone number invalid" popup.
+    // Use waitForFunction + textContent (not waitForSelector) so CSS animation
+    // state does not prevent detection.
     const invalidAlert = await page
-      .waitForSelector('[data-testid="popup-contents"]', { timeout: 5000 })
+      .waitForFunction(
+        (keywords: string[]) => {
+          const modal = document.querySelector('[data-animate-modal-popup="true"]')
+          if (!modal) return false
+          const text = (modal.textContent ?? '').toLowerCase()
+          return keywords.some((kw) => text.includes(kw))
+        },
+        ['tidak terdaftar', 'not registered'],
+        { timeout: 5000, polling: 100 },
+      )
       .then(() => true)
       .catch(() => false)
     if (invalidAlert) {
       // Dismiss the popup so it doesn't block the next navigation
-      await page.click('[data-testid="popup-contents"] button').catch(() => {})
+      await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
       await page.waitForTimeout(500)
       throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
     }
@@ -255,13 +268,20 @@ class BrowserManager {
   /**
    * Check whether a phone number is registered on WhatsApp.
    *
-   * Strategy: race between two signals after navigating to the send URL —
-   *   • Compose box appears  → number IS registered
-   *   • Popup appears        → number is NOT registered (or format invalid)
+   * Strategy — two parallel tracks that race each other:
    *
-   * This is more reliable than only waiting for the popup, because WhatsApp
-   * Web may skip the popup for some unregistered numbers and just never load
-   * the compose box.
+   *  Track A — continuous DOM poll via waitForFunction, looking for the
+   *    "tidak terdaftar" text inside any modal.  waitForFunction reads raw
+   *    textContent so it works even when Playwright's visibility model misses
+   *    the element due to CSS animation transforms.  Resolves the instant the
+   *    popup text appears, before it can auto-dismiss.
+   *
+   *  Track B — wait for the compose box (WhatsApp briefly shows it for ALL
+   *    numbers during loading, including invalid ones), then hold for a
+   *    stabilisation window to let any popup render.  After the window, inspect
+   *    the DOM for the invalid text.
+   *
+   * Whichever track resolves first determines the result.
    */
   async checkPhoneRegistered(phone: string): Promise<boolean> {
     return this._withBrowserLock(async () => {
@@ -278,24 +298,50 @@ class BrowserManager {
         'footer div[contenteditable="true"]',
       ].join(', ')
 
-      // Race: compose box (registered) vs popup (not registered), 12s total
-      const result = await Promise.race([
-        page.waitForSelector(composeSelector, { timeout: 12000 })
-          .then(() => 'registered' as const)
-          .catch(() => 'timeout' as const),
-        page.waitForSelector('[data-testid="popup-contents"]', { timeout: 12000 })
-          .then(() => 'popup' as const)
-          .catch(() => 'timeout' as const),
-      ])
+      const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
 
-      if (result === 'popup') {
-        // Dismiss before returning — no extra wait needed, next page.goto clears it
-        await page.click('[data-testid="popup-contents"] button').catch(() => {})
+      // Track A: poll continuously for the invalid-popup text.
+      // Uses waitForFunction (not waitForSelector) so CSS animation state is irrelevant.
+      const trackA = page
+        .waitForFunction(
+          (keywords: string[]) => {
+            const modal = document.querySelector('[data-animate-modal-popup="true"]')
+            if (!modal) return false
+            const text = (modal.textContent ?? '').toLowerCase()
+            return keywords.some((kw) => text.includes(kw))
+          },
+          INVALID_KEYWORDS,
+          { timeout: 20000, polling: 100 },
+        )
+        .then(() => 'invalid' as const)
+        .catch(() => 'timeout' as const)
+
+      // Track B: wait for compose box (page loaded signal), then wait out a
+      // stabilisation window and inspect the DOM.
+      const trackB = page
+        .waitForSelector(composeSelector, { timeout: 20000 })
+        .then(() => page.waitForTimeout(2000))
+        .then(() =>
+          page.evaluate((keywords: string[]): 'invalid' | 'registered' => {
+            const modal = document.querySelector('[data-animate-modal-popup="true"]')
+            if (modal) {
+              const text = (modal.textContent ?? '').toLowerCase()
+              if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+            }
+            return 'registered'
+          }, INVALID_KEYWORDS),
+        )
+        .catch(() => 'timeout' as const)
+
+      const result = await Promise.race([trackA, trackB])
+
+      if (result === 'invalid') {
+        await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
         return false
       }
 
-      // 'registered' or both timed out (treat timeout as registered — don't
-      // incorrectly invalidate a number we couldn't confirm either way)
+      // 'registered' (compose box stable, no popup) or 'timeout' →
+      // conservative: treat as registered so we don't falsely invalidate
       return true
     })
   }
@@ -338,7 +384,7 @@ class BrowserManager {
       // Wait for "Starting Chat..." overlay to disappear.
       // This overlay appears when opening a chat via send?phone= URL.
       await page
-        .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
+        .waitForSelector('[data-testid="startup"]', {
           state: 'hidden',
           timeout: 10000,
         })
