@@ -3,7 +3,7 @@ import { Worker, type Job } from 'bullmq'
 import type { MessageJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
-import { browserManager } from './lib/browser'
+import { browserManager, setStatusPublisher } from './lib/browser'
 import { validateStartup } from './lib/validate'
 import {
   isWorkingHours,
@@ -42,6 +42,19 @@ const worker = new Worker<MessageJob>(
   QUEUE_NAME,
   async (job: Job<MessageJob>) => {
     const { messageId, phone, body, campaignId } = job.data
+
+    // 0. Wait until browser is connected — poll every 10s, up to 10 min
+    const BROWSER_WAIT_INTERVAL = 10_000
+    const BROWSER_WAIT_TIMEOUT = 10 * 60 * 1000
+    const browserWaitStart = Date.now()
+    while (browserManager.status !== 'connected') {
+      if (Date.now() - browserWaitStart > BROWSER_WAIT_TIMEOUT) {
+        throw new Error('Browser not connected after 10 minutes — scan the QR code in Settings')
+      }
+      console.log(`[worker] browser not ready (${browserManager.status}), waiting 10s...`)
+      await sleep(BROWSER_WAIT_INTERVAL)
+      await browserManager.getStatus()
+    }
 
     // 1. Check daily cap
     const sentToday = await todaySendCount()
@@ -127,6 +140,7 @@ worker.on('failed', async (job, err) => {
 
 async function main() {
   await validateStartup()
+  setStatusPublisher(redis)
   await browserManager.launch()
   console.log(`[worker] browser status: ${browserManager.status}`)
   console.log(`[worker] listening on queue: ${QUEUE_NAME}`)
@@ -136,3 +150,21 @@ main().catch((err) => {
   console.error('[worker] fatal startup error:', err)
   process.exit(1)
 })
+
+// ─── Graceful shutdown ────────────────────────────────────────────────────────
+// Give Chrome time to flush the session to disk before exiting.
+// Without this, Ctrl+C kills the process before Chrome can save cookies/session.
+
+async function shutdown() {
+  console.log('[worker] shutting down gracefully...')
+  await worker.close()
+  await db.$disconnect()
+  redis.disconnect()
+  // Close browser last and give Chrome 2s to flush session to disk
+  await browserManager.close()
+  await sleep(2000)
+  process.exit(0)
+}
+
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)

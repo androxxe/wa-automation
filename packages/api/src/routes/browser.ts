@@ -1,22 +1,18 @@
 import { Router } from 'express'
-
-// NOTE: BrowserManager is owned by packages/worker.
-// The API reads browser status from the DB/Redis and proxies SSE events.
-// Direct browser control (start/stop/screenshot) is handled by the worker
-// process via Redis pub/sub commands. For now these are stubs.
+import { redis } from '../lib/queue'
 
 const router = Router()
 
 // GET /api/browser/status
-router.get('/status', (_req, res) => {
-  // TODO: read BrowserStatus from Redis (set by worker)
-  res.json({ ok: true, data: { status: 'disconnected' } })
+router.get('/status', async (_req, res) => {
+  const status = (await redis.get('browser:status')) ?? 'disconnected'
+  res.json({ ok: true, data: { status } })
 })
 
 // GET /api/browser/screenshot
-router.get('/screenshot', (_req, res) => {
-  // TODO: read latest screenshot base64 from Redis (set by worker)
-  res.json({ ok: true, data: { screenshot: null } })
+router.get('/screenshot', async (_req, res) => {
+  const screenshot = await redis.get('browser:screenshot')
+  res.json({ ok: true, data: { screenshot } })
 })
 
 // POST /api/browser/start

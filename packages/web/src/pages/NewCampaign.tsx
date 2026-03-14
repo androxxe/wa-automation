@@ -42,18 +42,13 @@ export default function NewCampaign() {
     setLoading(true)
     setError(null)
     try {
-      // Fetch department IDs
-      const departments = await apiFetch<Array<{ id: string; name: string }>>('/api/contacts?limit=0')
-        .catch(() => [] as Array<{ id: string; name: string }>)
-
-      // Fallback: create campaign with department names and let server resolve
       const campaign = await apiFetch<{ id: string }>('/api/campaigns', {
         method: 'POST',
         body: JSON.stringify({
           name,
           template,
           bulan,
-          departmentIds: Array.from(selectedDepts), // TODO: resolve to DB IDs
+          departmentNames: Array.from(selectedDepts),
         }),
       })
       navigate(`/campaigns/${campaign.id}`)

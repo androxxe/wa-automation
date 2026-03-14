@@ -1,21 +1,49 @@
-import { chromium, type Browser, type Page } from 'playwright'
-// @ts-expect-error playwright-extra types
-import { chromium as chromiumExtra } from 'playwright-extra'
-// @ts-expect-error stealth plugin types
-import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+import fs from 'fs'
+import path from 'path'
+import { chromium, type BrowserContext, type Page } from 'playwright'
 import type { BrowserStatus } from '@aice/shared'
 
-chromiumExtra.use(StealthPlugin())
-
-const PROFILE_PATH = process.env.BROWSER_PROFILE_PATH ?? './browser-profile'
+// Resolve relative to cwd (repo root when run via `pnpm dev:worker`)
+// or use absolute path from env directly
+const PROFILE_PATH = path.resolve(
+  process.env.BROWSER_PROFILE_PATH ?? './browser-profile'
+)
 const HEADLESS = process.env.BROWSER_HEADLESS === 'true'
 
-// Chrome UA matching a recent stable release
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
+// Stealth init script — patches the properties WhatsApp checks for automation detection.
+// Applied via addInitScript instead of playwright-extra (which breaks launchPersistentContext).
+const STEALTH_SCRIPT = `
+  // Remove webdriver flag
+  Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+  // Fake chrome runtime
+  window.chrome = { runtime: {} };
+
+  // Non-empty plugins list
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5],
+  });
+
+  // Languages
+  Object.defineProperty(navigator, 'languages', {
+    get: () => ['id-ID', 'id', 'en-US', 'en'],
+  });
+
+  // Permissions
+  const originalQuery = window.navigator.permissions?.query;
+  if (originalQuery) {
+    window.navigator.permissions.query = (parameters) =>
+      parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters);
+  }
+`
+
 class BrowserManager {
-  private browser: Browser | null = null
+  private context: BrowserContext | null = null
   private page: Page | null = null
   private _status: BrowserStatus = 'disconnected'
 
@@ -24,46 +52,61 @@ class BrowserManager {
   }
 
   async launch(): Promise<void> {
-    if (this.browser) return
+    if (this.context) return
 
     this._status = 'loading'
 
-    this.browser = await chromiumExtra.launch({
+    fs.mkdirSync(PROFILE_PATH, { recursive: true })
+
+    // Remove stale Chrome singleton lock files from a previous force-kill
+    for (const lock of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+      const p = path.join(PROFILE_PATH, lock)
+      if (fs.existsSync(p)) fs.rmSync(p, { force: true })
+    }
+
+    // Use native Playwright launchPersistentContext — NOT playwright-extra.
+    // playwright-extra's launchPersistentContext has a known proxy bug that
+    // prevents the session from being saved correctly.
+    this.context = await chromium.launchPersistentContext(PROFILE_PATH, {
       headless: HEADLESS,
       args: [
         '--no-sandbox',
         '--start-maximized',
         '--disable-blink-features=AutomationControlled',
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-default-apps',
       ],
-    })
-
-    const context = await this.browser.newContext({
-      userDataDir: PROFILE_PATH,
       viewport: null,
       userAgent: USER_AGENT,
       locale: 'id-ID',
       timezoneId: 'Asia/Jakarta',
-    } as Parameters<Browser['newContext']>[0])
+    })
 
-    this.page = await context.newPage()
+    // Apply stealth patches to every page — including future ones
+    await this.context.addInitScript(STEALTH_SCRIPT)
+
+    const pages = this.context.pages()
+    this.page = pages.length > 0 ? pages[0] : await this.context.newPage()
+
     await this.page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded' })
 
-    // Detect QR or connected state
     this._status = await this._detectStatus()
+    const shot = await this.screenshot()
+    await publishBrowserStatus(this._status, shot)
   }
 
   private async _detectStatus(): Promise<BrowserStatus> {
     if (!this.page) return 'disconnected'
     try {
-      // If the side panel (contact list) is visible → connected
       const connected = await this.page
-        .waitForSelector('[data-testid="chat-list"]', { timeout: 5000 })
+        .waitForSelector('[data-testid="chat-list"]', { timeout: 8000 })
         .then(() => true)
         .catch(() => false)
       if (connected) return 'connected'
 
       const qr = await this.page
-        .waitForSelector('canvas[aria-label="Scan this QR code to link a device"]', { timeout: 3000 })
+        .waitForSelector('canvas[aria-label="Scan this QR code to link a device"]', { timeout: 5000 })
         .then(() => true)
         .catch(() => false)
       if (qr) return 'qr'
@@ -81,6 +124,8 @@ class BrowserManager {
 
   async getStatus(): Promise<BrowserStatus> {
     this._status = await this._detectStatus()
+    const shot = await this.screenshot()
+    await publishBrowserStatus(this._status, shot)
     return this._status
   }
 
@@ -90,23 +135,16 @@ class BrowserManager {
     return buf.toString('base64')
   }
 
-  /**
-   * Send a WhatsApp message using the human-simulation flow.
-   * See SPEC.md § Human-Simulation Send Flow for the full sequence.
-   */
   async sendMessage(phone: string, body: string): Promise<void> {
     const page = await this.getPage()
-    // TODO: implement full ghost-cursor + typing simulation
-    // Placeholder: direct URL navigation approach for scaffolding
     const url = `https://web.whatsapp.com/send?phone=${phone.replace('+', '')}&text=`
     await page.goto(url, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(3000)
 
     const inputSelector = '[data-testid="conversation-compose-box-input"]'
-    await page.waitForSelector(inputSelector, { timeout: 15000 })
+    await page.waitForSelector(inputSelector, { timeout: 20000 })
     await page.click(inputSelector)
 
-    // Type character by character
     for (const char of body) {
       await page.keyboard.type(char, { delay: 80 + Math.random() * 100 })
     }
@@ -117,14 +155,31 @@ class BrowserManager {
   }
 
   async close(): Promise<void> {
-    if (this.browser) {
-      await this.browser.close()
-      this.browser = null
+    if (this.context) {
+      await this.context.close()
+      this.context = null
       this.page = null
       this._status = 'disconnected'
     }
   }
 }
 
-// Singleton
 export const browserManager = new BrowserManager()
+
+// ─── Redis status publisher ───────────────────────────────────────────────────
+// Called after every status change so the API can reflect live state.
+
+let _redisPublisher: import('ioredis').default | null = null
+
+export function setStatusPublisher(redis: import('ioredis').default) {
+  _redisPublisher = redis
+}
+
+export async function publishBrowserStatus(status: BrowserStatus, screenshot?: string | null) {
+  if (!_redisPublisher) return
+  await _redisPublisher.set('browser:status', status)
+  if (screenshot !== undefined) {
+    if (screenshot) await _redisPublisher.set('browser:screenshot', screenshot, 'EX', 30)
+    else await _redisPublisher.del('browser:screenshot')
+  }
+}

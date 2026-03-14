@@ -24,7 +24,7 @@ const CreateCampaign = z.object({
   name: z.string().min(1),
   template: z.string().min(1),
   bulan: z.string().min(1),
-  departmentIds: z.array(z.string()).min(1),
+  departmentNames: z.array(z.string()).min(1),
 })
 
 router.post('/', async (req, res) => {
@@ -33,15 +33,27 @@ router.post('/', async (req, res) => {
     res.status(400).json({ ok: false, error: parsed.error.message })
     return
   }
-  const { name, template, bulan, departmentIds } = parsed.data
+  const { name, template, bulan, departmentNames } = parsed.data
   try {
+    // Resolve department names to DB IDs — upsert so campaign creation works
+    // even before contacts have been imported for a department
+    const departments = await Promise.all(
+      departmentNames.map((deptName) =>
+        db.department.upsert({
+          where: { name: deptName },
+          update: {},
+          create: { name: deptName, path: '' },
+        }),
+      ),
+    )
+
     const campaign = await db.campaign.create({
       data: {
         name,
         template,
         bulan,
         departments: {
-          create: departmentIds.map((id) => ({ departmentId: id })),
+          create: departments.map((d) => ({ departmentId: d.id })),
         },
       },
     })

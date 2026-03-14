@@ -18,6 +18,7 @@ export function scanDataFolder(): DepartmentTree[] {
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
+    if (entry.name.startsWith('.')) continue
 
     const deptPath = path.join(DATA_FOLDER, entry.name)
     const areas: AreaFile[] = []
@@ -26,6 +27,8 @@ export function scanDataFolder(): DepartmentTree[] {
     for (const file of files) {
       if (!file.isFile()) continue
       if (!file.name.toLowerCase().endsWith('.xlsx')) continue
+      // Skip hidden files, OS temp files, and Excel/LibreOffice lock files
+      if (file.name.startsWith('.') || file.name.startsWith('~$') || file.name.startsWith('.~')) continue
 
       const areaName = path.basename(file.name, '.xlsx')
       areas.push({

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm --parallel --filter './packages/*' dev",
     "dev:api": "pnpm --filter @aice/api dev",
-    "dev:worker": "pnpm --filter @aice/worker dev",
+    "dev:worker": "pnpm --filter @aice/worker exec tsx src/index.ts",
     "dev:web": "pnpm --filter @aice/web dev",
     "build": "pnpm --filter @aice/shared build && pnpm --parallel --filter '@aice/api @aice/worker @aice/web' build",
     "db:generate": "pnpm --filter @aice/api db:generate",
