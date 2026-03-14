@@ -193,34 +193,31 @@ class BrowserManager {
 
     await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-    // Wait for "Starting Chat..." overlay to disappear (do NOT include
-    // data-animate-modal-popup here — that same attribute is used by the
-    // "invalid number" popup which we actively want to detect below)
+    // Wait for the "Starting Chat…" loading overlay to disappear.
+    // [data-animate-modal-popup="true"] is the loading overlay; waiting for it
+    // to be hidden is the reliable signal that the chat view is fully rendered.
+    // If an invalid-number popup appears instead (same attribute), the 10 s
+    // timeout fires, the catch ignores it, and we detect it explicitly below.
     await page
-      .waitForSelector('[data-testid="startup"]', {
+      .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
         state: 'hidden',
         timeout: 10000,
       })
       .catch(() => {})
 
-    // Handle "Nomor tidak terdaftar / Phone number invalid" popup.
-    // Use waitForFunction + textContent (not waitForSelector) so CSS animation
-    // state does not prevent detection.
-    const invalidAlert = await page
-      .waitForFunction(
-        (keywords: string[]) => {
-          const modal = document.querySelector('[data-animate-modal-popup="true"]')
-          if (!modal) return false
-          const text = (modal.textContent ?? '').toLowerCase()
-          return keywords.some((kw) => text.includes(kw))
-        },
-        ['tidak terdaftar', 'not registered'],
-        { timeout: 5000, polling: 100 },
-      )
-      .then(() => true)
-      .catch(() => false)
+    // Instant DOM check for the "invalid number" popup.
+    // We use page.evaluate (no timeout) because the startup wait above already
+    // gave the page time to settle — no need to poll again.
+    const invalidAlert = await page.evaluate(
+      (keywords: string[]): boolean => {
+        const modal = document.querySelector('[data-animate-modal-popup="true"]')
+        if (!modal) return false
+        const text = (modal.textContent ?? '').toLowerCase()
+        return keywords.some((kw) => text.includes(kw))
+      },
+      ['tidak terdaftar', 'not registered'],
+    )
     if (invalidAlert) {
-      // Dismiss the popup so it doesn't block the next navigation
       await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
       await page.waitForTimeout(500)
       throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
@@ -260,6 +257,7 @@ class BrowserManager {
       'span[data-testid="send"]',
     ].join(', ')
 
+    await page.waitForSelector(sendSelector, { timeout: 10000 })
     await page.click(sendSelector)
     await page.waitForTimeout(1500)
     }) // end _withBrowserLock
@@ -268,20 +266,19 @@ class BrowserManager {
   /**
    * Check whether a phone number is registered on WhatsApp.
    *
-   * Strategy — two parallel tracks that race each other:
+   * Uses a single waitForFunction that polls the DOM every 100 ms and returns
+   * a string result as soon as it can make a determination:
    *
-   *  Track A — continuous DOM poll via waitForFunction, looking for the
-   *    "tidak terdaftar" text inside any modal.  waitForFunction reads raw
-   *    textContent so it works even when Playwright's visibility model misses
-   *    the element due to CSS animation transforms.  Resolves the instant the
-   *    popup text appears, before it can auto-dismiss.
+   *  • 'invalid'    — the "tidak terdaftar" popup text appeared at any point
+   *  • 'registered' — the compose box has been continuously present for
+   *                   STABILISE_MS without the invalid popup appearing
    *
-   *  Track B — wait for the compose box (WhatsApp briefly shows it for ALL
-   *    numbers during loading, including invalid ones), then hold for a
-   *    stabilisation window to let any popup render.  After the window, inspect
-   *    the DOM for the invalid text.
+   * A single polling function avoids the Promise.race + background-promise
+   * problem: with two racing promises the loser keeps operating on the page
+   * after the lock is released, interfering with the next sendMessage call.
    *
-   * Whichever track resolves first determines the result.
+   * State between polling ticks is stored on window.__wc_* keyed by a per-call
+   * runId so concurrent or sequential calls never share stale state.
    */
   async checkPhoneRegistered(phone: string): Promise<boolean> {
     return this._withBrowserLock(async () => {
@@ -291,57 +288,66 @@ class BrowserManager {
 
       await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-      const composeSelector = [
-        '[data-testid="conversation-compose-box-input"]',
-        'div[contenteditable="true"][data-tab="10"]',
-        'div[contenteditable="true"][aria-label="Type a message"]',
-        'footer div[contenteditable="true"]',
-      ].join(', ')
-
       const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
+      const STABILISE_MS = 2000
+      const runId = Date.now().toString()
 
-      // Track A: poll continuously for the invalid-popup text.
-      // Uses waitForFunction (not waitForSelector) so CSS animation state is irrelevant.
-      const trackA = page
+      const handle = await page
         .waitForFunction(
-          (keywords: string[]) => {
-            const modal = document.querySelector('[data-animate-modal-popup="true"]')
-            if (!modal) return false
-            const text = (modal.textContent ?? '').toLowerCase()
-            return keywords.some((kw) => text.includes(kw))
-          },
-          INVALID_KEYWORDS,
-          { timeout: 20000, polling: 100 },
-        )
-        .then(() => 'invalid' as const)
-        .catch(() => 'timeout' as const)
+          ({
+            keywords,
+            stabiliseMs,
+            id,
+          }: {
+            keywords: string[]
+            stabiliseMs: number
+            id: string
+          }): string | false => {
+            const w = window as Record<string, unknown>
 
-      // Track B: wait for compose box (page loaded signal), then wait out a
-      // stabilisation window and inspect the DOM.
-      const trackB = page
-        .waitForSelector(composeSelector, { timeout: 20000 })
-        .then(() => page.waitForTimeout(2000))
-        .then(() =>
-          page.evaluate((keywords: string[]): 'invalid' | 'registered' => {
+            // Reset per-call state when a new run starts
+            if (w['__wc_runId'] !== id) {
+              w['__wc_runId'] = id
+              w['__wc_composeSince'] = 0
+            }
+
+            // Highest priority: invalid popup text visible in the DOM right now
             const modal = document.querySelector('[data-animate-modal-popup="true"]')
             if (modal) {
               const text = (modal.textContent ?? '').toLowerCase()
               if (keywords.some((kw) => text.includes(kw))) return 'invalid'
             }
-            return 'registered'
-          }, INVALID_KEYWORDS),
-        )
-        .catch(() => 'timeout' as const)
 
-      const result = await Promise.race([trackA, trackB])
+            // Compose box stable for stabiliseMs → confirmed registered
+            const compose = document.querySelector(
+              '[data-testid="conversation-compose-box-input"], ' +
+                'div[contenteditable="true"][data-tab="10"], ' +
+                'footer div[contenteditable="true"]',
+            )
+            if (compose) {
+              if (!w['__wc_composeSince']) w['__wc_composeSince'] = Date.now()
+              if ((Date.now() - (w['__wc_composeSince'] as number)) >= stabiliseMs) {
+                return 'registered'
+              }
+            } else {
+              w['__wc_composeSince'] = 0
+            }
+
+            return false // keep polling
+          },
+          { keywords: INVALID_KEYWORDS, stabiliseMs: STABILISE_MS, id: runId },
+          { timeout: 25000, polling: 100 },
+        )
+        .catch(() => null)
+
+      const result = handle ? ((await handle.jsonValue()) as string) : null
 
       if (result === 'invalid') {
         await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
         return false
       }
 
-      // 'registered' (compose box stable, no popup) or 'timeout' →
-      // conservative: treat as registered so we don't falsely invalidate
+      // 'registered' or timeout (null) → conservative: treat as registered
       return true
     })
   }

@@ -14,6 +14,7 @@
     "db:studio": "pnpm --filter @aice/api db:studio",
     "db:migrate": "pnpm --filter @aice/api db:migrate",
     "db:fresh": "pnpm --filter @aice/api db:fresh",
-    "redis:flush": "redis-cli FLUSHALL"
+    "redis:flush": "redis-cli FLUSHALL",
+    "clean:browser": "rm -rf packages/worker/browser-profile"
   }
 }
