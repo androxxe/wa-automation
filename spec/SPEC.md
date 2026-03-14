@@ -123,7 +123,7 @@ Static per-campaign template with variable substitution. Variables use `{{variab
 ### Default Template
 
 ```
-Halo bapak/ibu mitra aice {{no}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
+Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
 Terimakasih atas konfirmasinya, 
 Have an aice day!
 ```
@@ -132,7 +132,6 @@ Have an aice day!
 
 | Variable | Source |
 |---|---|
-| `{{no}}` | `seq_no` from Excel |
 | `{{nama_toko}}` | `store_name` from Excel |
 | `{{bulan}}` | Campaign-level static field (user sets once, e.g. `"12"` or `"Desember"`) |
 | `{{department}}` | Department name |
