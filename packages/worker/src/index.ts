@@ -1,9 +1,10 @@
 import 'dotenv/config'
 import { Worker, type Job } from 'bullmq'
-import IORedis from 'ioredis'
 import type { MessageJob } from '@aice/shared'
 import { db } from './lib/db'
+import { redis } from './lib/redis'
 import { browserManager } from './lib/browser'
+import { validateStartup } from './lib/validate'
 import {
   isWorkingHours,
   msUntilNextOpen,
@@ -15,10 +16,6 @@ import {
 const QUEUE_NAME = 'whatsapp-messages'
 const DAILY_SEND_CAP = parseInt(process.env.DAILY_SEND_CAP ?? '150', 10)
 const BREAK_EVERY = parseInt(process.env.MID_SESSION_BREAK_EVERY ?? '30', 10)
-
-const redis = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-  maxRetriesPerRequest: null,
-})
 
 let sessionSendCount = 0
 
@@ -129,7 +126,7 @@ worker.on('failed', async (job, err) => {
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('[worker] starting...')
+  await validateStartup()
   await browserManager.launch()
   console.log(`[worker] browser status: ${browserManager.status}`)
   console.log(`[worker] listening on queue: ${QUEUE_NAME}`)
