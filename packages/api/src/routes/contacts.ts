@@ -70,6 +70,25 @@ router.post('/validate-wa', async (req, res) => {
   }
 })
 
+// GET /api/contacts/validate-wa/status — live queue job counts
+router.get('/validate-wa/status', async (_req, res) => {
+  try {
+    const counts = await phoneCheckQueue.getJobCounts('waiting', 'active', 'completed', 'failed')
+    res.json({
+      ok: true,
+      data: {
+        waiting: counts.waiting ?? 0,
+        active: counts.active ?? 0,
+        completed: counts.completed ?? 0,
+        failed: counts.failed ?? 0,
+        total: (counts.waiting ?? 0) + (counts.active ?? 0),
+      },
+    })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // GET /api/contacts/:id
 router.get('/:id', async (req, res) => {
   try {

@@ -254,8 +254,14 @@ class BrowserManager {
 
   /**
    * Check whether a phone number is registered on WhatsApp.
-   * Navigates to the send URL and looks for the "not registered" popup.
-   * Returns true if the number is on WA, false if not.
+   *
+   * Strategy: race between two signals after navigating to the send URL —
+   *   • Compose box appears  → number IS registered
+   *   • Popup appears        → number is NOT registered (or format invalid)
+   *
+   * This is more reliable than only waiting for the popup, because WhatsApp
+   * Web may skip the popup for some unregistered numbers and just never load
+   * the compose box.
    */
   async checkPhoneRegistered(phone: string): Promise<boolean> {
     return this._withBrowserLock(async () => {
@@ -265,27 +271,32 @@ class BrowserManager {
 
       await page.goto(url, { waitUntil: 'domcontentloaded' })
 
-      // Wait for "Starting Chat..." overlay to disappear
-      await page
-        .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
-          state: 'hidden',
-          timeout: 10000,
-        })
-        .catch(() => {})
+      const composeSelector = [
+        '[data-testid="conversation-compose-box-input"]',
+        'div[contenteditable="true"][data-tab="10"]',
+        'div[contenteditable="true"][aria-label="Type a message"]',
+        'footer div[contenteditable="true"]',
+      ].join(', ')
 
-      // Check for "Nomor tidak terdaftar" popup
-      const popup = await page
-        .waitForSelector('[data-testid="popup-contents"]', { timeout: 5000 })
-        .then(() => true)
-        .catch(() => false)
+      // Race: compose box (registered) vs popup (not registered), 20s total
+      const result = await Promise.race([
+        page.waitForSelector(composeSelector, { timeout: 20000 })
+          .then(() => 'registered' as const)
+          .catch(() => 'timeout' as const),
+        page.waitForSelector('[data-testid="popup-contents"]', { timeout: 20000 })
+          .then(() => 'popup' as const)
+          .catch(() => 'timeout' as const),
+      ])
 
-      if (popup) {
-        // Dismiss the popup before returning
+      if (result === 'popup') {
+        // Dismiss before returning so it doesn't block the next navigation
         await page.click('[data-testid="popup-contents"] button').catch(() => {})
         await page.waitForTimeout(300)
         return false
       }
 
+      // 'registered' or both timed out (treat timeout as registered — don't
+      // incorrectly invalidate a number we couldn't confirm either way)
       return true
     })
   }
