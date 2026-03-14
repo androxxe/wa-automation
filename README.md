@@ -86,6 +86,32 @@ pnpm --filter @aice/api db:migrate -- init
 
 ---
 
+## Startup Validation
+
+Both the API and worker validate their environment before starting. If anything is wrong you get a clear error and the process exits immediately — no silent failures.
+
+```
+  Startup checks
+
+  environment variables
+  ✓  ANTHROPIC_API_KEY (present)
+  ✓  ANTHROPIC_API_KEY (format)
+  ✓  DATABASE_URL (present)
+  ✓  DATABASE_URL (format)
+  ✓  REDIS_URL
+  ✓  DATA_FOLDER
+  ✓  DATA_FOLDER (exists)
+  ✓  OUTPUT_FOLDER
+
+  connections
+  ✓  MySQL database
+  ✓  Redis
+
+  All checks passed
+```
+
+---
+
 ## Running in Development
 
 Three processes must run simultaneously — open three terminals:
@@ -122,7 +148,16 @@ Open `http://localhost:5173`.
 4. Review the mapping and click **Confirm and Import**
 5. Repeat for each area you want to target
 
-The importer handles bilingual (Indonesian/Chinese) headers and normalizes all Indonesian phone numbers to E.164 format (`+62...`). Invalid numbers are flagged and excluded from campaigns.
+The importer handles bilingual (Indonesian/Chinese) headers and normalizes all Indonesian phone numbers to E.164 format (`+62...`). All real-world xlsx formats are handled automatically:
+
+| Input | Result |
+|---|---|
+| `08121234567` | `+628121234567` |
+| `8121234567` | `+628121234567` — Excel stripped leading zero |
+| `8.21167464117E+11` | `+62821167464117` — Excel scientific notation |
+| `+628121234567` | `+628121234567` — unchanged |
+
+Invalid numbers are flagged and excluded from campaigns.
 
 ### Step 3 — Create a campaign
 
@@ -133,14 +168,14 @@ The importer handles bilingual (Indonesian/Chinese) headers and normalizes all I
 
 **Default template:**
 ```
-Halo bapak/ibu mitra aice {{no}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat
+Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat
 di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada
 melakukan penukaran Stick ke distributor?
 Terimakasih atas konfirmasinya,
 Have an aice day!
 ```
 
-Available variables: `{{no}}` `{{nama_toko}}` `{{bulan}}` `{{department}}` `{{area}}`
+Available variables: `{{nama_toko}}` `{{bulan}}` `{{department}}` `{{area}}`
 
 ### Step 4 — Run the campaign
 
@@ -160,8 +195,18 @@ Use **Pause**, **Resume**, or **Cancel** at any time.
 
 - Replies are detected automatically every 60s by the worker (DOM polling on WhatsApp Web)
 - Each reply is analyzed by Claude: category (`confirmed` / `denied` / `question` / `unclear`) and sentiment
+- A binary **Jawaban** (`1` = Ya/Yes, `0` = Tidak/Nggak) is determined from keyword matching + Claude category
+- A CSV report is auto-generated to `OUTPUT_FOLDER/{Department}/{Area}.csv` after every analyzed reply
 - Go to **Responses** to view and filter all replies
-- Click **Export XLSX** to download, or **Write to Output Folder** to save to `OUTPUT_FOLDER`
+- Click **Export XLSX** to download the full response log
+- Click **Regenerate CSV Reports** to manually rebuild all area CSVs
+
+**CSV format:**
+```csv
+Nama Toko,Nomor HP Toko,Jawaban
+Toko ABC,+628121234567,1
+Toko XYZ,+628121234568,0
+```
 
 ---
 

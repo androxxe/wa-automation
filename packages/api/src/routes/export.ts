@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { buildResponseWorkbook, writeOutputFiles } from '../lib/exporter'
+import { generateAreaReport, generateAllReports } from '../lib/report'
 
 const router = Router()
 
@@ -22,6 +23,23 @@ router.post('/write', async (_req, res) => {
   try {
     await writeOutputFiles()
     res.json({ ok: true, data: null })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// POST /api/export/report — regenerate CSV report for one area or all areas
+// Body: { areaId?: string }  — omit to regenerate all
+router.post('/report', async (req, res) => {
+  const { areaId } = req.body as { areaId?: string }
+  try {
+    if (areaId) {
+      const csvPath = await generateAreaReport(areaId)
+      res.json({ ok: true, data: { path: csvPath } })
+    } else {
+      const paths = await generateAllReports()
+      res.json({ ok: true, data: { paths, count: paths.length } })
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A full-stack web application for managing bulk WhatsApp messaging campaigns targeting AICE ice cream distribution partners. Reads contact data from `.xlsx` files organized by department and market area, sends personalized WhatsApp messages via a real visible Chromium browser controlled by Playwright (mimicking genuine human interaction to minimize ban risk), captures replies via DOM polling, analyzes them with Claude AI, and writes results back to output Excel files.
+A full-stack web application for managing bulk WhatsApp messaging campaigns targeting AICE ice cream distribution partners. Reads contact data from `.xlsx` files organized by department and market area, sends personalized WhatsApp messages via a real visible Chromium browser controlled by Playwright (mimicking genuine human interaction to minimize ban risk), captures replies via DOM polling, analyzes them with Claude AI, writes results back to output Excel files, and auto-generates per-area CSV reports with binary confirmation answers (1 = confirmed, 0 = denied).
 
 ---
 
@@ -10,29 +10,66 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 
 | Layer | Library/Tool | Version | Notes |
 |---|---|---|---|
-| Framework | Next.js 14 (App Router) | latest | Fullstack — UI + API routes |
-| UI Components | shadcn/ui + Tailwind CSS | latest | |
-| Browser Automation | playwright | latest | Controls real visible Chromium window |
-| Anti-Detection | playwright-extra + puppeteer-extra-plugin-stealth | latest | Removes headless/automation fingerprints |
-| Human Mouse | ghost-cursor-playwright | latest | Bezier-curve realistic mouse trajectories |
+| Monorepo | pnpm workspaces | latest | 4 packages: shared, api, worker, web |
+| API server | Express.js + TypeScript | latest | REST + SSE |
+| Frontend | React + Vite + Tailwind CSS + shadcn/ui | latest | Port 5173 |
+| Browser Automation | playwright + playwright-extra | latest | Controls real visible Chromium window |
+| Anti-Detection | puppeteer-extra-plugin-stealth | latest | Removes headless/automation fingerprints |
+| Human Mouse | ghost-cursor | latest | Bezier-curve realistic mouse trajectories |
 | Excel Parsing | xlsx (SheetJS) | latest | Read `.xlsx`, inconsistent headers |
 | AI | @anthropic-ai/sdk | latest | Header mapping, reply analysis, message variation |
 | Queue | bullmq + ioredis | latest | Durable rate-limited message queue |
-| Database | Prisma + SQLite | latest | Local, no external DB needed |
-| Realtime | Server-Sent Events (SSE) | — | Next.js native, no socket.io |
+| Database | Prisma + MySQL | latest | Requires running MySQL instance |
+| Realtime | Server-Sent Events (SSE) | — | Express native, no socket.io |
 | Language | TypeScript | latest | Strict mode |
 | Runtime | Node.js 20+ | — | |
 
 ---
 
-## Environment Variables (`.env.local`)
+## Monorepo Structure
+
+```
+whatsapp-automation/
+├── packages/
+│   ├── shared/          # TypeScript types only — no runtime deps
+│   ├── api/             # Express.js server + all server-side lib + Prisma
+│   ├── worker/          # BullMQ worker — owns the Playwright browser
+│   └── web/             # React + Vite frontend
+├── .env                 # Single env file for all packages
+├── .env.example
+├── pnpm-workspace.yaml
+├── tsconfig.base.json
+└── spec/SPEC.md
+```
+
+### Package responsibilities
+
+| Package | Responsibility |
+|---|---|
+| `@aice/shared` | Shared TypeScript interfaces (MessageJob, CampaignStatus, SSE event types, etc.) |
+| `@aice/api` | Express routes, lib utilities (excel, phone, claude, queue producer, exporter, report), Prisma schema |
+| `@aice/worker` | BullMQ consumer, BrowserManager singleton, scheduler, Claude variation |
+| `@aice/web` | React SPA — all UI pages, Vite proxy to API |
+
+> **BrowserManager ownership**: The Playwright browser runs inside `@aice/worker`. The API reads browser status from the DB/Redis. Browser control commands (start/stop) are sent via Redis pub/sub from API → worker.
+
+---
+
+## Environment Variables (`.env`)
 
 ```env
+# Anthropic
 ANTHROPIC_API_KEY=sk-ant-...
+
+# Data paths
 DATA_FOLDER=/absolute/path/to/data          # root folder containing Department 1..9
-OUTPUT_FOLDER=/absolute/path/to/output      # where response xlsx files are written
+OUTPUT_FOLDER=/absolute/path/to/output      # where response files are written
+
+# Database
+DATABASE_URL=mysql://root@localhost:3306/wa_automation
+
+# Redis
 REDIS_URL=redis://localhost:6379
-DATABASE_URL=file:./prisma/dev.db
 
 # Browser automation
 BROWSER_PROFILE_PATH=./browser-profile      # persistent Chromium user data dir
@@ -58,7 +95,26 @@ MID_SESSION_BREAK_MAX_MS=480000             # max break duration (8 min)
 
 # Reply polling
 REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s
+
+# API server
+PORT=3001
+
+# Web (Vite — must be prefixed VITE_)
+VITE_API_URL=http://localhost:3001
 ```
+
+### Startup Validation
+
+Both `@aice/api` and `@aice/worker` run a startup validation before accepting traffic:
+
+1. **Environment variables** — checks all required vars are present and not placeholder values
+2. **ANTHROPIC_API_KEY format** — must start with `sk-ant-`
+3. **DATABASE_URL format** — must start with `mysql://`
+4. **MySQL connection** — `SELECT 1` query
+5. **Redis connection** — `PING`
+6. **DATA_FOLDER exists** (API only)
+
+Process exits with code 1 and a clear error summary if any check fails.
 
 ---
 
@@ -97,22 +153,26 @@ Column mapping is **AI-assisted**: Claude receives the raw headers + 2 sample ro
 
 ## Phone Number Normalization
 
-Indonesian mobile numbers are normalized to E.164 format for WhatsApp:
+Indonesian mobile numbers are normalized to E.164 format for WhatsApp. All formats commonly found in xlsx files are handled:
 
-```
-0821167464117   →  +62821167464117
-085341740900    →  +6285341740900
-62821xxxxxxx    →  +62821xxxxxxx
-+62821xxxxxxx   →  unchanged
-```
+| Input | Normalized | Note |
+|---|---|---|
+| `08121234567` | `+628121234567` | Standard local format |
+| `8121234567` | `+628121234567` | Excel stripped leading zero (numeric cell) |
+| `628121234567` | `+628121234567` | Country code without `+` |
+| `+628121234567` | `+628121234567` | Already E.164 |
+| `8.21167464117E+11` | `+62821167464117` | Excel scientific notation |
+| `0821 1674 6411` | `+628211674641` | Spaces stripped |
+| `0821-1674-6411` | `+628211674641` | Dashes stripped |
 
-Rules:
-- Strip all spaces, dashes, parentheses
-- If starts with `0` → replace with `+62`
-- If starts with `62` (no `+`) → prepend `+`
-- If starts with `+62` → keep as-is
-- Validate: after `+62`, remaining digits must be 8–12 digits
-- Invalid numbers flagged in import UI, not enqueued
+**Rules (applied in order):**
+1. Detect and parse scientific notation (e.g. `8.12E+10`) before any other processing
+2. Strip all non-digit characters (spaces, dashes, parentheses, dots)
+3. If starts with `0` → replace with `62`
+4. If starts with `8` → prepend `62` (Excel dropped leading zero)
+5. If starts with `62` → keep as-is, prepend `+`
+6. Validate: after `+62`, remaining digits must be 8–12 digits
+7. Invalid numbers stored with `phoneValid = false`, flagged in import UI, excluded from queue
 
 ---
 
@@ -123,8 +183,8 @@ Static per-campaign template with variable substitution. Variables use `{{variab
 ### Default Template
 
 ```
-Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
-Terimakasih atas konfirmasinya, 
+Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor?
+Terimakasih atas konfirmasinya,
 Have an aice day!
 ```
 
@@ -148,28 +208,37 @@ Output: slightly rephrased version (still natural Indonesian)
 
 ---
 
-## Database Schema (Prisma)
+## Database Schema (Prisma + MySQL)
 
 ```prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
 model Department {
-  id        String   @id @default(cuid())
-  name      String   @unique          // "Department 1"
-  path      String                    // absolute folder path
+  id        String               @id @default(cuid())
+  name      String               @unique
+  path      String               @db.VarChar(500)
   areas     Area[]
   contacts  Contact[]
   campaigns CampaignDepartment[]
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
 }
 
 model Area {
   id            String     @id @default(cuid())
-  name          String                          // "Aceh Barat"
-  fileName      String                          // "Aceh Barat.xlsx"
-  filePath      String                          // absolute file path
-  columnMapping Json?                           // saved Claude-mapped column keys
+  name          String
+  fileName      String
+  filePath      String     @db.VarChar(500)
+  columnMapping Json?                        // Claude-mapped column keys
   departmentId  String
-  department    Department @relation(fields: [departmentId], references: [id])
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   contacts      Contact[]
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
@@ -182,16 +251,16 @@ model Contact {
   seqNo         String?
   storeName     String
   freezerId     String?
-  phoneRaw      String                          // original from Excel
-  phoneNorm     String                          // normalized +62...
+  phoneRaw      String
+  phoneNorm     String
   phoneValid    Boolean    @default(true)
   exchangeCount Int?
   awardCount    Int?
   totalCount    Int?
   areaId        String
-  area          Area       @relation(fields: [areaId], references: [id])
+  area          Area       @relation(fields: [areaId], references: [id], onDelete: Cascade)
   departmentId  String
-  department    Department @relation(fields: [departmentId], references: [id])
+  department    Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   messages      Message[]
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
@@ -202,9 +271,9 @@ model Contact {
 model Campaign {
   id             String               @id @default(cuid())
   name           String
-  template       String               // message template with {{variables}}
-  bulan          String               // static month, e.g. "12" or "Desember"
-  status         CampaignStatus       @default(DRAFT)
+  template       String               @db.Text
+  bulan          String
+  status         String               @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
   departments    CampaignDepartment[]
   messages       Message[]
   totalCount     Int                  @default(0)
@@ -223,67 +292,49 @@ model Campaign {
 model CampaignDepartment {
   campaignId   String
   departmentId String
-  campaign     Campaign   @relation(fields: [campaignId], references: [id])
-  department   Department @relation(fields: [departmentId], references: [id])
+  campaign     Campaign   @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
 
   @@id([campaignId, departmentId])
 }
 
 model Message {
-  id          String        @id @default(cuid())
+  id          String    @id @default(cuid())
   campaignId  String
-  campaign    Campaign      @relation(fields: [campaignId], references: [id])
+  campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   contactId   String
-  contact     Contact       @relation(fields: [contactId], references: [id])
-  phone       String                              // normalized phone at send time
-  body        String                              // rendered + Claude-varied message
-  status      MessageStatus @default(PENDING)
+  contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  phone       String
+  body        String    @db.Text
+  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED
   sentAt      DateTime?
   deliveredAt DateTime?
   readAt      DateTime?
   failedAt    DateTime?
-  failReason  String?
+  failReason  String?   @db.Text
   reply       Reply?
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 }
 
 model Reply {
-  id               String   @id @default(cuid())
-  messageId        String   @unique
-  message          Message  @relation(fields: [messageId], references: [id])
-  phone            String
-  body             String                          // raw reply text
-  claudeCategory   String?  // "confirmed" | "denied" | "question" | "unclear" | "other"
-  claudeSentiment  String?  // "positive" | "neutral" | "negative"
-  claudeSummary    String?
-  claudeRaw        Json?    // full Claude response for debugging
-  receivedAt       DateTime @default(now())
+  id              String   @id @default(cuid())
+  messageId       String   @unique
+  message         Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  phone           String
+  body            String   @db.Text
+  claudeCategory  String?  // "confirmed" | "denied" | "question" | "unclear" | "other"
+  claudeSentiment String?  // "positive" | "neutral" | "negative"
+  claudeSummary   String?  @db.Text
+  claudeRaw       Json?    // full Claude response for debugging
+  receivedAt      DateTime @default(now())
 }
 
-// Tracks daily send count for DAILY_SEND_CAP enforcement
 model DailySendLog {
   id        String   @id @default(cuid())
   date      String   @unique  // "YYYY-MM-DD" in WIB
   count     Int      @default(0)
   updatedAt DateTime @updatedAt
-}
-
-enum CampaignStatus {
-  DRAFT
-  RUNNING
-  PAUSED
-  COMPLETED
-  CANCELLED
-}
-
-enum MessageStatus {
-  PENDING
-  QUEUED
-  SENT
-  DELIVERED
-  READ
-  FAILED
 }
 ```
 
@@ -297,8 +348,8 @@ enum MessageStatus {
 |---|---|---|
 | `GET` | `/api/browser/status` | Browser + WA Web connection status (connected/disconnected/qr/loading) |
 | `GET` | `/api/browser/screenshot` | Current browser screenshot as base64 (for UI preview) |
-| `POST` | `/api/browser/start` | Launch Playwright browser, open web.whatsapp.com |
-| `POST` | `/api/browser/stop` | Close browser gracefully |
+| `POST` | `/api/browser/start` | Send start command to worker via Redis pub/sub |
+| `POST` | `/api/browser/stop` | Send stop command to worker via Redis pub/sub |
 | `GET` | `/api/browser/events` | SSE stream — browser status, delivery updates, reply notifications |
 
 ### Files / Import
@@ -315,7 +366,7 @@ enum MessageStatus {
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid) |
-| `GET` | `/api/contacts/[id]` | Single contact detail |
+| `GET` | `/api/contacts/:id` | Single contact detail |
 
 ### Campaigns
 
@@ -323,21 +374,21 @@ enum MessageStatus {
 |---|---|---|
 | `GET` | `/api/campaigns` | List all campaigns |
 | `POST` | `/api/campaigns` | Create new campaign |
-| `GET` | `/api/campaigns/[id]` | Get campaign detail + stats |
-| `PATCH` | `/api/campaigns/[id]` | Update campaign (draft only) |
-| `DELETE` | `/api/campaigns/[id]` | Delete campaign (draft only) |
-| `POST` | `/api/campaigns/[id]/enqueue` | Enqueue all contacts into bullmq |
-| `POST` | `/api/campaigns/[id]/pause` | Pause campaign (drain queue) |
-| `POST` | `/api/campaigns/[id]/resume` | Resume paused campaign |
-| `POST` | `/api/campaigns/[id]/cancel` | Cancel campaign |
-| `GET` | `/api/campaigns/[id]/events` | SSE stream — live progress for this campaign |
-| `GET` | `/api/campaigns/[id]/messages` | Paginated message list with statuses |
+| `GET` | `/api/campaigns/:id` | Get campaign detail + stats |
+| `PATCH` | `/api/campaigns/:id` | Update campaign (draft only) |
+| `DELETE` | `/api/campaigns/:id` | Delete campaign (draft only) |
+| `POST` | `/api/campaigns/:id/enqueue` | Enqueue all contacts into bullmq |
+| `POST` | `/api/campaigns/:id/pause` | Pause campaign |
+| `POST` | `/api/campaigns/:id/resume` | Resume paused campaign |
+| `POST` | `/api/campaigns/:id/cancel` | Cancel campaign |
+| `GET` | `/api/campaigns/:id/events` | SSE stream — live progress for this campaign |
+| `GET` | `/api/campaigns/:id/messages` | Paginated message list with statuses |
 
 ### Reply Analysis
 
 | Method | Route | Description |
 |---|---|---|
-| `POST` | `/api/analyze/reply` | Analyze a reply with Claude (called internally by worker) |
+| `POST` | `/api/analyze/reply` | Analyze a reply with Claude + trigger CSV report generation |
 | `POST` | `/api/analyze/vary` | Generate Claude-varied version of a rendered message |
 
 ### Export
@@ -345,7 +396,8 @@ enum MessageStatus {
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/export/responses` | Download all responses as xlsx (filter: date, dept, area) |
-| `POST` | `/api/export/write` | Write response files to OUTPUT_FOLDER |
+| `POST` | `/api/export/write` | Write response xlsx files to OUTPUT_FOLDER |
+| `POST` | `/api/export/report` | Regenerate CSV report(s). Body: `{ areaId? }` — omit to regenerate all |
 
 ---
 
@@ -353,11 +405,11 @@ enum MessageStatus {
 
 ### Architecture
 
-The Playwright browser runs as a **long-lived singleton** managed by `lib/browser.ts`. It is launched once when the app starts (or manually via the Settings page) and kept alive for the session. It is NOT created per-request.
+The Playwright browser runs as a **long-lived singleton** managed by `packages/worker/src/lib/browser.ts` inside the worker process. It is launched once when the worker starts and kept alive for the session.
 
 ```
-lib/browser.ts
-  └── singleton BrowserManager class
+packages/worker/src/lib/browser.ts
+  └── BrowserManager (singleton)
         ├── launch()         — starts Chromium with persistent profile + stealth
         ├── getPage()        — returns active WhatsApp Web page
         ├── sendMessage()    — full human-simulation send flow
@@ -366,10 +418,14 @@ lib/browser.ts
         └── screenshot()     — base64 screenshot for UI preview
 ```
 
+The API reads browser status by querying the DB or Redis (updated by the worker). Browser control commands (start/stop) travel from API → Redis pub/sub → worker.
+
 ### Browser Launch Config
 
 ```ts
-const browser = await chromium.launch({
+chromiumExtra.use(StealthPlugin())
+
+const browser = await chromiumExtra.launch({
   headless: false,                    // visible window — required
   args: [
     '--no-sandbox',
@@ -387,11 +443,7 @@ const context = await browser.newContext({
 })
 ```
 
-Stealth plugin applied via `playwright-extra` before launch — removes `navigator.webdriver`, fixes Chrome runtime, plugins array, permissions, etc.
-
 ### Human-Simulation Send Flow (per message)
-
-Each send action follows this exact sequence inside `BrowserManager.sendMessage()`:
 
 ```
 1. Move cursor to search bar using ghost-cursor (Bezier path from current position)
@@ -411,13 +463,11 @@ Each send action follows this exact sequence inside `BrowserManager.sendMessage(
 14. Random pause before sending: 1000–3000ms
 15. Move cursor to Send button (ghost-cursor path)
 16. Click Send button  (not Enter key — more human-like)
-17. Wait 800–1500ms after send (observe message delivered to input)
+17. Wait 800–1500ms after send
 18. Mark message as SENT in DB
 ```
 
 ### Delivery Status Detection
-
-Playwright polls the DOM of the active chat after send to detect tick marks:
 
 | DOM indicator | Status update |
 |---|---|
@@ -425,7 +475,7 @@ Playwright polls the DOM of the active chat after send to detect tick marks:
 | Double grey tick (`[data-icon="msg-dblcheck"]`) | DELIVERED |
 | Double blue tick (`[data-icon="msg-dblcheck-blue"]`) | READ |
 
-Polling happens every 10s for the 3 minutes following each send, then stops (no further updates expected).
+Polling every 10s for 3 minutes after each send.
 
 ### Reply Detection (DOM Polling)
 
@@ -438,11 +488,61 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
    b. Match to Contact in DB
    c. If matched: click chat, read latest incoming message text from DOM
    d. Create Reply record in DB
-   e. Trigger Claude analysis via /api/analyze/reply
+   e. Call POST /api/analyze/reply → Claude analyzes → CSV report generated
    f. Emit SSE event to UI
 3. An immediate poll is also triggered after each outgoing message send
-   (in case a fast reply arrives)
 ```
+
+---
+
+## Reply Analysis & CSV Report
+
+### Flow
+
+```
+Worker detects reply
+  → creates Reply record in DB
+  → POST /api/analyze/reply
+      → Claude categorizes (confirmed/denied/question/unclear/other)
+      → determineJawaban() resolves binary 1 or 0
+      → generateAreaReport(areaId) regenerates CSV (fire-and-forget)
+```
+
+### Jawaban determination
+
+Binary answer is determined by two-pass logic:
+
+**Pass 1 — keyword matching on raw reply text (priority)**
+
+Negative keywords checked before positive to avoid false positives (e.g. "ya, tidak ada" → 0):
+
+| Jawaban | Keywords |
+|---|---|
+| `0` | tidak tau, tidak tahu, nggak tau, belum ada, tidak ada, nggak ada, tidak dapat, nggak dapat, tidak pernah, tidak, nggak, ngga, ndak, gak, no |
+| `1` | sudah ada, pernah ada, ada penukaran, benar ada, iya ada, ya ada, sudah, benar, betul, pernah, iya, yes, ya |
+
+**Pass 2 — Claude category fallback**
+
+| claudeCategory | Jawaban |
+|---|---|
+| `confirmed` | `1` |
+| `denied` | `0` |
+| `question` / `unclear` / `other` | excluded from report |
+
+### CSV Output Format
+
+Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}.csv`:
+
+```csv
+Nama Toko,Nomor HP Toko,Jawaban
+Toko ABC,+628121234567,1
+Toko XYZ,+628121234568,0
+```
+
+- Only contacts with a clear `1` or `0` are included
+- File is fully rewritten on each reply (idempotent)
+- Triggered automatically on every analyzed reply
+- Can be manually triggered via `POST /api/export/report`
 
 ---
 
@@ -462,10 +562,10 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
 
 | Measure | Implementation |
 |---|---|
-| Human mouse paths | `ghost-cursor-playwright` — Bezier curve trajectories |
+| Human mouse paths | `ghost-cursor` — Bezier curve trajectories |
 | Human typing speed | 60–180ms per keystroke with ±30ms jitter |
 | Pre/post-action pauses | Random 800ms–3s pauses between each UI action |
-| Chat history scroll | 30% chance to scroll up in chat before typing (simulates reading) |
+| Chat history scroll | 30% chance to scroll up in chat before typing |
 | Click vs Enter | Always click the Send button — never programmatic Enter key |
 
 ### Timing Layer
@@ -475,8 +575,7 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
 | Gaussian interval | Mean 35s, stddev 8s, floor 20s, ceiling 90s — never mechanical |
 | Working hours only | 08:00–17:00 WIB, Mon–Sat |
 | Daily hard cap | `DAILY_SEND_CAP=150` — stops queue when reached |
-| Mid-session breaks | Every 30 messages → random 3–8 min pause (simulates user break) |
-| Gradual ramp-up | Configurable: Week 1: 50/day → Week 2: 100/day → Week 3: 150/day |
+| Mid-session breaks | Every 30 messages → random 3–8 min pause |
 
 ### Content Layer
 
@@ -497,10 +596,8 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
 
 ## Gaussian Rate Limiter
 
-Fixed intervals are detectable. The queue uses Gaussian-distributed delays:
-
 ```ts
-// lib/scheduler.ts
+// packages/worker/src/lib/scheduler.ts
 
 function gaussianDelay(): number {
   // Box-Muller transform
@@ -511,8 +608,6 @@ function gaussianDelay(): number {
   return Math.min(Math.max(ms, RATE_LIMIT_MIN_MS), RATE_LIMIT_MAX_MS)
 }
 ```
-
-bullmq does not natively support per-job dynamic delay for rate limiting, so the worker itself `await sleep(gaussianDelay())` before processing each job, after the working-hours check passes.
 
 ---
 
@@ -526,30 +621,28 @@ interface MessageJob {
   messageId: string
   campaignId: string
   contactId: string
-  phone: string       // +62...
-  body: string        // rendered message (pre-variation)
+  phone: string   // +62...
+  body: string    // rendered message (pre-variation)
 }
 ```
 
 **Worker logic (per job):**
-1. Check `DailySendLog` — if today's count >= `DAILY_SEND_CAP`: throw `DelayedError` until tomorrow 08:00
-2. Check current time in `Asia/Jakarta`
-3. If outside working hours: throw `DelayedError(msUntilNextOpen())`
-4. Check mid-session break counter — if N messages sent since last break: `await sleep(randomBreakDuration())`
-5. Call Claude to generate varied message body
-6. `await sleep(gaussianDelay())` — human-like interval
-7. Call `BrowserManager.sendMessage(phone, variedBody)`
-8. Update `Message.status = SENT`, `sentAt = now()`
-9. Increment `DailySendLog.count`
-10. Emit SSE event to connected campaign listeners
-11. Start delivery status polling for this message (background, 10s intervals, 3 min max)
+1. Check `DailySendLog` — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
+2. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
+3. Check mid-session break counter — if N messages since last break: sleep random 3–8 min
+4. Call Claude to generate varied message body (Job 3)
+5. `await sleep(gaussianDelay())` — human-like interval
+6. Call `browserManager.sendMessage(phone, variedBody)`
+7. Update `Message.status = SENT`, `sentAt = now()`
+8. Increment `DailySendLog.count`
+9. Emit SSE event to connected campaign listeners
+10. Start delivery status polling (background, 10s intervals, 3 min max)
 
-**Worker runs as a separate process:**
+**Processes (managed by pm2 in production):**
 ```
-node workers/message-worker.ts
+pnpm --filter @aice/api start      # Express API server
+pnpm --filter @aice/worker start   # BullMQ worker + Playwright browser
 ```
-
-In production: managed by `pm2` alongside the Next.js server.
 
 ---
 
@@ -616,23 +709,18 @@ Message: "{{rendered_message}}"
 ## Working Hours Scheduler
 
 ```ts
-// lib/scheduler.ts
+// packages/worker/src/lib/scheduler.ts
 
 const TIMEZONE = 'Asia/Jakarta'
 const START_HOUR = 8   // 08:00
 const END_HOUR = 17    // 17:00
-const WORKING_DAYS = [1, 2, 3, 4, 5, 6]  // Mon–Sat (0=Sun)
+const WORKING_DAYS = [1, 2, 3, 4, 5, 6]  // Mon–Sat
 
 function isWorkingHours(): boolean
-function msUntilNextOpen(): number   // ms to delay if outside working hours
-function gaussianDelay(): number     // Gaussian-jittered interval between sends
-function randomBreakDuration(): number  // random 3–8 min mid-session break
+function msUntilNextOpen(): number     // ms to sleep if outside working hours
+function gaussianDelay(): number       // Gaussian-jittered interval between sends
+function randomBreakDuration(): number // random 3–8 min mid-session break
 ```
-
-Example: campaign enqueued at 16:55 WIB with 50 contacts:
-- Messages 1–10 send from 16:55–17:00 (at ~35s avg intervals)
-- Message 11: outside-hours check fires at 17:00 → delayed to 08:00 next working day
-- UI shows: "Campaign paused — resumes 08:00 tomorrow"
 
 ---
 
@@ -642,68 +730,69 @@ Example: campaign enqueued at 16:55 WIB with 50 contacts:
 - Cards: Total contacts, active campaigns, messages sent today, reply rate today, daily cap remaining
 - Recent campaigns table (name, status, progress bar, reply rate)
 - Browser status badge (connected / needs QR / disconnected)
-- Live browser screenshot preview (thumbnail, refreshes every 5s via `/api/browser/screenshot`)
+- Live browser screenshot preview (refreshes every 5s)
 
 ### `/import` — Import Contacts
 - Folder tree of Department 1–9 → Areas
 - Per-area: import button → shows parsed headers
 - Claude suggests column mapping → user reviews + confirms
 - Import progress: valid contacts / invalid phones / skipped duplicates
-- Re-import replaces existing contacts for that area
 
 ### `/contacts` — Contact Browser
 - Filter by Department, Area, phone validity
-- Columns: Seq No, Store Name, Freezer ID, Phone (raw + normalized), Exchange Count
-- Export to CSV button
+- Columns: Store Name, Freezer ID, Phone (raw + normalized), Valid, Exchange Count
 
 ### `/campaigns` — Campaign List
 - Status badges: DRAFT / RUNNING / PAUSED / COMPLETED / CANCELLED
-- Progress column: `sent/total` with mini progress bar
-- Actions: View, Edit (draft only), Duplicate, Cancel
+- Progress bar: `sent/total`
+- Actions: View, Cancel
 
 ### `/campaigns/new` — Create Campaign
-1. Name + `{{bulan}}` field (text input, e.g. "12")
-2. Select target departments/areas (checkbox tree)
-3. Message template editor with live preview (populates with first contact's data)
-4. Contact count summary: X contacts selected, Y invalid phones excluded
-5. Estimated duration based on Gaussian mean (35s avg) with working-hours split
-6. Submit → status = DRAFT; separate "Start Campaign" button
+1. Name + `{{bulan}}` field
+2. Select target departments (checkbox tree)
+3. Message template editor
+4. Submit → status = DRAFT; "Start Campaign" button on detail page
 
-### `/campaigns/[id]` — Campaign Detail
-- Header: name, status, bulan, created date
-- Progress ring: sent / delivered / read / failed / pending
+### `/campaigns/:id` — Campaign Detail
+- Progress: sent / delivered / read / failed
 - Live SSE feed updating counts in real-time
 - Pause / Resume / Cancel buttons
-- Mid-session break indicator (shows "on break — resumes in Xm Ys")
 - Message table (paginated, filterable by status)
-- Reply summary from Claude (confirmed X%, denied Y%, unclear Z%)
+- Reply summary (confirmed % / denied % / unclear %)
 
 ### `/responses` — Reply Inbox
-- Table: Store Name | Area | Dept | Message Sent | Reply Text | Category | Sentiment | Time
-- Filter: date range, category, sentiment, department, area
-- Export to XLSX button (triggers `/api/export/responses`)
-- "Write to output folder" button (triggers `/api/export/write`)
+- Table: Store Name | Area | Dept | Message Sent | Reply | Category | Sentiment | Time
+- Export to XLSX button (`GET /api/export/responses`)
+- "Write to Output Folder" button (`POST /api/export/write`)
+- "Regenerate CSV Reports" button (`POST /api/export/report`)
 
 ### `/settings` — Settings
-- Browser section: live screenshot, status, "Open Browser" / "Close Browser" / "Reset Session" buttons
-- QR code display (shown when WA Web needs re-authentication)
-- Data folder path (reads from env, display only)
-- Output folder path (reads from env, display only)
-- Working hours: display only (from env)
-- Rate limit: mean, stddev, min, max (display only)
-- Daily cap: current count / cap (editable)
-- Ramp-up schedule: display only
+- Browser: live screenshot, status badge, Open / Close / Refresh buttons
+- QR code prompt when WA Web needs re-authentication
+- Config display (working hours, rate limits, daily cap) — read-only from env
 
 ---
 
-## Output File Format
+## Output Files
 
-Written to `OUTPUT_FOLDER/Department X/AreaName_responses.xlsx`:
+### XLSX — full response log
 
-| No | Nama Toko | No HP | Pesan Dikirim | Status | Waktu Kirim | Balasan | Kategori | Sentimen | Ringkasan | Waktu Balas |
-|---|---|---|---|---|---|---|---|---|---|---|
+Written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx`:
 
-Also written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx` (consolidated daily log).
+| Nama Toko | No HP | Pesan Dikirim | Status | Waktu Kirim | Balasan | Kategori | Sentimen | Ringkasan | Waktu Balas |
+|---|---|---|---|---|---|---|---|---|---|
+
+### CSV — binary confirmation report (auto-generated per reply)
+
+Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}.csv`:
+
+```csv
+Nama Toko,Nomor HP Toko,Jawaban
+Toko ABC,+628121234567,1
+Toko XYZ,+628121234568,0
+```
+
+`Jawaban`: `1` = confirmed (Ya/Yes), `0` = denied (Tidak/Nggak). Contacts with unclear replies are excluded.
 
 ---
 
@@ -711,111 +800,54 @@ Also written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx` (consolidated daily lo
 
 ```
 whatsapp-automation/
-├── app/                            # Next.js 14 App Router
-│   ├── (dashboard)/
-│   │   ├── page.tsx                # Dashboard
-│   │   ├── import/page.tsx         # Import + column mapping
-│   │   ├── contacts/page.tsx
-│   │   ├── campaigns/
-│   │   │   ├── page.tsx
-│   │   │   ├── new/page.tsx
-│   │   │   └── [id]/page.tsx       # Live campaign detail
-│   │   ├── responses/page.tsx
-│   │   └── settings/page.tsx
-│   └── api/
-│       ├── browser/
-│       │   ├── status/route.ts     # Browser + WA connection status
-│       │   ├── screenshot/route.ts # Base64 screenshot
-│       │   ├── start/route.ts      # Launch Playwright browser
-│       │   └── stop/route.ts       # Close browser
-│       ├── browser/events/route.ts # SSE — browser + delivery updates
-│       ├── files/
-│       │   ├── scan/route.ts       # Scan dept/area folder tree
-│       │   ├── parse/route.ts      # SheetJS parse xlsx
-│       │   └── import/route.ts     # Confirm mapping, save to DB
-│       ├── campaigns/
-│       │   ├── route.ts
-│       │   └── [id]/
-│       │       ├── route.ts
-│       │       ├── enqueue/route.ts
-│       │       ├── pause/route.ts
-│       │       ├── resume/route.ts
-│       │       ├── cancel/route.ts
-│       │       ├── events/route.ts # SSE per-campaign
-│       │       └── messages/route.ts
-│       ├── analyze/
-│       │   ├── headers/route.ts    # Claude Job 1: column mapping
-│       │   ├── reply/route.ts      # Claude Job 2: reply analysis
-│       │   └── vary/route.ts       # Claude Job 3: message variation
-│       └── export/
-│           ├── responses/route.ts
-│           └── write/route.ts
-├── lib/
-│   ├── browser.ts                  # Playwright BrowserManager singleton
-│   ├── human.ts                    # Ghost-cursor + typing simulation helpers
-│   ├── excel.ts                    # SheetJS folder scanner + xlsx parser
-│   ├── phone.ts                    # Indonesian phone normalizer + validator
-│   ├── queue.ts                    # bullmq queue setup
-│   ├── scheduler.ts                # Working hours, Gaussian delay, break logic
-│   ├── claude.ts                   # Anthropic SDK wrapper (all 3 jobs)
-│   ├── exporter.ts                 # Output xlsx writer
-│   └── db.ts                       # Prisma client
-├── workers/
-│   └── message-worker.ts           # bullmq consumer (separate process)
-├── prisma/
-│   └── schema.prisma
-├── spec/
-│   └── SPEC.md                     # this file
-├── .env.local
-└── package.json
+├── packages/
+│   ├── shared/
+│   │   └── src/index.ts              # All shared TypeScript types
+│   ├── api/
+│   │   ├── prisma/schema.prisma      # MySQL schema (single source of truth)
+│   │   └── src/
+│   │       ├── index.ts              # Express app + startup validation
+│   │       ├── lib/
+│   │       │   ├── db.ts             # Prisma client
+│   │       │   ├── excel.ts          # SheetJS folder scanner + xlsx parser
+│   │       │   ├── phone.ts          # Indonesian phone normalizer + validator
+│   │       │   ├── claude.ts         # Anthropic SDK (Job 1: headers, Job 2: reply)
+│   │       │   ├── queue.ts          # bullmq queue producer + Redis connection
+│   │       │   ├── exporter.ts       # Output xlsx writer
+│   │       │   ├── report.ts         # Per-area CSV report generator (Jawaban 1/0)
+│   │       │   └── validate.ts       # Startup env + connection checks
+│   │       └── routes/
+│   │           ├── browser.ts        # /api/browser/*
+│   │           ├── files.ts          # /api/files/*
+│   │           ├── contacts.ts       # /api/contacts/*
+│   │           ├── campaigns.ts      # /api/campaigns/*
+│   │           ├── analyze.ts        # /api/analyze/*
+│   │           └── export.ts         # /api/export/*
+│   ├── worker/
+│   │   └── src/
+│   │       ├── index.ts              # BullMQ worker + startup validation
+│   │       └── lib/
+│   │           ├── browser.ts        # BrowserManager singleton (Playwright)
+│   │           ├── claude.ts         # Anthropic SDK (Job 3: message variation)
+│   │           ├── db.ts             # Prisma client
+│   │           ├── redis.ts          # Redis connection
+│   │           ├── scheduler.ts      # Working hours, Gaussian delay, break logic
+│   │           └── validate.ts       # Startup env + connection checks
+│   └── web/
+│       └── src/
+│           ├── main.tsx
+│           ├── App.tsx               # React Router routes
+│           ├── lib/utils.ts          # cn(), apiFetch()
+│           ├── components/layout/    # Sidebar, Layout
+│           └── pages/                # Dashboard, Import, Contacts, Campaigns,
+│                                     # NewCampaign, CampaignDetail, Responses, Settings
+├── .env
+├── .env.example
+├── package.json                      # pnpm workspace root
+├── pnpm-workspace.yaml
+├── tsconfig.base.json
+└── spec/SPEC.md
 ```
-
----
-
-## Build Phases
-
-### Phase 1 — Foundation
-- Next.js 14 project scaffold with TypeScript, Tailwind, shadcn/ui
-- Prisma schema + SQLite setup
-- `.env.local` template
-- Base layout: sidebar nav, header
-
-### Phase 2 — Data Import
-- `lib/excel.ts`: SheetJS folder scanner + xlsx parser
-- `lib/phone.ts`: Indonesian phone normalizer + validator
-- `lib/claude.ts`: Anthropic SDK wrapper — Job 1 (header mapping)
-- `/api/files/scan`, `/api/files/parse`, `/api/analyze/headers`, `/api/files/import`
-- Import UI page with column mapping confirmation
-
-### Phase 3 — Browser Automation (Playwright)
-- `lib/browser.ts`: BrowserManager singleton (launch, status, screenshot)
-- `lib/human.ts`: ghost-cursor helpers, typing simulation, random pauses
-- Playwright stealth setup with persistent browser profile
-- `/api/browser/status`, `/api/browser/screenshot`, `/api/browser/start`, `/api/browser/stop`
-- Settings page: screenshot preview, QR detection, browser controls
-- SSE foundation for browser events
-
-### Phase 4 — Queue + Scheduler + Reply Polling
-- Redis connection setup
-- `lib/queue.ts`: bullmq queue setup
-- `lib/scheduler.ts`: working hours, Gaussian delay, mid-session break, daily cap
-- `workers/message-worker.ts`: full worker with all safety checks + Claude variation
-- DOM polling loop for reply detection in `lib/browser.ts`
-- `/api/analyze/reply`, `/api/analyze/vary`
-
-### Phase 5 — Campaigns
-- Campaign CRUD API + UI
-- New campaign form: template editor, dept/area selector, preview, bulan field
-- Enqueue endpoint + SSE progress events
-- Campaign detail page with live updates, break indicator
-- Pause / Resume / Cancel controls
-- Delivery status DOM polling (10s intervals, 3 min window)
-
-### Phase 6 — Replies + Export
-- Responses page with Claude category/sentiment display
-- `lib/exporter.ts`: SheetJS xlsx writer
-- `/api/export/responses`, `/api/export/write`
-- Export buttons in UI
 
 ---
 
@@ -824,20 +856,24 @@ whatsapp-automation/
 | Risk | Mitigation |
 |---|---|
 | WhatsApp account ban | Visible browser, stealth plugin, Gaussian timing, daily cap, working hours, message variation, mid-session breaks |
-| WhatsApp Web UI changes | Playwright selectors may break; DOM selectors abstracted into `lib/browser.ts` for easy updates |
-| Browser crashes | BrowserManager auto-restarts on crash; bullmq jobs are durable (Redis-backed) |
+| WhatsApp Web UI changes | Playwright selectors abstracted in `browser.ts` for easy updates |
+| Browser crashes | BrowserManager restarts on crash; bullmq jobs are durable (Redis-backed) |
 | Inconsistent Excel headers | Claude-assisted mapping with user confirmation step |
-| Messages sent outside hours | Worker's working-hours check + `DelayedError` reschedules to next 08:00 WIB |
-| Daily cap exceeded | `DailySendLog` checked before every job; queue drains for the day |
+| Excel strips leading zero from phone | Normalizer detects `8xxx` prefix and prepends `62` |
+| Excel scientific notation for phone | Normalizer detects and parses `8.12E+10` before stripping |
+| Messages sent outside hours | Worker working-hours check sleeps until next 08:00 WIB |
+| Daily cap exceeded | `DailySendLog` checked before every job |
 | Invalid phone numbers | Validation at import time; invalid phones excluded from queue |
-| Redis unavailable | bullmq startup check; clear error shown in UI |
+| Redis unavailable | Startup validation exits with error before accepting traffic |
+| MySQL unavailable | Startup validation exits with error before accepting traffic |
+| Missing env vars | Startup validation exits with clear per-variable error list |
 | Session expired (QR needed) | Browser screenshot in Settings shows QR; user scans to re-auth |
 
 ---
 
 ## Notes
 
-- The Playwright browser runs as a **visible Chromium window** on the machine running this app. It must not be minimized while campaigns are active (some WhatsApp Web features behave differently when the tab is hidden).
-- All times are stored as UTC in SQLite. Timezone conversion to `Asia/Jakarta` happens in the scheduler and UI display layer.
-- The bullmq worker runs as a **separate Node.js process** from the Next.js dev server. In production, manage both with `pm2` or Docker Compose.
+- The Playwright browser runs as a **visible Chromium window** inside `@aice/worker`. It must not be minimized while campaigns are active.
+- All timestamps are stored as UTC in MySQL. Timezone conversion to `Asia/Jakarta` happens in the scheduler and UI display layer.
+- In production, manage the three processes with `pm2`: API server, worker, and optionally a static web build served by nginx.
 - This project uses the WhatsApp Web interface via browser automation. It is against WhatsApp's Terms of Service. Use responsibly. For large-scale or commercial deployments, migrate to the official Meta WhatsApp Business API.

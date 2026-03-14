@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { mapHeaders, analyzeReply, varyMessage } from '../lib/claude'
 import { db } from '../lib/db'
+import { generateAreaReport, determineJawaban } from '../lib/report'
 
 const router = Router()
 
@@ -39,7 +40,9 @@ router.post('/reply', async (req, res) => {
   const { replyId, replyText, bulan } = parsed.data
   try {
     const analysis = await analyzeReply(replyText, bulan)
-    await db.reply.update({
+
+    // Persist Claude's analysis
+    const reply = await db.reply.update({
       where: { id: replyId },
       data: {
         claudeCategory: analysis.category,
@@ -47,8 +50,22 @@ router.post('/reply', async (req, res) => {
         claudeSummary: analysis.summary,
         claudeRaw: analysis,
       },
+      include: {
+        message: {
+          include: { contact: { include: { area: true } } },
+        },
+      },
     })
-    res.json({ ok: true, data: analysis })
+
+    // Determine binary answer and regenerate area CSV report
+    const jawaban = determineJawaban(reply.body, analysis.category)
+    const areaId = reply.message.contact.areaId
+    // Fire-and-forget — don't block the response
+    generateAreaReport(areaId).catch((err) =>
+      console.error('[report] failed to generate area report:', err),
+    )
+
+    res.json({ ok: true, data: { ...analysis, jawaban } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { apiFetch } from '@/lib/utils'
 import type { DepartmentTree } from '@aice/shared'
 
-const DEFAULT_TEMPLATE = `Halo bapak/ibu mitra aice {{no}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
+const DEFAULT_TEMPLATE = `Halo bapak/ibu mitra aice toko {{nama_toko}}, saya dari tim inspeksi aice pusat di Jakarta ingin konfirmasi. Apakah benar pada bulan {{bulan}} toko bapak/ibu ada melakukan penukaran Stick ke distributor? 
 Terimakasih atas konfirmasinya, 
 Have an aice day!`
 
