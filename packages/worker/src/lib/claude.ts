@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-const MODEL = 'claude-3-5-haiku-20241022'
+const MODEL = process.env.CLAUDE_MODEL ?? 'claude-3-haiku-20240307'
 
 /** Claude Job 3 — message variation (used by worker before each send) */
 export async function varyMessage(renderedMessage: string): Promise<string> {
