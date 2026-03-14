@@ -114,8 +114,19 @@ router.post('/import', async (req, res) => {
       if (!valid) {
         // Still store with phoneValid=false so user can see them
         try {
-          await db.contact.create({
-            data: {
+          await db.contact.upsert({
+            where: { areaId_phoneNorm: { areaId: area.id, phoneNorm: normalized } },
+            update: {
+              seqNo: row.seq_no ? String(row.seq_no) : null,
+              storeName: String(row.store_name ?? ''),
+              freezerId: row.freezer_id ? String(row.freezer_id) : null,
+              phoneRaw: rawPhone,
+              phoneValid: false,
+              exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
+              awardCount: row.award_count ? Number(row.award_count) : null,
+              totalCount: row.total_count ? Number(row.total_count) : null,
+            },
+            create: {
               seqNo: row.seq_no ? String(row.seq_no) : null,
               storeName: String(row.store_name ?? ''),
               freezerId: row.freezer_id ? String(row.freezer_id) : null,
