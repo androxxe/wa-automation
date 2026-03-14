@@ -122,6 +122,8 @@ router.post('/:id/enqueue', async (req, res) => {
       include: { area: true, department: true },
     })
 
+    console.log(`[api] enqueue campaign ${campaign.id} — ${contactsWithArea.length} contacts found (phoneValid+waChecked)`)
+
     // Create Message records and enqueue jobs
     const jobs: Array<{ name: string; data: MessageJob }> = []
 
@@ -144,6 +146,8 @@ router.post('/:id/enqueue', async (req, res) => {
         },
       })
 
+      console.log(`[api] enqueue job msg:${message.id} → phone ${contact.phoneNorm}`)
+
       jobs.push({
         name: `msg:${message.id}`,
         data: {
@@ -156,14 +160,19 @@ router.post('/:id/enqueue', async (req, res) => {
       })
     }
 
+    console.log(`[api] messageQueue.addBulk → ${jobs.length} jobs pushing to Redis`)
     await messageQueue.addBulk(jobs as never)
+    console.log(`[api] messageQueue.addBulk done`)
+
     await db.campaign.update({
       where: { id: campaign.id },
       data: { status: 'RUNNING', totalCount: contactsWithArea.length, startedAt: new Date() },
     })
+    console.log(`[api] campaign ${campaign.id} status → RUNNING`)
 
     res.json({ ok: true, data: { enqueued: jobs.length } })
   } catch (err) {
+    console.error(`[api][error] enqueue campaign ${req.params.id}:`, err)
     res.status(500).json({ ok: false, error: String(err) })
   }
 })

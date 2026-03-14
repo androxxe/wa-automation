@@ -53,6 +53,7 @@ router.post('/validate-wa', async (req, res) => {
     })
 
     if (contacts.length === 0) {
+      console.log(`[api] validate-wa — 0 contacts to queue, skipping`)
       res.json({ ok: true, data: { queued: 0 } })
       return
     }
@@ -62,10 +63,14 @@ router.post('/validate-wa', async (req, res) => {
       data: { phone: c.phoneNorm, contactId: c.id },
     }))
 
+    console.log(`[api] validate-wa — ${jobs.length} contacts queued for phone-check`)
+    console.log(`[api] phoneCheckQueue.addBulk → ${jobs.length} jobs pushing to Redis`)
     await phoneCheckQueue.addBulk(jobs as never)
+    console.log(`[api] phoneCheckQueue.addBulk done`)
 
     res.json({ ok: true, data: { queued: jobs.length } })
   } catch (err) {
+    console.error(`[api][error] validate-wa:`, err)
     res.status(500).json({ ok: false, error: String(err) })
   }
 })

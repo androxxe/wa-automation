@@ -94,25 +94,13 @@ const worker = new Worker<MessageJob>(
       await sleep(breakDuration)
     }
 
-    // 4. Claude message variation
-    let variedBody = body
-    try {
-      const { varyMessage } = await import('@anthropic-ai/sdk').then(() =>
-        // Inline variation to avoid circular dep with api package
-        import('./lib/claude').then((m) => ({ varyMessage: m.varyMessage }))
-      )
-      variedBody = await varyMessage(body)
-    } catch (err) {
-      console.warn('[worker] claude variation failed, using original body:', err)
-    }
-
-    // 5. Gaussian delay
+    // 4. Gaussian delay
     const delay = gaussianDelay()
     console.log(`[worker] waiting ${Math.round(delay / 1000)}s before send`)
     await sleep(delay)
 
-    // 6. Send via Playwright
-    await browserManager.sendMessage(phone, variedBody)
+    // 5. Send via Playwright
+    await browserManager.sendMessage(phone, body)
 
     // 7. Update message status (updateMany never throws if record is missing)
     await db.message.updateMany({

@@ -250,15 +250,10 @@ class BrowserManager {
 
     await page.waitForTimeout(1000 + Math.random() * 2000)
 
-    // Send button — try multiple selectors
-    const sendSelector = [
-      '[data-testid="send"]',
-      'button[aria-label="Send"]',
-      'span[data-testid="send"]',
-    ].join(', ')
-
-    await page.waitForSelector(sendSelector, { timeout: 10000 })
-    await page.click(sendSelector)
+    // Press Enter to send — avoids fragile send button selectors that change
+    // across WhatsApp Web versions. Compose box retains focus from the
+    // page.click(inputSelector) call above.
+    await page.keyboard.press('Enter')
     await page.waitForTimeout(1500)
     }) // end _withBrowserLock
   }
