@@ -105,7 +105,7 @@ const worker = new Worker<MessageJob>(
     // 7. Update message status (updateMany never throws if record is missing)
     await db.message.updateMany({
       where: { id: messageId },
-      data: { status: 'SENT', sentAt: new Date(), body: variedBody },
+      data: { status: 'SENT', sentAt: new Date(), body: body },
     })
     await incrementDailyCount()
 

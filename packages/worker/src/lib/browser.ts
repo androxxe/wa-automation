@@ -191,7 +191,7 @@ class BrowserManager {
     const number = phone.replace('+', '')
     const url = `https://web.whatsapp.com/send?phone=${number}&text=`
 
-    await page.goto(url, { waitUntil: 'domcontentloaded' })
+    await page.goto(url, { waitUntil: 'load' })
 
     // Wait for the "Starting Chat…" loading overlay to disappear.
     // [data-animate-modal-popup="true"] is the loading overlay; waiting for it
@@ -234,6 +234,11 @@ class BrowserManager {
     await page.waitForSelector(inputSelector, { timeout: 30000 })
     await page.click(inputSelector)
     await page.waitForTimeout(500)
+
+    // Clear any leftover text from a previous chat before typing
+    await page.keyboard.press('Control+A')
+    await page.keyboard.press('Backspace')
+    await page.waitForTimeout(200)
 
     // Type character by character.
     // '\n' must use Shift+Enter — plain Enter sends the message in WhatsApp Web.
@@ -374,6 +379,7 @@ class BrowserManager {
     }) => Promise<void>,
     sentPhones: Set<string>,
   ): Promise<void> {
+    return this._withBrowserLock(async () => {
     const page = await this.getPage()
 
     for (const phone of sentPhones) {
@@ -443,6 +449,7 @@ class BrowserManager {
       const screenshotPath = await this._saveReplyScreenshot(phone)
       await onReply({ phone, text: lastIncoming, screenshotPath })
     }
+    }) // end _withBrowserLock
   }
 
   private async _saveReplyScreenshot(phone: string): Promise<string | null> {
