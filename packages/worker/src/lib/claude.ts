@@ -11,9 +11,10 @@ minor surface-level changes so it does not look identical to other messages in t
 - Keep the meaning, tone, and language (Indonesian) identical
 - Only change: punctuation, minor word order, synonym swaps, spacing
 - The result must still sound natural and professional
-- Return only the rewritten message, no explanation
+- Return ONLY the rewritten message text — no quotes, no explanation, no prefix
 
-Message: "${renderedMessage}"`
+Message:
+${renderedMessage}`
 
   const message = await client.messages.create({
     model: MODEL,
@@ -21,5 +22,7 @@ Message: "${renderedMessage}"`
     messages: [{ role: 'user', content: prompt }],
   })
 
-  return (message.content[0] as { type: string; text: string }).text.trim()
+  const raw = (message.content[0] as { type: string; text: string }).text.trim()
+  // Strip surrounding quotes Claude sometimes adds despite instructions
+  return raw.replace(/^["']|["']$/g, '').trim()
 }
