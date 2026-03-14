@@ -9,6 +9,7 @@ interface Contact {
   phoneRaw: string
   phoneNorm: string
   phoneValid: boolean
+  waChecked: boolean
   exchangeCount: number | null
   department: { name: string }
   area: { name: string }
@@ -21,10 +22,34 @@ interface ContactsPage {
   limit: number
 }
 
+// ─── WA status badge ─────────────────────────────────────────────────────────
+
+function WaStatusBadge({ phoneValid, waChecked }: { phoneValid: boolean; waChecked: boolean }) {
+  if (!phoneValid) {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">
+        Tidak valid
+      </span>
+    )
+  }
+  if (!waChecked) {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
+        Belum dicek
+      </span>
+    )
+  }
+  return (
+    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+      Terdaftar
+    </span>
+  )
+}
+
 export default function Contacts() {
   const [data, setData] = useState<ContactsPage | null>(null)
   const [page, setPage] = useState(1)
-  const [phoneValid, setPhoneValid] = useState<string>('')
+  const [statusFilter, setStatusFilter] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [validating, setValidating] = useState(false)
   const [validateMsg, setValidateMsg] = useState<string | null>(null)
@@ -32,12 +57,17 @@ export default function Contacts() {
   const loadContacts = useCallback(() => {
     setLoading(true)
     const params = new URLSearchParams({ page: String(page), limit: '50' })
-    if (phoneValid) params.set('phoneValid', phoneValid)
+
+    // Map UI filter → API query params
+    if (statusFilter === 'invalid')   params.set('phoneValid', 'false')
+    if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
+    if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
+
     apiFetch<ContactsPage>(`/api/contacts?${params}`)
       .then(setData)
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [page, phoneValid])
+  }, [page, statusFilter])
 
   useEffect(() => {
     loadContacts()
@@ -52,7 +82,6 @@ export default function Contacts() {
         body: JSON.stringify({}),
       })
       setValidateMsg(`${result.queued} nomor diantrekan untuk dicek. Status akan diperbarui otomatis.`)
-      // Refresh after a short delay to reflect any immediate updates
       setTimeout(loadContacts, 3000)
     } catch (err) {
       setValidateMsg(`Gagal: ${err instanceof Error ? err.message : String(err)}`)
@@ -74,13 +103,14 @@ export default function Contacts() {
         </div>
         <div className="flex items-center gap-2">
           <select
-            value={phoneValid}
-            onChange={(e) => { setPhoneValid(e.target.value); setPage(1) }}
+            value={statusFilter}
+            onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
             className="text-sm border rounded-md px-3 py-1.5 bg-background"
           >
-            <option value="">All phones</option>
-            <option value="true">Valid only</option>
-            <option value="false">Invalid only</option>
+            <option value="">Semua</option>
+            <option value="unchecked">Belum dicek</option>
+            <option value="valid">Terdaftar</option>
+            <option value="invalid">Tidak valid</option>
           </select>
           <button
             type="button"
@@ -103,7 +133,7 @@ export default function Contacts() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['No', 'Store Name', 'Department', 'Area', 'Phone (raw)', 'Phone (normalized)', 'Valid', 'Exchange'].map((h) => (
+              {['No', 'Store Name', 'Department', 'Area', 'Phone (raw)', 'Phone (normalized)', 'Status WA', 'Exchange'].map((h) => (
                 <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
@@ -123,9 +153,7 @@ export default function Contacts() {
                 <td className="px-4 py-2.5 font-mono text-xs">{c.phoneRaw}</td>
                 <td className="px-4 py-2.5 font-mono text-xs">{c.phoneNorm}</td>
                 <td className="px-4 py-2.5">
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${c.phoneValid ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-600'}`}>
-                    {c.phoneValid ? 'valid' : 'invalid'}
-                  </span>
+                  <WaStatusBadge phoneValid={c.phoneValid} waChecked={c.waChecked} />
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">{c.exchangeCount ?? '—'}</td>
               </tr>

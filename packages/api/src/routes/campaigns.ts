@@ -118,7 +118,7 @@ router.post('/:id/enqueue', async (req, res) => {
 
     const areaIds = campaign.areas.map((a) => a.areaId)
     const contactsWithArea = await db.contact.findMany({
-      where: { areaId: { in: areaIds }, phoneValid: true },
+      where: { areaId: { in: areaIds }, phoneValid: true, waChecked: true },
       include: { area: true, department: true },
     })
 

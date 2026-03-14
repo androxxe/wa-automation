@@ -112,7 +112,8 @@ router.post('/import', async (req, res) => {
       const { normalized, valid, reason } = normalizePhone(rawPhone)
 
       if (!valid) {
-        // Still store with phoneValid=false so user can see them
+        // Still store with phoneValid=false so user can see them.
+        // waChecked=true — format already tells us it's invalid, no WA check needed.
         try {
           await db.contact.upsert({
             where: { areaId_phoneNorm: { areaId: area.id, phoneNorm: normalized } },
@@ -122,6 +123,7 @@ router.post('/import', async (req, res) => {
               freezerId: row.freezer_id ? String(row.freezer_id) : null,
               phoneRaw: rawPhone,
               phoneValid: false,
+              waChecked: true,
               exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
               awardCount: row.award_count ? Number(row.award_count) : null,
               totalCount: row.total_count ? Number(row.total_count) : null,
@@ -133,6 +135,7 @@ router.post('/import', async (req, res) => {
               phoneRaw: rawPhone,
               phoneNorm: normalized,
               phoneValid: false,
+              waChecked: true,
               exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
               awardCount: row.award_count ? Number(row.award_count) : null,
               totalCount: row.total_count ? Number(row.total_count) : null,
@@ -156,6 +159,7 @@ router.post('/import', async (req, res) => {
             freezerId: row.freezer_id ? String(row.freezer_id) : null,
             phoneRaw: rawPhone,
             phoneValid: true,
+            waChecked: false,   // reset to unchecked on re-import
             exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
             awardCount: row.award_count ? Number(row.award_count) : null,
             totalCount: row.total_count ? Number(row.total_count) : null,
@@ -167,6 +171,7 @@ router.post('/import', async (req, res) => {
             phoneRaw: rawPhone,
             phoneNorm: normalized,
             phoneValid: true,
+            waChecked: false,
             exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
             awardCount: row.award_count ? Number(row.award_count) : null,
             totalCount: row.total_count ? Number(row.total_count) : null,

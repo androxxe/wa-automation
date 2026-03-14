@@ -171,7 +171,7 @@ const phoneCheckWorker = new Worker<PhoneCheckJob>(
     if (contactId) {
       await db.contact.update({
         where: { id: contactId },
-        data: { phoneValid: registered },
+        data: { phoneValid: registered, waChecked: true },
       }).catch(() => {})
     }
 

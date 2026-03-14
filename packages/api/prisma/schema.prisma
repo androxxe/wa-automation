@@ -41,6 +41,7 @@ model Contact {
   phoneRaw      String
   phoneNorm     String
   phoneValid    Boolean    @default(true)
+  waChecked     Boolean    @default(false)
   exchangeCount Int?
   awardCount    Int?
   totalCount    Int?

@@ -6,13 +6,14 @@ const router: import('express').Router = Router()
 
 // GET /api/contacts
 router.get('/', async (req, res) => {
-  const { departmentId, areaId, phoneValid, page = '1', limit = '50' } = req.query as Record<string, string>
+  const { departmentId, areaId, phoneValid, waChecked, page = '1', limit = '50' } = req.query as Record<string, string>
 
   try {
     const where = {
       ...(departmentId && { departmentId }),
       ...(areaId && { areaId }),
-      ...(phoneValid !== undefined && { phoneValid: phoneValid === 'true' }),
+      ...(phoneValid !== undefined && phoneValid !== '' && { phoneValid: phoneValid === 'true' }),
+      ...(waChecked !== undefined && waChecked !== '' && { waChecked: waChecked === 'true' }),
     }
 
     const [contacts, total] = await Promise.all([
