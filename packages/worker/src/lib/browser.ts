@@ -51,7 +51,7 @@ class BrowserManager {
   /** Serialise all browser interactions so send & check don't collide */
   private async _withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
     while (this._browserLock) {
-      await new Promise((r) => setTimeout(r, 500))
+      await new Promise((r) => setTimeout(r, 50))
     }
     this._browserLock = true
     try {
@@ -278,20 +278,19 @@ class BrowserManager {
         'footer div[contenteditable="true"]',
       ].join(', ')
 
-      // Race: compose box (registered) vs popup (not registered), 20s total
+      // Race: compose box (registered) vs popup (not registered), 12s total
       const result = await Promise.race([
-        page.waitForSelector(composeSelector, { timeout: 20000 })
+        page.waitForSelector(composeSelector, { timeout: 12000 })
           .then(() => 'registered' as const)
           .catch(() => 'timeout' as const),
-        page.waitForSelector('[data-testid="popup-contents"]', { timeout: 20000 })
+        page.waitForSelector('[data-testid="popup-contents"]', { timeout: 12000 })
           .then(() => 'popup' as const)
           .catch(() => 'timeout' as const),
       ])
 
       if (result === 'popup') {
-        // Dismiss before returning so it doesn't block the next navigation
+        // Dismiss before returning — no extra wait needed, next page.goto clears it
         await page.click('[data-testid="popup-contents"] button').catch(() => {})
-        await page.waitForTimeout(300)
         return false
       }
 

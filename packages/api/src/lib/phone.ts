@@ -9,11 +9,11 @@
  *   8xxxxxxxxx          +628xxxxxxxxx       (Excel stripped leading zero)
  *   628xxxxxxxxx        +628xxxxxxxxx       (already has country code, no +)
  *   +628xxxxxxxxx       +628xxxxxxxxx       (already E.164)
- *   8.21167464117E+11   +62821167464117     (Excel scientific notation)
- *   0821 1674 6411 7    +62821167464117     (spaces)
+ *   8.2116746411E+10    +628211674641       (Excel scientific notation)
+ *   0821 1674 641 1     +62821167464117     (spaces — valid, 11-digit suffix)
  *   0821-1674-6411      +6282116746411      (dashes)
  *
- * Validation: after +62 the remaining digits must be 8–12 digits.
+ * Validation: after +62 the remaining digits must be 8–11 digits.
  */
 
 export interface PhoneResult {
@@ -66,14 +66,16 @@ export function normalizePhone(raw: string): PhoneResult {
   const normalized = '+' + digits
 
   // ── Validate suffix length ─────────────────────────────────────────────────
-  // After +62 the subscriber number must be 8–12 digits
+  // After +62 the subscriber number must be 8–11 digits.
+  // Indonesian mobile numbers are at most 12 digits with leading 0 (e.g. 081234567890),
+  // which yields an 11-digit suffix. 12-digit suffixes (13 digits with 0) are invalid.
   const suffix = digits.slice(2)
-  if (!/^\d{8,12}$/.test(suffix)) {
+  if (!/^\d{8,11}$/.test(suffix)) {
     return {
       raw,
       normalized,
       valid: false,
-      reason: `subscriber number is ${suffix.length} digit(s) — expected 8–12`,
+      reason: `subscriber number is ${suffix.length} digit(s) — expected 8–11`,
     }
   }
 

@@ -12,10 +12,9 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 |---|---|---|---|
 | Monorepo | pnpm workspaces | latest | 4 packages: shared, api, worker, web |
 | API server | Express.js + TypeScript | latest | REST + SSE |
-| Frontend | React + Vite + Tailwind CSS + shadcn/ui | latest | Port 5173 |
-| Browser Automation | playwright + playwright-extra | latest | Controls real visible Chromium window |
-| Anti-Detection | puppeteer-extra-plugin-stealth | latest | Removes headless/automation fingerprints |
-| Human Mouse | ghost-cursor | latest | Bezier-curve realistic mouse trajectories |
+| Frontend | React + Vite + Tailwind CSS | latest | Port 5173 |
+| Browser Automation | playwright | latest | Controls real visible Chromium window |
+| Anti-Detection | Custom stealth init script | — | Removes headless/automation fingerprints via `addInitScript` |
 | Excel Parsing | xlsx (SheetJS) | latest | Read `.xlsx`, inconsistent headers |
 | AI | @anthropic-ai/sdk | latest | Header mapping, reply analysis, message variation |
 | Queue | bullmq + ioredis | latest | Durable rate-limited message queue |
@@ -46,12 +45,12 @@ whatsapp-automation/
 
 | Package | Responsibility |
 |---|---|
-| `@aice/shared` | Shared TypeScript interfaces (MessageJob, CampaignStatus, SSE event types, etc.) |
+| `@aice/shared` | Shared TypeScript interfaces (MessageJob, PhoneCheckJob, CampaignStatus, SSE event types, etc.) |
 | `@aice/api` | Express routes, lib utilities (excel, phone, claude, queue producer, exporter, report), Prisma schema |
-| `@aice/worker` | BullMQ consumer, BrowserManager singleton, scheduler, Claude variation |
+| `@aice/worker` | BullMQ consumers (message + phone-check), BrowserManager singleton, scheduler, Claude variation |
 | `@aice/web` | React SPA — all UI pages, Vite proxy to API |
 
-> **BrowserManager ownership**: The Playwright browser runs inside `@aice/worker`. The API reads browser status from the DB/Redis. Browser control commands (start/stop) are sent via Redis pub/sub from API → worker.
+> **BrowserManager ownership**: The Playwright browser runs inside `@aice/worker`. The API reads browser status from Redis. Browser control commands (start/stop) are sent via Redis pub/sub from API → worker.
 
 ---
 
@@ -172,7 +171,47 @@ Indonesian mobile numbers are normalized to E.164 format for WhatsApp. All forma
 4. If starts with `8` → prepend `62` (Excel dropped leading zero)
 5. If starts with `62` → keep as-is, prepend `+`
 6. Validate: after `+62`, remaining digits must be 8–12 digits
-7. Invalid numbers stored with `phoneValid = false`, flagged in import UI, excluded from queue
+7. Invalid numbers stored with `phoneValid = false`, `waChecked = true` — excluded from queue
+
+---
+
+## WhatsApp Registration Validation
+
+Format-valid phones are not guaranteed to be registered on WhatsApp. A separate WA check step is required before sending.
+
+### Contact WA Status (3 states)
+
+| `phoneValid` | `waChecked` | UI Badge | Meaning |
+|---|---|---|---|
+| `true` | `false` | Gray — **Belum dicek** | Format OK, not yet checked against WA |
+| `true` | `true` | Green — **Terdaftar** | Confirmed registered on WhatsApp |
+| `false` | any | Red — **Tidak valid** | Bad format OR not registered on WA |
+
+### Check logic (`checkPhoneRegistered`)
+
+Uses `Promise.race` between two Playwright signals after navigating to `https://web.whatsapp.com/send?phone={number}`:
+
+```
+Race:
+  compose box appears (within 20s)  → registered  (true)
+  popup appears     (within 20s)  → not registered (false)
+  both timeout                    → treat as registered (safe fallback)
+```
+
+If popup appears, it is **dismissed** (button clicked) before returning, so it never blocks the next navigation.
+
+### Automatic invalidation during send
+
+If `sendMessage` encounters the "Nomor tidak terdaftar" popup during a live campaign, the worker:
+1. Dismisses the popup
+2. Marks `message.status = FAILED` with `failReason`
+3. **Also** updates the contact: `phoneValid = false, waChecked = true`
+
+This ensures the contact is excluded from all future campaigns without needing a manual re-validation.
+
+### Browser lock
+
+All browser operations (`sendMessage`, `checkPhoneRegistered`, `pollReplies`) are serialised through a `_withBrowserLock` mutex on `BrowserManager`, preventing the message-send worker and phone-check worker from colliding on the same Playwright page.
 
 ---
 
@@ -251,7 +290,8 @@ model Contact {
   freezerId     String?
   phoneRaw      String
   phoneNorm     String
-  phoneValid    Boolean    @default(true)
+  phoneValid    Boolean    @default(true)   // false = bad format OR not on WA
+  waChecked     Boolean    @default(false)  // true = has been validated against WA Web
   exchangeCount Int?
   awardCount    Int?
   totalCount    Int?
@@ -309,7 +349,7 @@ model Message {
   deliveredAt DateTime?
   readAt      DateTime?
   failedAt    DateTime?
-  failReason  String?   @db.Text
+  failReason  String?   @db.Text           // populated on FAILED — shown in campaign UI
   reply       Reply?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -325,6 +365,7 @@ model Reply {
   claudeSentiment String?  // "positive" | "neutral" | "negative"
   claudeSummary   String?  @db.Text
   claudeRaw       Json?    // full Claude response for debugging
+  jawaban         Int?     // 1 = confirmed (Ya), 0 = denied (Tidak), null = unclear
   screenshotPath  String?  @db.VarChar(500) // relative to OUTPUT_FOLDER
   receivedAt      DateTime @default(now())
 }
@@ -365,8 +406,10 @@ model DailySendLog {
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid) |
+| `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked) |
 | `GET` | `/api/contacts/:id` | Single contact detail |
+| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaId?, recheck? }`. Default: only unchecked contacts. `recheck: true` re-checks all. |
+| `GET` | `/api/contacts/validate-wa/status` | Live phone-check queue counts: `{ waiting, active, completed, failed, total }` |
 
 ### Campaigns
 
@@ -377,7 +420,7 @@ model DailySendLog {
 | `GET` | `/api/campaigns/:id` | Get campaign detail + stats |
 | `PATCH` | `/api/campaigns/:id` | Update campaign (draft only) |
 | `DELETE` | `/api/campaigns/:id` | Delete campaign (draft only) |
-| `POST` | `/api/campaigns/:id/enqueue` | Enqueue all contacts into bullmq |
+| `POST` | `/api/campaigns/:id/enqueue` | Enqueue contacts (`phoneValid=true AND waChecked=true` only) |
 | `POST` | `/api/campaigns/:id/pause` | Pause campaign |
 | `POST` | `/api/campaigns/:id/resume` | Resume paused campaign |
 | `POST` | `/api/campaigns/:id/cancel` | Cancel campaign |
@@ -410,61 +453,61 @@ The Playwright browser runs as a **long-lived singleton** managed by `packages/w
 ```
 packages/worker/src/lib/browser.ts
   └── BrowserManager (singleton)
-        ├── launch()         — starts Chromium with persistent profile + stealth
-        ├── getPage()        — returns active WhatsApp Web page
-        ├── sendMessage()    — full human-simulation send flow
-        ├── pollReplies()    — DOM scan for unread chats
-        ├── getStatus()      — connected | qr | loading | disconnected
-        └── screenshot()     — base64 screenshot for UI preview
+        ├── launch()                — starts Chromium with persistent profile + stealth
+        ├── getPage()               — returns active WhatsApp Web page
+        ├── sendMessage()           — full human-simulation send flow (browser-locked)
+        ├── checkPhoneRegistered()  — Promise.race compose/popup detection (browser-locked)
+        ├── pollReplies()           — DOM scan for unread chats
+        ├── getStatus()             — connected | qr | loading | disconnected
+        ├── screenshot()            — base64 screenshot for UI preview
+        └── _withBrowserLock()      — mutex serialising all page interactions
 ```
 
-The API reads browser status by querying the DB or Redis (updated by the worker). Browser control commands (start/stop) travel from API → Redis pub/sub → worker.
+The API reads browser status by querying Redis (updated by the worker on every status change). Browser control commands (start/stop) travel from API → Redis pub/sub → worker.
 
 ### Browser Launch Config
 
 ```ts
-chromiumExtra.use(StealthPlugin())
-
-const browser = await chromiumExtra.launch({
+this.context = await chromium.launchPersistentContext(PROFILE_PATH, {
   headless: false,                    // visible window — required
   args: [
     '--no-sandbox',
     '--start-maximized',
     '--disable-blink-features=AutomationControlled',
   ],
-})
-
-const context = await browser.newContext({
-  userDataDir: BROWSER_PROFILE_PATH,  // persistent session — QR scan only once
   viewport: null,                     // use real window size
   userAgent: '<real Chrome UA>',      // match actual Chrome version
   locale: 'id-ID',
   timezoneId: 'Asia/Jakarta',
 })
+
+// Stealth: applied via addInitScript (not playwright-extra which breaks launchPersistentContext)
+await this.context.addInitScript(STEALTH_SCRIPT)
 ```
 
 ### Human-Simulation Send Flow (per message)
 
 ```
-1. Move cursor to search bar using ghost-cursor (Bezier path from current position)
-2. Click search bar
-3. Random pause: 800–1500ms
-4. Type phone number character by character (80–180ms per keystroke, ±30ms jitter)
-5. Wait for contact suggestion to appear (up to 5s)
-6. Move cursor to first suggestion result
-7. Click the contact
-8. Random pause: 1200–3000ms  (simulating "reading" the chat history)
-9. Occasionally scroll up in chat: 30% probability
-10. Move cursor to message input box
-11. Click message input
-12. Random pause: 500–1200ms
-13. Type message character by character (60–160ms per keystroke)
-    — newlines: pause 300–600ms before continuing
-14. Random pause before sending: 1000–3000ms
-15. Move cursor to Send button (ghost-cursor path)
-16. Click Send button  (not Enter key — more human-like)
-17. Wait 800–1500ms after send
-18. Mark message as SENT in DB
+1. Navigate to https://web.whatsapp.com/send?phone={number}&text= (domcontentloaded)
+2. Wait for "Starting Chat..." overlay to disappear (max 10s)
+3. Check for "Nomor tidak terdaftar" popup (5s):
+   — if found: click OK button to dismiss, throw error → job fails → contact marked invalid
+4. Wait for compose box (max 30s)
+5. Click compose box
+6. Type message character by character (80–180ms per key, Shift+Enter for newlines)
+7. Random pause 1–3s before sending
+8. Click Send button (never programmatic Enter)
+9. Wait 1.5s after send
+```
+
+### WA Registration Check Flow (`checkPhoneRegistered`)
+
+```
+1. Navigate to https://web.whatsapp.com/send?phone={number}&text= (domcontentloaded)
+2. Race with 20s timeout:
+   a. Compose box appears  → return true  (registered)
+   b. Popup appears        → dismiss popup, return false (not registered)
+   c. Both timeout         → return true  (safe fallback — don't wrongly invalidate)
 ```
 
 ### Delivery Status Detection
@@ -540,6 +583,64 @@ Toko XYZ,+628121234568,0,/path/to/output/screenshots/628121234568_2026-03-14T09-
 
 ---
 
+## Queue Architecture (BullMQ)
+
+### Queue 1: `whatsapp-messages`
+
+**Job Payload (`MessageJob`):**
+```ts
+interface MessageJob {
+  messageId: string
+  campaignId: string
+  contactId: string
+  phone: string   // +62...
+  body: string    // rendered message (pre-variation)
+}
+```
+
+**Worker logic (per job):**
+1. Verify message still exists in DB (skip stale jobs)
+2. Wait for browser to be connected (poll every 10s, max 10 min)
+3. Check `DailySendLog` — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
+4. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
+5. Check mid-session break counter — if N messages since last break: sleep random 3–8 min
+6. Call Claude to generate varied message body (Job 3)
+7. `await sleep(gaussianDelay())` — human-like interval
+8. Call `browserManager.sendMessage(phone, variedBody)` — browser-locked
+9. Update `Message.status = SENT`, `sentAt = now()`
+10. Increment `DailySendLog.count`
+11. Increment `Campaign.sentCount`
+
+**On failure:**
+- Mark `Message.status = FAILED`, store `failReason`
+- If `failReason` contains `"tidak terdaftar"`: also set `contact.phoneValid = false, waChecked = true`
+
+**Retry:** 3 attempts with exponential backoff (5s base).
+
+---
+
+### Queue 2: `phone-check`
+
+**Job Payload (`PhoneCheckJob`):**
+```ts
+interface PhoneCheckJob {
+  phone: string       // +62...
+  contactId?: string  // if provided, worker updates contact.phoneValid + waChecked
+}
+```
+
+**Worker logic (per job):**
+1. Wait for browser to be connected (poll every 5s, max 5 min)
+2. Call `browserManager.checkPhoneRegistered(phone)` — browser-locked
+3. If `contactId` provided: update `contact.phoneValid = registered, waChecked = true`
+4. Log result
+
+**No retries** (attempts: 1) — a failed check is simply not recorded; the contact stays `waChecked: false` and can be re-queued.
+
+**Queued by:** `POST /api/contacts/validate-wa`
+
+---
+
 ## Anti-Ban Strategy
 
 ### Browser Layer
@@ -547,8 +648,8 @@ Toko XYZ,+628121234568,0,/path/to/output/screenshots/628121234568_2026-03-14T09-
 | Measure | Implementation |
 |---|---|
 | Non-headless browser | `headless: false` — real visible Chromium window |
-| Stealth fingerprint removal | `playwright-extra` + `puppeteer-extra-plugin-stealth` |
-| Persistent browser profile | `userDataDir` — same cookies/localStorage across sessions |
+| Stealth fingerprint removal | Custom `addInitScript` patches (webdriver, chrome runtime, plugins, languages, permissions) |
+| Persistent browser profile | `launchPersistentContext` — same cookies/localStorage across sessions |
 | Real viewport + screen | `viewport: null` matches physical screen size |
 | Real locale + timezone | `locale: 'id-ID'`, `timezoneId: 'Asia/Jakarta'` |
 
@@ -556,10 +657,8 @@ Toko XYZ,+628121234568,0,/path/to/output/screenshots/628121234568_2026-03-14T09-
 
 | Measure | Implementation |
 |---|---|
-| Human mouse paths | `ghost-cursor` — Bezier curve trajectories |
-| Human typing speed | 60–180ms per keystroke with ±30ms jitter |
-| Pre/post-action pauses | Random 800ms–3s pauses between each UI action |
-| Chat history scroll | 30% chance to scroll up in chat before typing |
+| Human typing speed | 80–180ms per keystroke with random jitter |
+| Pre/post-action pauses | Random pauses between each UI action |
 | Click vs Enter | Always click the Send button — never programmatic Enter key |
 
 ### Timing Layer
@@ -601,41 +700,6 @@ function gaussianDelay(): number {
   const ms = RATE_LIMIT_MEAN_MS + z * RATE_LIMIT_STDDEV_MS
   return Math.min(Math.max(ms, RATE_LIMIT_MIN_MS), RATE_LIMIT_MAX_MS)
 }
-```
-
----
-
-## Queue Architecture (bullmq)
-
-### Queue: `whatsapp-messages`
-
-**Job Payload:**
-```ts
-interface MessageJob {
-  messageId: string
-  campaignId: string
-  contactId: string
-  phone: string   // +62...
-  body: string    // rendered message (pre-variation)
-}
-```
-
-**Worker logic (per job):**
-1. Check `DailySendLog` — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
-2. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
-3. Check mid-session break counter — if N messages since last break: sleep random 3–8 min
-4. Call Claude to generate varied message body (Job 3)
-5. `await sleep(gaussianDelay())` — human-like interval
-6. Call `browserManager.sendMessage(phone, variedBody)`
-7. Update `Message.status = SENT`, `sentAt = now()`
-8. Increment `DailySendLog.count`
-9. Emit SSE event to connected campaign listeners
-10. Start delivery status polling (background, 10s intervals, 3 min max)
-
-**Processes (managed by pm2 in production):**
-```
-pnpm --filter @aice/api start      # Express API server
-pnpm --filter @aice/worker start   # BullMQ worker + Playwright browser
 ```
 
 ---
@@ -739,8 +803,17 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 - Import progress: valid contacts / invalid phones / skipped duplicates
 
 ### `/contacts` — Contact Browser
-- Filter by Department, Area, phone validity
-- Columns: Store Name, Freezer ID, Phone (raw + normalized), Valid, Exchange Count
+- Filter by status: **Semua / Belum dicek / Terdaftar / Tidak valid**
+- **"Validasi WA"** button — queues unchecked contacts for WA registration check
+- **"Cek Ulang Semua"** button — re-queues all contacts regardless of current status
+- Columns: No, Store Name, Department, Area, Phone (raw), Phone (normalized), **Status WA**, Exchange
+- Status WA badge: Gray "Belum dicek" / Green "Terdaftar" / Red "Tidak valid"
+
+### Global — WA Validation Banner
+- Appears at the **top of every page** while phone-check jobs are in flight
+- Shows spinner + counts: `{active} sedang dicek, {waiting} antrian tersisa`
+- Polls `GET /api/contacts/validate-wa/status` every 4 seconds
+- Disappears automatically when queue is empty
 
 ### `/campaigns` — Campaign List
 - Status badges: DRAFT / RUNNING / PAUSED / COMPLETED / CANCELLED
@@ -754,13 +827,14 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 4. Selected area count shown live
 5. Submit → status = DRAFT; "Start Campaign" button on detail page
 
-Campaign targets specific **areas** (not whole departments). Contacts are filtered by `areaId` at enqueue time.
+Campaign targets specific **areas** (not whole departments). At enqueue time, only contacts with `phoneValid = true AND waChecked = true` are queued.
 
 ### `/campaigns/:id` — Campaign Detail
 - Progress: sent / delivered / read / failed
 - Live SSE feed updating counts in real-time
 - Pause / Resume / Cancel buttons
 - Message table (paginated, filterable by status)
+- **FAILED messages** show a clickable "FAILED ℹ" badge — clicking opens a modal (`FailReasonModal`) with the full `failReason` (e.g. "Nomor +628xx tidak terdaftar di WhatsApp")
 - Reply summary (confirmed % / denied % / unclear %)
 
 ### `/responses` — Reply Inbox
@@ -800,6 +874,24 @@ Filename includes `YYYY-MM-DD` so you can track when data was last updated.
 
 ---
 
+## Useful Scripts
+
+```bash
+pnpm dev              # start all packages in parallel (api + worker + web)
+pnpm dev:api          # API server only
+pnpm dev:worker       # worker only
+pnpm dev:web          # web only
+
+pnpm db:migrate       # run Prisma migrations
+pnpm db:generate      # regenerate Prisma client
+pnpm db:studio        # open Prisma Studio
+pnpm db:fresh         # drop + recreate DB (destructive)
+
+pnpm redis:flush      # FLUSHALL — clear all Redis keys + BullMQ queues
+```
+
+---
+
 ## Project File Structure
 
 ```
@@ -816,22 +908,22 @@ whatsapp-automation/
 │   │       │   ├── excel.ts          # SheetJS folder scanner + xlsx parser
 │   │       │   ├── phone.ts          # Indonesian phone normalizer + validator
 │   │       │   ├── claude.ts         # Anthropic SDK (Job 1: headers, Job 2: reply)
-│   │       │   ├── queue.ts          # bullmq queue producer + Redis connection
+│   │       │   ├── queue.ts          # bullmq queue producers (messages + phone-check) + Redis
 │   │       │   ├── exporter.ts       # Output xlsx writer
 │   │       │   ├── report.ts         # Per-area CSV report generator (Jawaban 1/0)
 │   │       │   └── validate.ts       # Startup env + connection checks
 │   │       └── routes/
 │   │           ├── browser.ts        # /api/browser/*
 │   │           ├── files.ts          # /api/files/*
-│   │           ├── contacts.ts       # /api/contacts/*
+│   │           ├── contacts.ts       # /api/contacts/* (incl. validate-wa)
 │   │           ├── campaigns.ts      # /api/campaigns/*
 │   │           ├── analyze.ts        # /api/analyze/*
 │   │           └── export.ts         # /api/export/*
 │   ├── worker/
 │   │   └── src/
-│   │       ├── index.ts              # BullMQ worker + startup validation
+│   │       ├── index.ts              # BullMQ workers (messages + phone-check) + startup
 │   │       └── lib/
-│   │           ├── browser.ts        # BrowserManager singleton (Playwright)
+│   │           ├── browser.ts        # BrowserManager singleton (Playwright + browser lock)
 │   │           ├── claude.ts         # Anthropic SDK (Job 3: message variation)
 │   │           ├── db.ts             # Prisma client
 │   │           ├── redis.ts          # Redis connection
@@ -842,12 +934,15 @@ whatsapp-automation/
 │           ├── main.tsx
 │           ├── App.tsx               # React Router routes
 │           ├── lib/utils.ts          # cn(), apiFetch()
-│           ├── components/layout/    # Sidebar, Layout
+│           ├── components/layout/
+│           │   ├── Layout.tsx        # App shell — sidebar + WaValidationBanner + outlet
+│           │   ├── Sidebar.tsx
+│           │   └── WaValidationBanner.tsx  # Global banner while phone-check queue is active
 │           └── pages/                # Dashboard, Import, Contacts, Campaigns,
 │                                     # NewCampaign, CampaignDetail, Responses, Settings
 ├── .env
 ├── .env.example
-├── package.json                      # pnpm workspace root
+├── package.json                      # pnpm workspace root + scripts
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
 └── spec/SPEC.md
@@ -859,19 +954,23 @@ whatsapp-automation/
 
 | Risk | Mitigation |
 |---|---|
-| WhatsApp account ban | Visible browser, stealth plugin, Gaussian timing, daily cap, working hours, message variation, mid-session breaks |
+| WhatsApp account ban | Visible browser, stealth init script, Gaussian timing, daily cap, working hours, message variation, mid-session breaks |
 | WhatsApp Web UI changes | Playwright selectors abstracted in `browser.ts` for easy updates |
 | Browser crashes | BrowserManager restarts on crash; bullmq jobs are durable (Redis-backed) |
 | Inconsistent Excel headers | Claude-assisted mapping with user confirmation step |
 | Excel strips leading zero from phone | Normalizer detects `8xxx` prefix and prepends `62` |
 | Excel scientific notation for phone | Normalizer detects and parses `8.12E+10` before stripping |
+| Messages sent to unregistered numbers | `checkPhoneRegistered` validates before campaign; send failure also auto-invalidates contact |
+| Phone check misses unregistered numbers | Promise.race on compose box vs popup — reliable for both valid and invalid numbers |
+| Send + phone-check browser collision | `_withBrowserLock` mutex serialises all page interactions |
 | Messages sent outside hours | Worker working-hours check sleeps until next 08:00 WIB |
 | Daily cap exceeded | `DailySendLog` checked before every job |
-| Invalid phone numbers | Validation at import time; invalid phones excluded from queue |
+| Invalid phone numbers | Format-validated at import; WA-validated before campaign enqueue |
 | Redis unavailable | Startup validation exits with error before accepting traffic |
 | MySQL unavailable | Startup validation exits with error before accepting traffic |
 | Missing env vars | Startup validation exits with clear per-variable error list |
 | Session expired (QR needed) | Browser screenshot in Settings shows QR; user scans to re-auth |
+| Stale BullMQ jobs after DB reset | `pnpm redis:flush` clears all queues |
 
 ---
 
