@@ -51,3 +51,4 @@ data/
 data-output/
 
 dump.rdb
+redis/data/

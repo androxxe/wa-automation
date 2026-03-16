@@ -15,19 +15,28 @@ router.get('/', async (_req, res) => {
       orderBy: { createdAt: 'desc' },
     })
 
-    // Compute actual reply count from Reply records (one query for all campaigns)
-    // to avoid trusting the potentially-stale denormalized replyCount counter.
+    // Compute live counts from Message records (one query each for all campaigns)
+    // to avoid trusting potentially-stale denormalized counters.
     const campaignIds = campaigns.map((c) => c.id)
-    const replyCounts = await db.message.groupBy({
-      by:    ['campaignId'],
-      where: { campaignId: { in: campaignIds }, reply: { isNot: null } },
-      _count: { id: true },
-    })
-    const replyCountMap = new Map(replyCounts.map((r) => [r.campaignId, r._count.id]))
+    const [replyCounts, cancelledCounts] = await Promise.all([
+      db.message.groupBy({
+        by:    ['campaignId'],
+        where: { campaignId: { in: campaignIds }, reply: { isNot: null } },
+        _count: { id: true },
+      }),
+      db.message.groupBy({
+        by:    ['campaignId'],
+        where: { campaignId: { in: campaignIds }, status: 'CANCELLED' },
+        _count: { id: true },
+      }),
+    ])
+    const replyCountMap     = new Map(replyCounts.map((r)     => [r.campaignId, r._count.id]))
+    const cancelledCountMap = new Map(cancelledCounts.map((r) => [r.campaignId, r._count.id]))
 
     const data = campaigns.map((c) => ({
       ...c,
-      replyCount: replyCountMap.get(c.id) ?? 0,
+      replyCount:     replyCountMap.get(c.id)     ?? 0,
+      cancelledCount: cancelledCountMap.get(c.id) ?? 0,
     }))
 
     res.json({ ok: true, data })
@@ -90,7 +99,11 @@ router.get('/:id', async (req, res) => {
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
 
-    res.json({ ok: true, data: campaign })
+    const cancelledCount = await db.message.count({
+      where: { campaignId: campaign.id, status: 'CANCELLED' },
+    })
+
+    res.json({ ok: true, data: { ...campaign, cancelledCount } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -539,10 +552,11 @@ router.post('/:id/retry-failed', async (req, res) => {
       data:  { status: 'QUEUED', failedAt: null, failReason: null },
     })
 
-    await db.campaign.update({
-      where: { id: req.params.id },
-      data:  { failedCount: { decrement: retryable.length } },
-    })
+    await db.$executeRaw`
+      UPDATE Campaign
+      SET failedCount = GREATEST(failedCount - ${retryable.length}, 0)
+      WHERE id = ${req.params.id}
+    `
 
     const jobs = retryable.map((m) => ({
       name: `msg:${m.id}`,
@@ -597,10 +611,11 @@ router.delete('/:id/messages/:messageId', async (req, res) => {
 
     // Adjust failedCount if transitioning from FAILED → CANCELLED
     if (message.status === 'FAILED') {
-      await db.campaign.update({
-        where: { id: req.params.id },
-        data:  { failedCount: { decrement: 1 } },
-      })
+      await db.$executeRaw`
+        UPDATE Campaign
+        SET failedCount = GREATEST(failedCount - 1, 0)
+        WHERE id = ${req.params.id}
+      `
     }
 
     res.json({ ok: true, data: null })

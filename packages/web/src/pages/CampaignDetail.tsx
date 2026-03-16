@@ -298,12 +298,13 @@ interface Campaign {
   bulan:        string
   campaignType: string
   status:       CampaignStatus
-  totalCount:   number
-  sentCount:    number
+  totalCount:     number
+  sentCount:      number
   deliveredCount: number
-  readCount:    number
-  failedCount:  number
-  replyCount:   number
+  readCount:      number
+  failedCount:    number
+  replyCount:     number
+  cancelledCount: number
   targetRepliesPerArea: number | null
   areas:        CampaignArea[]
 }
@@ -471,14 +472,15 @@ export default function CampaignDetail() {
         </div>
 
         {/* Stats */}
-        <div className="grid gap-4 md:grid-cols-6">
+        <div className="grid gap-4 md:grid-cols-7">
           {[
-            { label: 'Total',     value: campaign.totalCount,    color: 'text-foreground' },
-            { label: 'Sent',      value: campaign.sentCount,     color: 'text-blue-600' },
+            { label: 'Total',     value: campaign.totalCount,     color: 'text-foreground' },
+            { label: 'Sent',      value: campaign.sentCount,      color: 'text-blue-600' },
             { label: 'Delivered', value: campaign.deliveredCount, color: 'text-indigo-600' },
-            { label: 'Read',      value: campaign.readCount,     color: 'text-green-600' },
-            { label: 'Failed',    value: campaign.failedCount,   color: 'text-red-500' },
-            { label: 'Replies',   value: campaign.replyCount,    color: 'text-purple-600' },
+            { label: 'Read',      value: campaign.readCount,      color: 'text-green-600' },
+            { label: 'Failed',    value: campaign.failedCount,    color: 'text-red-500' },
+            { label: 'Cancelled', value: campaign.cancelledCount, color: 'text-orange-500' },
+            { label: 'Replies',   value: campaign.replyCount,     color: 'text-purple-600' },
           ].map(({ label, value, color }) => (
             <div key={label} className="rounded-lg border bg-card p-4 text-center">
               <p className={`text-2xl font-bold ${color}`}>{value}</p>

@@ -168,13 +168,14 @@ export interface ImportResult {
 // ─── Campaign progress ────────────────────────────────────────────────────────
 
 export interface CampaignProgress {
-  campaignId:    string
-  totalCount:    number
-  sentCount:     number
+  campaignId:     string
+  totalCount:     number
+  sentCount:      number
   deliveredCount: number
-  readCount:     number
-  failedCount:   number
-  replyCount:    number
+  readCount:      number
+  failedCount:    number
+  replyCount:     number
+  cancelledCount: number
 }
 
 // ─── Per-area enqueue preview ─────────────────────────────────────────────────

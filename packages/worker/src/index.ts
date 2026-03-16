@@ -338,6 +338,20 @@ async function handleReply(params: {
           data:  { status: 'CANCELLED' },
         })
         console.log(`[worker] target reached for area ${areaId} in campaign ${msg.campaignId}`)
+
+        // Check if ALL areas in this campaign have now reached their target → complete campaign
+        const allAreas = await db.campaignArea.findMany({
+          where:  { campaignId: msg.campaignId },
+          select: { targetReached: true },
+        })
+        const allDone = allAreas.length > 0 && allAreas.every((a) => a.targetReached)
+        if (allDone) {
+          await db.campaign.update({
+            where: { id: msg.campaignId },
+            data:  { status: 'COMPLETED', completedAt: new Date() },
+          })
+          console.log(`[worker] campaign ${msg.campaignId} COMPLETED — all areas reached target`)
+        }
       }
     }
 
