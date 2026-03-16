@@ -54,8 +54,9 @@ export function gaussianDelay(): number {
   return Math.min(Math.max(ms, RATE_MIN), RATE_MAX)
 }
 
-export function randomBreakDuration(): number {
-  return BREAK_MIN + Math.random() * (BREAK_MAX - BREAK_MIN)
+/** Random break duration. Optional min/max override per-agent; falls back to env defaults. */
+export function randomBreakDuration(min = BREAK_MIN, max = BREAK_MAX): number {
+  return min + Math.random() * (max - min)
 }
 
 export function sleep(ms: number): Promise<void> {

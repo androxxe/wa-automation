@@ -23,8 +23,12 @@ const STEALTH_SCRIPT = `
 `
 
 export class BrowserAgent {
-  readonly agentId: number
+  readonly agentId:    number
   readonly profilePath: string
+  // Break settings — resolved at construction from DB row, fallback to env
+  readonly breakEvery:  number
+  readonly breakMinMs:  number
+  readonly breakMaxMs:  number
 
   private context:       BrowserContext | null = null
   private page:          Page | null           = null
@@ -35,9 +39,19 @@ export class BrowserAgent {
   /** Incremented when a job is assigned; decremented when it finishes. */
   activeJobCount = 0
 
-  constructor(agentId: number, profilePath: string) {
+  constructor(
+    agentId:    number,
+    profilePath: string,
+    breakEvery?: number | null,
+    breakMinMs?: number | null,
+    breakMaxMs?: number | null,
+  ) {
     this.agentId     = agentId
     this.profilePath = profilePath
+    // Fall back to env vars when not set on the agent
+    this.breakEvery  = breakEvery ?? parseInt(process.env.MID_SESSION_BREAK_EVERY ?? '30',  10)
+    this.breakMinMs  = breakMinMs ?? parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10)
+    this.breakMaxMs  = breakMaxMs ?? parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10)
   }
 
   // ─── Lock ─────────────────────────────────────────────────────────────────

@@ -49,6 +49,10 @@ router.get('/', async (_req, res) => {
 // POST /api/agents
 const CreateAgent = z.object({
   name:         z.string().min(1),
+  phoneNumber:  z.string().min(6, 'Phone number is required'),
+  breakEvery:   z.number().int().min(1).optional(),
+  breakMinMs:   z.number().int().min(1000).optional(),
+  breakMaxMs:   z.number().int().min(1000).optional(),
   departmentId: z.string().optional(),
 })
 
@@ -88,13 +92,20 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
-  const { name, departmentId } = req.body as { name?: string; departmentId?: string | null }
+  const { name, departmentId, phoneNumber, breakEvery, breakMinMs, breakMaxMs } = req.body as {
+    name?: string; departmentId?: string | null; phoneNumber?: string
+    breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null
+  }
   try {
     const updated = await db.agent.update({
       where: { id: parseId(req.params.id) },
-      data:  {
-        ...(name         !== undefined && { name }),
-        ...(departmentId !== undefined && { departmentId }),
+      data: {
+        ...(name        !== undefined ? { name }        : {}),
+        ...(phoneNumber !== undefined ? { phoneNumber } : {}),
+        ...(breakEvery  !== undefined ? { breakEvery }  : {}),
+        ...(breakMinMs  !== undefined ? { breakMinMs }  : {}),
+        ...(breakMaxMs  !== undefined ? { breakMaxMs }  : {}),
+        ...(departmentId !== undefined ? { department: departmentId ? { connect: { id: departmentId } } : { disconnect: true } } : {}),
       },
     })
     res.json({ ok: true, data: updated })

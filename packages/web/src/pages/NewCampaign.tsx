@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { AppConfigData } from '@aice/shared'
 
@@ -43,18 +44,37 @@ export default function NewCampaign() {
   const [selectedAreas, setSelectedAreas] = useState<Set<string>>(new Set())
   const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set())
 
-  const [loading, setLoading]       = useState(false)
-  const [error, setError]           = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
 
+  const { data: configData } = useQuery<AppConfigData>({
+    queryKey: ['config'],
+    queryFn:  () => apiFetch<AppConfigData>('/api/config'),
+  })
+
+  const { data: areasData = [] } = useQuery<DeptWithAreas[]>({
+    queryKey: ['files-areas'],
+    queryFn:  () => apiFetch<DeptWithAreas[]>('/api/files/areas'),
+  })
+
+  // Sync config into local state
+  useEffect(() => { if (configData) setConfig(configData) }, [configData])
+  // Sync areas into local state
   useEffect(() => {
-    apiFetch<AppConfigData>('/api/config').then(setConfig).catch(console.error)
-    apiFetch<DeptWithAreas[]>('/api/files/areas')
-      .then((data) => {
-        setAllDepts(data)
-        setExpandedDepts(new Set(data.map((d) => d.id)))
-      })
-      .catch(console.error)
-  }, [])
+    if (areasData.length > 0) {
+      setAllDepts(areasData)
+      setExpandedDepts(new Set(areasData.map((d) => d.id)))
+    }
+  }, [areasData])
+
+  const createMutation = useMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      apiFetch<{ id: string }>('/api/campaigns', {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+    onSuccess: (campaign) => navigate(`/campaigns/${campaign.id}`),
+    onError:   (e) => setError(String(e)),
+  })
 
   // Filter departments/areas to the selected campaign type
   const depts = allDepts.map((d) => ({
@@ -99,30 +119,22 @@ export default function NewCampaign() {
   const effectiveRate   = parseFloat(replyRate) / 100 || config?.defaultExpectedReplyRate || 0.5
   const sendPerArea     = Math.ceil(effectiveTarget / effectiveRate)
 
-  async function handleSubmit(e: React.FormEvent) {
+  function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!name || !bulan || !template || selectedAreas.size === 0) {
       setError('All fields are required and at least one area must be selected')
       return
     }
-    setLoading(true)
     setError(null)
-    try {
-      const campaign = await apiFetch<{ id: string }>('/api/campaigns', {
-        method: 'POST',
-        body:   JSON.stringify({
-          name,
-          template,
-          bulan,
-          campaignType,
-          areaIds: Array.from(selectedAreas),
-          ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies) }),
-          ...(replyRate     && { expectedReplyRate:    parseFloat(replyRate) / 100 }),
-        }),
-      })
-      navigate(`/campaigns/${campaign.id}`)
-    } catch (e) { setError(String(e)) }
-    setLoading(false)
+    createMutation.mutate({
+      name,
+      template,
+      bulan,
+      campaignType,
+      areaIds: Array.from(selectedAreas),
+      ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies) }),
+      ...(replyRate     && { expectedReplyRate:    parseFloat(replyRate) / 100 }),
+    })
   }
 
   return (
@@ -289,8 +301,8 @@ export default function NewCampaign() {
         </div>
 
         <div className="flex gap-3 pt-2">
-          <button type="submit" disabled={loading} className="bg-primary text-primary-foreground text-sm px-5 py-2 rounded-md disabled:opacity-50">
-            {loading ? 'Creating…' : 'Create Campaign'}
+          <button type="submit"           disabled={createMutation.isPending} className="bg-primary text-primary-foreground text-sm px-5 py-2 rounded-md disabled:opacity-50">
+            {createMutation.isPending ? 'Creating…' : 'Create Campaign'}
           </button>
           <button type="button" onClick={() => navigate('/campaigns')} className="text-sm px-5 py-2 rounded-md border">
             Cancel

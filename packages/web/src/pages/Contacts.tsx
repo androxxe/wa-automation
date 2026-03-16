@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 
 interface Contact {
@@ -11,7 +12,7 @@ interface Contact {
   contactType: string
   phoneValid: boolean
   waChecked: boolean
-  waChecking: boolean   // true = job is in queue, result not yet available
+  waChecking: boolean
   exchangeCount: number | null
   department: { name: string }
   area: { name: string }
@@ -24,8 +25,6 @@ interface ContactsPage {
   limit: number
 }
 
-// ─── WA status badge ─────────────────────────────────────────────────────────
-
 function WaStatusBadge({
   phoneValid,
   waChecked,
@@ -35,79 +34,57 @@ function WaStatusBadge({
   waChecked:   boolean
   waChecking:  boolean
 }) {
-  if (!phoneValid) {
-    return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">Tidak valid</span>
-  }
-  if (waChecked) {
-    return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Terdaftar</span>
-  }
-  if (waChecking) {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600 flex items-center gap-1 w-fit">
-        <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-        </svg>
-        Pending Checking
-      </span>
-    )
-  }
+  if (!phoneValid)  return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">Tidak valid</span>
+  if (waChecked)    return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Terdaftar</span>
+  if (waChecking)   return (
+    <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600 flex items-center gap-1 w-fit">
+      <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+      </svg>
+      Pending Checking
+    </span>
+  )
   return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Belum dicek</span>
 }
 
 export default function Contacts() {
-  const [data, setData] = useState<ContactsPage | null>(null)
-  const [page, setPage] = useState(1)
-  const [statusFilter, setStatusFilter]   = useState<string>('')
-  const [typeFilter, setTypeFilter]       = useState<string>('')
-  const [loading, setLoading] = useState(false)
-  const [validating, setValidating] = useState(false)
+  const queryClient = useQueryClient()
+  const [page, setPage]               = useState(1)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [typeFilter, setTypeFilter]   = useState('')
   const [validateMsg, setValidateMsg] = useState<string | null>(null)
 
-  const loadContacts = useCallback(() => {
-    setLoading(true)
-    const params = new URLSearchParams({ page: String(page), limit: '50' })
+  const params = new URLSearchParams({ page: String(page), limit: '50' })
+  if (statusFilter === 'invalid')   params.set('phoneValid', 'false')
+  if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
+  if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
+  if (typeFilter)                   params.set('contactType', typeFilter)
 
-    if (statusFilter === 'invalid')   params.set('phoneValid', 'false')
-    if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
-    if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
-    if (typeFilter) params.set('contactType', typeFilter)
+  const { data, isLoading } = useQuery<ContactsPage>({
+    queryKey: ['contacts', page, statusFilter, typeFilter],
+    queryFn:  () => apiFetch<ContactsPage>(`/api/contacts?${params}`),
+  })
 
-    apiFetch<ContactsPage>(`/api/contacts?${params}`)
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }, [page, statusFilter, typeFilter])
-
-  useEffect(() => {
-    loadContacts()
-  }, [loadContacts])
-
-  const handleValidateWA = async (recheck = false) => {
-    setValidating(true)
-    setValidateMsg(null)
-    try {
-      const result = await apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
+  const validateMutation = useMutation({
+    mutationFn: (recheck: boolean) =>
+      apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
         method: 'POST',
         body: JSON.stringify({ recheck }),
-      })
+      }),
+    onSuccess: (result, recheck) => {
       if (result.queued === 0) {
         setValidateMsg('Tidak ada nomor yang perlu dicek.')
       } else {
         setValidateMsg(
           `${result.queued} nomor diantrekan untuk dicek${recheck ? ' (ulang)' : ''}. Status akan diperbarui otomatis.`
         )
-        // Refetch immediately so "Pending Checking" badges appear right away,
-        // then again after 3s to catch any fast completions.
-        loadContacts()
-        setTimeout(loadContacts, 3000)
+        // Refetch immediately to show "Pending Checking" badges, then again after 3s
+        queryClient.invalidateQueries({ queryKey: ['contacts'] })
+        setTimeout(() => queryClient.invalidateQueries({ queryKey: ['contacts'] }), 3000)
       }
-    } catch (err) {
-      setValidateMsg(`Gagal: ${err instanceof Error ? err.message : String(err)}`)
-    } finally {
-      setValidating(false)
-    }
-  }
+    },
+  })
 
   const totalPages = data ? Math.ceil(data.total / 50) : 1
 
@@ -142,17 +119,17 @@ export default function Contacts() {
           </select>
           <button
             type="button"
-            onClick={() => handleValidateWA(false)}
-            disabled={validating}
+            onClick={() => validateMutation.mutate(false)}
+            disabled={validateMutation.isPending}
             title="Cek nomor yang belum pernah divalidasi"
             className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
           >
-            {validating ? 'Mengantrekan...' : 'Validasi WA'}
+            {validateMutation.isPending ? 'Mengantrekan...' : 'Validasi WA'}
           </button>
           <button
             type="button"
-            onClick={() => handleValidateWA(true)}
-            disabled={validating}
+            onClick={() => validateMutation.mutate(true)}
+            disabled={validateMutation.isPending}
             title="Cek ulang semua nomor termasuk yang sudah divalidasi"
             className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
           >
@@ -177,12 +154,12 @@ export default function Contacts() {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {loading && (
+            {isLoading && (
               <tr>
                 <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">Loading...</td>
               </tr>
             )}
-            {!loading && data?.contacts.map((c) => (
+            {!isLoading && data?.contacts.map((c) => (
               <tr key={c.id} className="hover:bg-accent/50 transition-colors">
                 <td className="px-4 py-2.5 font-mono text-xs">{c.seqNo ?? '—'}</td>
                 <td className="px-4 py-2.5 font-medium">{c.storeName}</td>
@@ -207,7 +184,6 @@ export default function Contacts() {
         </table>
       </div>
 
-      {/* Pagination */}
       <div className="flex items-center justify-between text-sm">
         <button
           type="button"

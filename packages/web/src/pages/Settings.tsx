@@ -1,47 +1,44 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { AppConfigData } from '@aice/shared'
 
 export default function Settings() {
-  const [config, setConfig]       = useState<AppConfigData | null>(null)
-  const [target, setTarget]       = useState('')
-  const [rate, setRate]           = useState('')
-  const [saving, setSaving]       = useState(false)
-  const [saved, setSaved]         = useState(false)
+  const queryClient = useQueryClient()
+  const [target, setTarget] = useState('')
+  const [rate, setRate]     = useState('')
+  const [saved, setSaved]   = useState(false)
 
-  const loadConfig = useCallback(() => {
-    apiFetch<AppConfigData>('/api/config')
-      .then((d) => {
-        setConfig(d)
-        setTarget(String(d.defaultTargetRepliesPerArea))
-        setRate(String(Math.round(d.defaultExpectedReplyRate * 100)))
-      })
-      .catch(console.error)
-  }, [])
+  const { data: config } = useQuery<AppConfigData>({
+    queryKey: ['config'],
+    queryFn:  () => apiFetch<AppConfigData>('/api/config'),
+  })
 
-  useEffect(() => { loadConfig() }, [loadConfig])
+  // Sync local form state when config loads
+  useEffect(() => {
+    if (config) {
+      setTarget(String(config.defaultTargetRepliesPerArea))
+      setRate(String(Math.round(config.defaultExpectedReplyRate * 100)))
+    }
+  }, [config])
 
-  async function handleSave() {
-    setSaving(true)
-    setSaved(false)
-    try {
-      await apiFetch('/api/config', {
+  const saveMutation = useMutation({
+    mutationFn: () =>
+      apiFetch('/api/config', {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
           defaultTargetRepliesPerArea: parseInt(target),
           defaultExpectedReplyRate:    parseFloat(rate) / 100,
         }),
-      })
-      await loadConfig()
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['config'] })
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
-    } catch (err) {
-      alert(String(err))
-    }
-    setSaving(false)
-  }
+    },
+  })
 
   const effectiveTarget = parseInt(target) || 20
   const effectiveRate   = parseFloat(rate) / 100 || 0.5
@@ -54,13 +51,11 @@ export default function Settings() {
         <p className="text-muted-foreground">Global configuration and campaign defaults</p>
       </div>
 
-      {/* Campaign defaults */}
       <div className="rounded-lg border bg-card p-5 space-y-4">
         <h3 className="font-semibold">Campaign Defaults</h3>
         <p className="text-xs text-muted-foreground">
           These values are pre-filled when creating a new campaign. Each campaign can override them.
         </p>
-
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
             <label htmlFor="default-target" className="text-sm font-medium">Target replies per area</label>
@@ -86,27 +81,24 @@ export default function Settings() {
             />
           </div>
         </div>
-
         <div className="text-sm text-muted-foreground bg-muted rounded px-3 py-2">
           Messages to send per area:{' '}
           <span className="font-semibold text-foreground">{sendPerArea}</span>
           {' '}= ceil({effectiveTarget} ÷ {Math.round(effectiveRate * 100)}%)
         </div>
-
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={handleSave}
-            disabled={saving || !target || !rate}
+            onClick={() => saveMutation.mutate()}
+            disabled={saveMutation.isPending || !target || !rate}
             className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50"
           >
-            {saving ? 'Saving…' : 'Save'}
+            {saveMutation.isPending ? 'Saving…' : 'Save'}
           </button>
           {saved && <span className="text-sm text-green-600">Saved!</span>}
         </div>
       </div>
 
-      {/* Agents link */}
       <div className="rounded-lg border bg-card p-5 space-y-3">
         <h3 className="font-semibold">Browser Agents</h3>
         <p className="text-sm text-muted-foreground">
@@ -117,7 +109,6 @@ export default function Settings() {
         </Link>
       </div>
 
-      {/* Read-only config */}
       <div className="rounded-lg border bg-card p-5 space-y-3">
         <h3 className="font-semibold">Configuration (read-only)</h3>
         <div className="space-y-2 text-sm">

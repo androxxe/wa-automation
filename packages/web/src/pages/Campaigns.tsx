@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { CampaignStatus } from '@aice/shared'
 
@@ -18,31 +18,30 @@ interface Campaign {
 }
 
 const STATUS_COLORS: Record<CampaignStatus, string> = {
-  DRAFT: 'bg-gray-100 text-gray-600',
-  RUNNING: 'bg-green-100 text-green-700',
-  PAUSED: 'bg-yellow-100 text-yellow-700',
+  DRAFT:     'bg-gray-100 text-gray-600',
+  RUNNING:   'bg-green-100 text-green-700',
+  PAUSED:    'bg-yellow-100 text-yellow-700',
   COMPLETED: 'bg-blue-100 text-blue-700',
   CANCELLED: 'bg-red-100 text-red-600',
 }
 
 export default function Campaigns() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [loading, setLoading] = useState(true)
+  const queryClient = useQueryClient()
 
-  const load = () => {
-    setLoading(true)
-    apiFetch<Campaign[]>('/api/campaigns')
-      .then(setCampaigns)
-      .catch(console.error)
-      .finally(() => setLoading(false))
-  }
+  const { data: campaigns = [], isLoading } = useQuery<Campaign[]>({
+    queryKey: ['campaigns'],
+    queryFn:  () => apiFetch<Campaign[]>('/api/campaigns'),
+  })
 
-  useEffect(load, [])
+  const cancelMutation = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch(`/api/campaigns/${id}/cancel`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaigns'] }),
+  })
 
-  async function handleCancel(id: string) {
+  const handleCancel = (id: string) => {
     if (!confirm('Cancel this campaign?')) return
-    await apiFetch(`/api/campaigns/${id}/cancel`, { method: 'POST' }).catch(console.error)
-    load()
+    cancelMutation.mutate(id)
   }
 
   return (
@@ -70,17 +69,16 @@ export default function Campaigns() {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {loading && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+            {isLoading && (
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
             )}
-            {!loading && campaigns.length === 0 && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
+            {!isLoading && campaigns.length === 0 && (
+              <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
-            {!loading && campaigns.map((c) => {
-              const progress     = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
-              // Total target = per-area target × number of areas in this campaign
-              const totalTarget  = c.targetRepliesPerArea ? c.targetRepliesPerArea * c.areas.length : null
-              const targetMet    = totalTarget !== null && c.replyCount >= totalTarget
+            {campaigns.map((c) => {
+              const progress    = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
+              const totalTarget = c.targetRepliesPerArea ? c.targetRepliesPerArea * c.areas.length : null
+              const targetMet   = totalTarget !== null && c.replyCount >= totalTarget
 
               return (
                 <tr key={c.id} className="hover:bg-accent/50 transition-colors">
@@ -125,11 +123,16 @@ export default function Campaigns() {
                   <td className="px-4 py-2.5">
                     <div className="flex items-center gap-2">
                       <Link to={`/campaigns/${c.id}`} className="text-xs text-primary hover:underline">View</Link>
-                      {c.status === 'DRAFT' || c.status === 'RUNNING' || c.status === 'PAUSED' ? (
-                        <button type="button" onClick={() => handleCancel(c.id)} className="text-xs text-destructive hover:underline">
+                      {['DRAFT', 'RUNNING', 'PAUSED'].includes(c.status) && (
+                        <button
+                          type="button"
+                          onClick={() => handleCancel(c.id)}
+                          disabled={cancelMutation.isPending}
+                          className="text-xs text-destructive hover:underline disabled:opacity-50"
+                        >
                           Cancel
                         </button>
-                      ) : null}
+                      )}
                     </div>
                   </td>
                 </tr>

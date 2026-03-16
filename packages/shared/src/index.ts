@@ -198,4 +198,8 @@ export interface AppConfigData {
   defaultTargetRepliesPerArea: number
   defaultExpectedReplyRate:    number
   defaultSendPerArea:          number  // computed: ceil(target / rate)
+  // Agent break defaults — read-only from env vars
+  defaultBreakEvery:  number
+  defaultBreakMinSec: number  // seconds
+  defaultBreakMaxSec: number  // seconds
 }

@@ -16,9 +16,10 @@ import { varyMessage } from './lib/claude'
 
 const QUEUE_NAME             = 'whatsapp-messages'
 const PHONE_CHECK_QUEUE_NAME = 'phone-check'
-const DAILY_SEND_CAP         = parseInt(process.env.DAILY_SEND_CAP         ?? '150', 10)
-const BREAK_EVERY            = parseInt(process.env.MID_SESSION_BREAK_EVERY ?? '30',  10)
-const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS  ?? '60000', 10)
+const DAILY_SEND_CAP         = parseInt(process.env.DAILY_SEND_CAP        ?? '150',   10)
+const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
+// Break settings are now per-agent (BrowserAgent.breakEvery/Min/Max).
+// These env vars remain as the fallback default when an agent has no override.
 
 // Per-agent session send counters (in-memory; reset on worker restart)
 const sessionSendCount = new Map<number, number>()
@@ -97,12 +98,12 @@ const worker = new Worker<MessageJob>(
         await sleep(delay)
       }
 
-      // 3. Mid-session break (per agent)
+      // 3. Mid-session break (per agent — uses agent's own break settings)
       const count = (sessionSendCount.get(usedAgentId) ?? 0) + 1
       sessionSendCount.set(usedAgentId, count)
-      if (count > 0 && count % BREAK_EVERY === 0) {
-        const dur = randomBreakDuration()
-        log(`mid-session break #${count}: ${Math.round(dur / 60000)}m`)
+      if (count > 0 && count % agent.breakEvery === 0) {
+        const dur = randomBreakDuration(agent.breakMinMs, agent.breakMaxMs)
+        log(`mid-session break #${count} (every ${agent.breakEvery}): ${Math.round(dur / 60000)}m`)
         await sleep(dur)
       }
 
@@ -126,9 +127,10 @@ const worker = new Worker<MessageJob>(
       await incrementDailyCount()
 
       // 8. Update campaign totals + CampaignArea sentCount
-      await db.campaign.update({
+      const campaign = await db.campaign.update({
         where: { id: campaignId },
         data:  { sentCount: { increment: 1 } },
+        select: { bulan: true, campaignType: true },
       })
       const contact = await db.contact.findUnique({
         where:  { id: contactId },
@@ -139,6 +141,18 @@ const worker = new Worker<MessageJob>(
           where: { campaignId, areaId: contact.areaId },
           data:  { sentCount: { increment: 1 } },
         })
+
+        // 9. Trigger CSV report so this contact appears immediately (fire-and-forget)
+        const apiUrl = `http://localhost:${process.env.PORT ?? 3001}`
+        fetch(`${apiUrl}/api/export/report-area`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({
+            areaId:       contact.areaId,
+            bulan:        campaign.bulan,
+            campaignType: campaign.campaignType,
+          }),
+        }).catch(() => {})
       }
 
       log(`✓ sent msg:${messageId} to ${phone}`)

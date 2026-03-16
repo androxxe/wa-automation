@@ -1,5 +1,6 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { CampaignStatus, MessageStatus, AreaEnqueuePreview } from '@aice/shared'
 
@@ -337,88 +338,79 @@ const MSG_STATUS_COLORS: Record<string, string> = {
 }
 
 export default function CampaignDetail() {
-  const { id } = useParams<{ id: string }>()
-  const [campaign, setCampaign]       = useState<Campaign | null>(null)
-  const [messages, setMessages]       = useState<Message[]>([])
-  const [total, setTotal]             = useState(0)
-  const [page, setPage]               = useState(1)
-  const [failModal, setFailModal]     = useState<string | null>(null)
-  const [preview, setPreview]         = useState<AreaEnqueuePreview[] | null>(null)
-  const [previewLoading, setPreviewLoading] = useState(false)
-  const [startLoading, setStartLoading]     = useState(false)
-  const eventSourceRef                = useRef<EventSource | null>(null)
+  const { id }        = useParams<{ id: string }>()
+  const queryClient   = useQueryClient()
+  const [page, setPage]           = useState(1)
+  const [failModal, setFailModal] = useState<string | null>(null)
+  const [preview, setPreview]     = useState<AreaEnqueuePreview[] | null>(null)
+  const eventSourceRef            = useRef<EventSource | null>(null)
 
-  const loadCampaign = useCallback(() =>
-    apiFetch<Campaign>(`/api/campaigns/${id}`).then(setCampaign).catch(console.error),
-  [id])
+  const { data: campaign } = useQuery<Campaign>({
+    queryKey: ['campaign', id],
+    queryFn:  () => apiFetch<Campaign>(`/api/campaigns/${id}`),
+    enabled:  !!id,
+  })
 
-  const loadMessages = useCallback((p = 1) =>
-    apiFetch<{ messages: Message[]; total: number }>(`/api/campaigns/${id}/messages?page=${p}&limit=50`)
-      .then((d) => { setMessages(d.messages); setTotal(d.total) })
-      .catch(console.error),
-  [id])
+  const { data: messagesData } = useQuery<{ messages: Message[]; total: number }>({
+    queryKey: ['campaign-messages', id, page],
+    queryFn:  () => apiFetch(`/api/campaigns/${id}/messages?page=${page}&limit=50`),
+    enabled:  !!id,
+  })
+  const messages   = messagesData?.messages ?? []
+  const total      = messagesData?.total ?? 0
 
+  // SSE — invalidate queries on any event
   useEffect(() => {
     if (!id) return
-    loadCampaign()
-    loadMessages()
     const es = new EventSource(`/api/campaigns/${id}/events`)
-    es.onmessage = () => { loadCampaign(); loadMessages(page) }
+    es.onmessage = () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    }
     eventSourceRef.current = es
     return () => es.close()
-  }, [id, loadCampaign, loadMessages, page])
+  }, [id, queryClient])
 
-  async function handlePreviewEnqueue() {
-    setPreviewLoading(true)
-    try {
-      const rows = await apiFetch<AreaEnqueuePreview[]>(`/api/campaigns/${id}/enqueue?preview=true`, {
-        method: 'POST',
-      })
-      setPreview(rows)
-    } catch (e) { alert(String(e)) }
-    setPreviewLoading(false)
-  }
+  const previewMutation = useMutation({
+    mutationFn: () => apiFetch<AreaEnqueuePreview[]>(`/api/campaigns/${id}/enqueue?preview=true`, { method: 'POST' }),
+    onSuccess:  (rows) => setPreview(rows),
+    onError:    (e) => alert(String(e)),
+  })
 
-  async function handleConfirmEnqueue(contactIds?: string[]) {
-    setStartLoading(true)
-    try {
-      await apiFetch(`/api/campaigns/${id}/enqueue`, {
+  const enqueueMutation = useMutation({
+    mutationFn: (contactIds?: string[]) =>
+      apiFetch(`/api/campaigns/${id}/enqueue`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(contactIds ? { contactIds } : {}),
-      })
+      }),
+    onSuccess: () => {
       setPreview(null)
-      loadCampaign()
-      loadMessages()
-    } catch (e) { alert(String(e)) }
-    setStartLoading(false)
-  }
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
 
-  async function handleAction(verb: 'pause' | 'resume' | 'cancel') {
-    await apiFetch(`/api/campaigns/${id}/${verb}`, { method: 'POST' }).catch(console.error)
-    loadCampaign()
-  }
+  const actionMutation = useMutation({
+    mutationFn: (verb: 'pause' | 'resume' | 'cancel') =>
+      apiFetch(`/api/campaigns/${id}/${verb}`, { method: 'POST' }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+  })
 
-  async function handleTopup(areaId?: string) {
-    try {
-      const result = await apiFetch<{ totalEnqueued: number; areas: { areaName: string; enqueued: number; skipped: string | null }[] }>(
+  const topupMutation = useMutation({
+    mutationFn: (areaId?: string) =>
+      apiFetch<{ totalEnqueued: number; areas: { areaName: string; enqueued: number; skipped: string | null }[] }>(
         `/api/campaigns/${id}/topup`,
-        {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify(areaId ? { areaId } : {}),
-        },
-      )
-      const summary = result.areas
-        .filter((a) => a.enqueued > 0)
-        .map((a) => `${a.areaName}: +${a.enqueued}`)
-        .join(', ')
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(areaId ? { areaId } : {}) },
+      ),
+    onSuccess: (result) => {
+      const summary = result.areas.filter((a) => a.enqueued > 0).map((a) => `${a.areaName}: +${a.enqueued}`).join(', ')
       alert(summary ? `Top-up queued: ${summary}` : 'No fresh contacts available to top up.')
-      loadCampaign()
-    } catch (err) {
-      alert(String(err))
-    }
-  }
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
 
   if (!campaign) return <div className="text-muted-foreground py-8 text-center">Loading…</div>
 
@@ -431,9 +423,9 @@ export default function CampaignDetail() {
         <EnqueueModal
           campaignId={id}
           preview={preview}
-          onConfirm={handleConfirmEnqueue}
+          onConfirm={(contactIds) => enqueueMutation.mutate(contactIds)}
           onClose={() => setPreview(null)}
-          loading={startLoading}
+          loading={enqueueMutation.isPending}
         />
       )}
 
@@ -485,21 +477,21 @@ export default function CampaignDetail() {
           {campaign.status === 'DRAFT' && (
             <button
               type="button"
-              onClick={handlePreviewEnqueue}
-              disabled={previewLoading}
+              onClick={() => previewMutation.mutate()}
+              disabled={previewMutation.isPending}
               className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50"
             >
-              {previewLoading ? 'Loading preview…' : 'Start Campaign'}
+              {previewMutation.isPending ? 'Loading preview…' : 'Start Campaign'}
             </button>
           )}
           {campaign.status === 'RUNNING' && (
-            <button type="button" onClick={() => handleAction('pause')} className="bg-yellow-500 text-white text-sm px-4 py-2 rounded-md">Pause</button>
+            <button type="button" onClick={() => actionMutation.mutate('pause')} className="bg-yellow-500 text-white text-sm px-4 py-2 rounded-md">Pause</button>
           )}
           {campaign.status === 'PAUSED' && (
-            <button type="button" onClick={() => handleAction('resume')} className="bg-green-600 text-white text-sm px-4 py-2 rounded-md">Resume</button>
+            <button type="button" onClick={() => actionMutation.mutate('resume')} className="bg-green-600 text-white text-sm px-4 py-2 rounded-md">Resume</button>
           )}
           {['RUNNING', 'PAUSED', 'DRAFT'].includes(campaign.status) && (
-            <button type="button" onClick={() => handleAction('cancel')} className="bg-destructive text-destructive-foreground text-sm px-4 py-2 rounded-md">Cancel</button>
+            <button type="button" onClick={() => actionMutation.mutate('cancel')} className="bg-destructive text-destructive-foreground text-sm px-4 py-2 rounded-md">Cancel</button>
           )}
         </div>
 
@@ -510,12 +502,13 @@ export default function CampaignDetail() {
               <h3 className="font-semibold text-sm">Per-area progress</h3>
               {['RUNNING', 'PAUSED'].includes(campaign.status) && (
                 <button
-                  type="button"
-                  onClick={() => handleTopup()}
-                  className="text-xs border px-2.5 py-1 rounded-md hover:bg-accent"
-                >
-                  Top-up all areas
-                </button>
+                   type="button"
+                   onClick={() => topupMutation.mutate(undefined)}
+                   disabled={topupMutation.isPending}
+                   className="text-xs border px-2.5 py-1 rounded-md hover:bg-accent disabled:opacity-50"
+                 >
+                   Top-up all areas
+                 </button>
               )}
             </div>
             <table className="w-full text-sm">
@@ -554,8 +547,9 @@ export default function CampaignDetail() {
                         {needsTopup && ['RUNNING', 'PAUSED'].includes(campaign.status) && (
                           <button
                             type="button"
-                            onClick={() => handleTopup(ca.areaId)}
-                            className="text-xs border px-2 py-0.5 rounded hover:bg-accent"
+                            onClick={() => topupMutation.mutate(ca.areaId)}
+                            disabled={topupMutation.isPending}
+                            className="text-xs border px-2 py-0.5 rounded hover:bg-accent disabled:opacity-50"
                           >
                             Top-up
                           </button>
@@ -621,9 +615,9 @@ export default function CampaignDetail() {
           </table>
           {totalPages > 1 && (
             <div className="flex items-center justify-between px-4 py-3 border-t text-sm">
-              <button type="button" onClick={() => { setPage((p) => Math.max(1, p - 1)); loadMessages(page - 1) }} disabled={page <= 1} className="px-3 py-1 rounded border disabled:opacity-40">Previous</button>
+              <button type="button" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1} className="px-3 py-1 rounded border disabled:opacity-40">Previous</button>
               <span className="text-muted-foreground">Page {page} of {totalPages}</span>
-              <button type="button" onClick={() => { setPage((p) => p + 1); loadMessages(page + 1) }} disabled={page >= totalPages} className="px-3 py-1 rounded border disabled:opacity-40">Next</button>
+              <button type="button" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages} className="px-3 py-1 rounded border disabled:opacity-40">Next</button>
             </div>
           )}
         </div>

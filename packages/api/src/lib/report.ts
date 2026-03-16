@@ -4,8 +4,6 @@ import { db } from './db'
 
 const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
 
-export type Jawaban = 1 | 0
-
 function csvEscape(value: string): string {
   if (/[,"\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
@@ -16,8 +14,10 @@ function csvEscape(value: string): string {
  *
  * Output: OUTPUT_FOLDER/{Type}/{Department}/{Area}_{Bulan}_{YYYY-MM-DD}.csv
  *
- * Columns: Nama Toko, Nomor HP Toko, Department, Area, Jawaban, Screenshot
- * Only contacts with jawaban = 1 or 0 are included.
+ * Columns: Nama Toko, Nomor HP Toko, Department, Area, Agent Phone, Jawaban, Screenshot
+ *
+ * Includes ALL contacts with a SENT/DELIVERED/READ message — not just replied ones.
+ * Contacts without a reply show blank Jawaban and Screenshot.
  * Fully rewritten on each call (idempotent).
  */
 export async function generateAreaReport(
@@ -39,55 +39,60 @@ export async function generateAreaReport(
           status:   { in: ['SENT', 'DELIVERED', 'READ'] },
           campaign: { bulan, campaignType },
         },
-        include:  { reply: true },
-        orderBy:  { sentAt: 'desc' },
-        take:     1,
+        include: {
+          reply: true,
+          agent: { select: { phoneNumber: true } },
+        },
+        orderBy: { sentAt: 'desc' },
+        take:    1,
       },
     },
     orderBy: [{ seqNo: 'asc' }, { storeName: 'asc' }],
   })
 
-  if (contacts.length === 0) return null
+  // Only include contacts that have at least one sent message for this campaign
+  const sentContacts = contacts.filter((c) => c.messages.length > 0)
+  if (sentContacts.length === 0) return null
 
-  const area = contacts[0].area
+  const area = sentContacts[0].area
   const dept = area.department
 
-  const rows: Array<{
-    namaToko:       string
-    nomorHp:        string
-    department:     string
-    areaName:       string
-    jawaban:        Jawaban
-    screenshotPath: string
-  }> = []
+  const rows = sentContacts.map((contact) => {
+    const message   = contact.messages[0]
+    const reply     = message?.reply
+    const agentPhone = message?.agent?.phoneNumber ?? ''
+    const jawaban   = reply?.jawaban != null ? String(reply.jawaban) : ''
+    const screenshot = reply?.screenshotPath
+      ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
+      : ''
 
-  for (const contact of contacts) {
-    const reply = contact.messages[0]?.reply
-    if (reply?.jawaban == null) continue
-
-    rows.push({
-      namaToko:       contact.storeName,
-      nomorHp:        contact.phoneNorm,
-      department:     dept.name,
-      areaName:       area.name,
-      jawaban:        reply.jawaban as Jawaban,
-      screenshotPath: reply.screenshotPath
-        ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
-        : '',
-    })
-  }
-
-  if (rows.length === 0) return null
+    return {
+      namaToko:    contact.storeName,
+      nomorHp:     contact.phoneNorm,
+      department:  dept.name,
+      areaName:    area.name,
+      agentPhone,
+      jawaban,
+      screenshot,
+    }
+  })
 
   const today   = new Date().toISOString().slice(0, 10)
   const dir     = path.join(OUTPUT_FOLDER, campaignType, dept.name)
   fs.mkdirSync(dir, { recursive: true })
 
   const csvPath = path.join(dir, `${area.name}_${bulan}_${today}.csv`)
-  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Jawaban,Screenshot'
-  const lines   = rows.map(
-    (r) =>
-      `${csvEscape(r.namaToko)},${csvEscape(r.nomorHp)},${csvEscape(r.department)},${csvEscape(r.areaName)},${r.jawaban},${csvEscape(r.screenshotPath)}`,
+  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Screenshot'
+  const lines   = rows.map((r) =>
+    [
+      csvEscape(r.namaToko),
+      csvEscape(r.nomorHp),
+      csvEscape(r.department),
+      csvEscape(r.areaName),
+      csvEscape(r.agentPhone),
+      r.jawaban,
+      csvEscape(r.screenshot),
+    ].join(','),
   )
 
   fs.writeFileSync(csvPath, [header, ...lines].join('\n'), 'utf-8')
@@ -97,14 +102,11 @@ export async function generateAreaReport(
 
 /**
  * Regenerate CSV reports for all (area × bulan × campaignType) combos
- * that have at least one analyzed reply.
+ * that have at least one sent message.
  */
 export async function generateAllReports(): Promise<string[]> {
   const msgs = await db.message.findMany({
-    where: {
-      status: { in: ['SENT', 'DELIVERED', 'READ'] },
-      reply:  { claudeCategory: { not: null } },
-    },
+    where:  { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
     select: {
       campaign: { select: { bulan: true, campaignType: true } },
       contact:  { select: { areaId: true } },

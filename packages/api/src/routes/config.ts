@@ -24,6 +24,10 @@ router.get('/', async (_req, res) => {
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),
+        // Agent break defaults — read-only, sourced from env vars
+        defaultBreakEvery:  parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
+        defaultBreakMinSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
+        defaultBreakMaxSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
       },
     })
   } catch (err) {
@@ -61,6 +65,9 @@ router.patch('/', async (req, res) => {
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),
+        defaultBreakEvery:  parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
+        defaultBreakMinSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
+        defaultBreakMaxSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
       },
     })
   } catch (err) {

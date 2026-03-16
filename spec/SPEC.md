@@ -321,14 +321,14 @@ datasource db {
 }
 
 model Agent {
-  id           String        @id @default(cuid())
+  id           Int           @id @default(autoincrement())  // readable integer: 1, 2, 3
   name         String        @unique
-  profilePath  String        @db.VarChar(500)  // absolute path to Chromium user data dir
+  profilePath  String        @db.VarChar(500)  // auto-derived: {BROWSER_PROFILE_PATH}/{id}
+  phoneNumber  String        // WhatsApp number of this agent's account — required at creation
   status       String        @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
   departmentId String?       // optional — if set, prefer this agent for dept contacts
   department   Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   messages     Message[]
-  dailySendLogs DailySendLog[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 }
@@ -508,7 +508,7 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/agents` | List all agents with status, active job count, daily send count |
-| `POST` | `/api/agents` | Register a new agent. Body: `{ name, departmentId? }`. `profilePath` is auto-derived as `{BROWSER_PROFILE_PATH}/{agentId}` — no manual path required. |
+| `POST` | `/api/agents` | Register a new agent. Body: `{ name, phoneNumber, departmentId? }`. `phoneNumber` is required (the WhatsApp number of this account). `profilePath` is auto-derived as `{BROWSER_PROFILE_PATH}/{agentId}`. |
 | `GET` | `/api/agents/:id` | Single agent detail |
 | `PATCH` | `/api/agents/:id` | Update agent name or department assignment |
 | `DELETE` | `/api/agents/:id` | Remove agent (must be OFFLINE) |
@@ -756,21 +756,27 @@ Written to `OUTPUT_FOLDER/{Type}/{Department Name}/{Area Name}_{Bulan}_{YYYY-MM-
 Because a market (area) can appear in both STIK and KARDUS campaigns and in multiple months, **each combination is a separate file**. The `generateAreaReport` function signature becomes `generateAreaReport(areaId, bulan, campaignType)`.
 
 ```csv
-Nama Toko,Nomor HP Toko,Department,Area,Jawaban,Screenshot
-Toko ABC,+628121234567,Department 1,Aceh Barat,1,/path/to/output/screenshots/628121234567_2026-03-14T08-30-00.jpg
-Toko XYZ,+628121234568,Department 1,Aceh Barat,0,/path/to/output/screenshots/628121234568_2026-03-14T09-15-00.jpg
+Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Screenshot
+Toko ABC,+628121234567,Department 1,Aceh Barat,+628551234567,1,/path/to/output/screenshots/628121234567_2026-03-14T08-30-00.jpg
+Toko XYZ,+628121234568,Department 1,Aceh Barat,+628551234567,0,/path/to/output/screenshots/628121234568_2026-03-14T09-15-00.jpg
+Toko DEF,+628121234569,Department 1,Aceh Barat,+628551234567,,
 ```
 
-> `Department` and `Area` are added as columns so the file is self-describing when opened standalone. The filename already encodes type + bulan + area, but column values ensure rows remain identifiable if the file is merged or copied.
->
-> `Tipe` (STIK/KARDUS) column will be added once the `contactType` schema migration is applied.
+**Column notes:**
+- `Agent Phone` — WhatsApp number of the agent that sent this message
+- `Jawaban` — `1` (confirmed), `0` (denied), or **blank** (sent but not yet replied)
+- `Screenshot` — absolute path to the `.jpg` file; blank until a reply is received
 
-- Only contacts with a clear `1` or `0` are included
-- `Screenshot` column contains the absolute path to the `.jpg` file — open in any image viewer
-- Screenshots are **cropped to the chat panel only** (`#main` element) — excludes browser chrome, sidebar, and chat list. Falls back to full-page if the element is not found.
-- Saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
-- File is fully rewritten on each reply (idempotent)
-- Triggered automatically on every analyzed reply
+**Trigger — two events regenerate the report:**
+
+| Event | Effect |
+|---|---|
+| Message **sent** | Contact row added immediately with blank Jawaban and Screenshot |
+| Reply **analyzed** | Same row updated with Jawaban (1/0) and Screenshot path |
+
+- Includes **all contacts who were sent a message** — not just those who replied
+- Fully rewritten on each trigger (idempotent)
+- Screenshots are **cropped to the chat panel only** (`#main` element), full-page fallback
 - Can be manually triggered via `POST /api/export/report`
 
 ---
@@ -1129,7 +1135,7 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
   - Start / Stop buttons
   - Edit button (rename, change department assignment)
   - Delete button (only if OFFLINE)
-- **"Add Agent"** button → modal: name + optional department assignment → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
+- **"Add Agent"** button → modal: name + phone number (required) + optional department → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
 - Per-agent QR code prompt when WA Web needs re-authentication (screenshot shows QR — user scans)
 
 ### `/import` — Import Contacts
@@ -1238,11 +1244,11 @@ Generated by `GET /api/export/report-xlsx?campaignId=xxx` using **ExcelJS** (not
 
 One workbook per campaign download. The campaign already encodes `bulan` + `campaignType`, so each download is naturally scoped to one month + one type.
 
-Only contacts with a clear `jawaban` (1 or 0) are included — same filter as the CSV report.
+Includes **all contacts who were sent a message** in this campaign — not just those who replied. Rows without a reply show "Pending" in the Jawaban column and no screenshot.
 
 **Workbook structure:**
 - One sheet per area in the campaign, named `{Area Name}` (truncated to 31 chars)
-- Final sheet named `Info` — campaign name, type, bulan, department, date generated, total rows across all areas
+- Final sheet named `Info` — campaign name, type, bulan, date generated, total rows
 
 **Each area sheet columns:**
 
@@ -1253,10 +1259,9 @@ Only contacts with a clear `jawaban` (1 or 0) are included — same filter as th
 | C | Nomor HP Toko | Normalized phone |
 | D | Department | Department name |
 | E | Area | Market/area name |
-| F | Jawaban | "Ya ✓" (green cell) or "Tidak ✗" (red cell) |
-| G | Screenshot | Actual `.jpg` image embedded in the cell |
-
-> `Tipe` column (STIK/KARDUS) will be added to column H once the `contactType` schema migration is applied. The workbook filename and `Info` sheet already identify the type from the campaign.
+| F | Agent Phone | WhatsApp number of the agent that sent the message |
+| G | Jawaban | "Ya ✓" (green), "Tidak ✗" (red), or "Pending" (grey italic) |
+| H | Screenshot | Embedded `.jpg` image — blank if no reply yet |
 
 - Row height auto-set to fit the image (~140pt) for rows that have a screenshot
 - Alternate row shading for readability

@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
-import type { ReplyCategory, ReplySentiment } from '@aice/shared'
+import type { ReplyCategory } from '@aice/shared'
 
 interface Reply {
   id:              string
   body:            string
   claudeCategory:  ReplyCategory | null
-  claudeSentiment: ReplySentiment | null
-  claudeSummary:   string | null
+  claudeSentiment: string | null
   receivedAt:      string
   message: {
     phone:  string
@@ -33,31 +33,19 @@ const CATEGORY_COLORS: Record<string, string> = {
 }
 
 export default function Responses() {
-  const [replies, setReplies]               = useState<Reply[]>([])
-  const [loading, setLoading]               = useState(true)
-  const [campaigns, setCampaigns]           = useState<Campaign[]>([])
   const [selectedCampaignId, setSelectedCampaignId] = useState('')
-  const [downloading, setDownloading]       = useState(false)
+  const [downloading, setDownloading]               = useState(false)
 
-  useEffect(() => {
-    apiFetch<Campaign[]>('/api/campaigns')
-      .then((data) => setCampaigns(data))
-      .catch(console.error)
-    // TODO: add proper /api/replies endpoint
-    setLoading(false)
-  }, [])
+  const { data: campaigns = [] } = useQuery<Campaign[]>({
+    queryKey: ['campaigns'],
+    queryFn:  () => apiFetch<Campaign[]>('/api/campaigns'),
+  })
 
-  function getSelectedCampaign(): Campaign | undefined {
+  // TODO: replace with real /api/replies endpoint
+  const replies: Reply[] = []
+
+  function getSelectedCampaign() {
     return campaigns.find((c) => c.id === selectedCampaignId)
-  }
-
-  async function handleExport() {
-    window.open('/api/export/responses', '_blank')
-  }
-
-  async function handleWrite() {
-    await apiFetch('/api/export/write', { method: 'POST' }).catch(console.error)
-    alert('Files written to OUTPUT_FOLDER')
   }
 
   async function handleDownloadReportXlsx() {
@@ -89,29 +77,31 @@ export default function Responses() {
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Responses</h2>
           <p className="text-muted-foreground">Incoming replies analyzed by Claude</p>
         </div>
         <div className="flex gap-2">
-          <button type="button" onClick={handleExport} className="text-sm px-4 py-2 rounded-md border">
+          <button type="button" onClick={() => window.open('/api/export/responses', '_blank')} className="text-sm px-4 py-2 rounded-md border">
             Export XLSX
           </button>
-          <button type="button" onClick={handleWrite} className="text-sm px-4 py-2 rounded-md border">
+          <button
+            type="button"
+            onClick={() => apiFetch('/api/export/write', { method: 'POST' }).then(() => alert('Files written to OUTPUT_FOLDER')).catch(console.error)}
+            className="text-sm px-4 py-2 rounded-md border"
+          >
             Write to Output Folder
           </button>
         </div>
       </div>
 
-      {/* Download report with screenshots */}
       <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-4 py-3">
         <span className="text-sm font-medium shrink-0">Download Report (with screenshots)</span>
         <select
           value={selectedCampaignId}
           onChange={(e) => setSelectedCampaignId(e.target.value)}
-          className="flex-1 max-w-xs text-sm rounded-md border bg-background px-3 py-1.5 focus:outline-none"
+          className="flex-1 max-w-xs text-sm rounded-md border bg-background px-3 py-1.5"
         >
           <option value="">— Pilih campaign —</option>
           {campaigns.map((c) => (
@@ -124,13 +114,12 @@ export default function Responses() {
           type="button"
           onClick={handleDownloadReportXlsx}
           disabled={!selectedCampaignId || downloading}
-          className="shrink-0 text-sm px-4 py-2 rounded-md bg-primary text-primary-foreground disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          className="shrink-0 text-sm px-4 py-2 rounded-md bg-primary text-primary-foreground disabled:opacity-50"
         >
           {downloading ? 'Generating…' : 'Download XLSX'}
         </button>
       </div>
 
-      {/* Reply table */}
       <div className="rounded-lg border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
@@ -141,10 +130,7 @@ export default function Responses() {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {loading && (
-              <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">Loading…</td></tr>
-            )}
-            {!loading && replies.length === 0 && (
+            {replies.length === 0 && (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No replies yet</td></tr>
             )}
             {replies.map((r) => (

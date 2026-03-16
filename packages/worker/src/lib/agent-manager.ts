@@ -19,22 +19,14 @@ export class AgentManager {
   async init(redis: IORedis): Promise<void> {
     this.redis = redis
 
-    let dbAgents = await db.agent.findMany()
+    const dbAgents = await db.agent.findMany()
 
-    // If no agents configured yet, create a default one using BROWSER_PROFILES_DIR/{id}
     if (dbAgents.length === 0) {
-      const created = await db.agent.create({
-        data: { name: 'Default', profilePath: '', status: 'OFFLINE' },
-      })
-      const profilePath = path.resolve(path.join(PROFILES_DIR, String(created.id)))
-      await db.agent.update({ where: { id: created.id }, data: { profilePath } })
-      created.profilePath = profilePath
-      dbAgents = [created]
-      console.log(`[agent-manager] created default agent ${created.id} → ${profilePath}`)
+      console.log('[agent-manager] no agents configured — create one via the Agents UI')
     }
 
     for (const row of dbAgents) {
-      this._register(row.id, row.profilePath)
+      this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
     }
 
     // Use psubscribe so NEW agents created via the UI after startup are also handled.
@@ -56,7 +48,7 @@ export class AgentManager {
             console.error(`[agent-manager] agent ${agentId} not found in DB, ignoring command`)
             return
           }
-          this._register(row.id, row.profilePath)
+          this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
         }
 
         if (cmd === 'start') this.startAgent(agentId).catch(console.error)
@@ -71,10 +63,16 @@ export class AgentManager {
 
   // ─── Register ─────────────────────────────────────────────────────────────
 
-  private _register(agentId: number, profilePath: string): BrowserAgent {
-    const agent = new BrowserAgent(agentId, profilePath)
+  private _register(
+    agentId:    number,
+    profilePath: string,
+    breakEvery?: number | null,
+    breakMinMs?: number | null,
+    breakMaxMs?: number | null,
+  ): BrowserAgent {
+    const agent = new BrowserAgent(agentId, profilePath, breakEvery, breakMinMs, breakMaxMs)
     this.agents.set(agentId, agent)
-    console.log(`[agent-manager] registered agent ${agentId}`)
+    console.log(`[agent-manager] registered agent ${agentId} (breakEvery=${agent.breakEvery}, break=${agent.breakMinMs/1000}–${agent.breakMaxMs/1000}s)`)
     return agent
   }
 
@@ -87,7 +85,7 @@ export class AgentManager {
     if (!agent) {
       const row = await db.agent.findUnique({ where: { id: agentId } })
       if (!row) throw new Error(`Agent ${agentId} not found in DB`)
-      agent = this._register(row.id, row.profilePath)
+      agent = this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
     }
 
     console.log(`[agent:${agentId}] starting…`)
