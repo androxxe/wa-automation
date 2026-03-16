@@ -11,6 +11,7 @@ import contactsRouter from './routes/contacts'
 import campaignsRouter from './routes/campaigns'
 import analyzeRouter  from './routes/analyze'
 import exportRouter   from './routes/export'
+import repliesRouter  from './routes/replies'
 
 async function main() {
   await validateStartup()
@@ -29,6 +30,7 @@ async function main() {
   app.use('/api/campaigns', campaignsRouter)
   app.use('/api/analyze',   analyzeRouter)
   app.use('/api/export',    exportRouter)
+  app.use('/api/replies',   repliesRouter)
 
   app.get('/api/health', (_req, res) =>
     res.json({ ok: true, timestamp: new Date().toISOString() }),

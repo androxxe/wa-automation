@@ -316,12 +316,12 @@ export class BrowserAgent {
 
   async pollReplies(
     onReply: (params: { phone: string; text: string; screenshotPath: string | null }) => Promise<void>,
-    sentPhones: Set<string>,
+    sentPhones: Map<string, Date>,
   ): Promise<void> {
     return this._withBrowserLock(async () => {
       const page = this.page!
 
-      for (const phone of sentPhones) {
+      for (const [phone] of sentPhones) {
         const number = phone.replace('+', '')
         const url    = `https://web.whatsapp.com/send?phone=${number}`
 
@@ -350,24 +350,54 @@ export class BrowserAgent {
 
         await page.waitForTimeout(1500)
 
+        // Position-based anchor: find incoming messages that appear AFTER the last
+        // outgoing message in the DOM. WhatsApp Web renders messages in chronological
+        // order top-to-bottom, so DOM position reliably represents time order.
+        //
+        // This prevents old chat history from being mistaken as a reply:
+        //   [old msg] Contact: "Halo..."   ← ignored (before our last .message-out)
+        //   [campaign] You: "Apakah benar..."  ← anchor (last .message-out)
+        //   [reply] Contact: "Iya sudah"   ← ✓ captured
         const lastIncoming = await page.evaluate((): string | null => {
-          const incomingMsgs = document.querySelectorAll(
-            '.message-in [data-testid="msg-text"], ' +
-            '[data-id] .copyable-text[data-pre-plain-text]',
+          // Collect all top-level message rows in DOM order
+          const rows = Array.from(document.querySelectorAll(
+            '[data-id], .message-in, .message-out',
+          ))
+
+          // Find the index of the last OUTGOING message (our sent campaign message)
+          let anchorIdx = -1
+          rows.forEach((el, idx) => {
+            if (el.classList.contains('message-out') || el.querySelector('.message-out')) {
+              anchorIdx = idx
+            }
+          })
+
+          // No outgoing message in view — our message may not have loaded yet, skip
+          if (anchorIdx === -1) return null
+
+          // Collect incoming messages strictly after the anchor
+          const incomingAfter = rows
+            .slice(anchorIdx + 1)
+            .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
+
+          // No incoming message after our send — contact hasn't replied yet
+          if (incomingAfter.length === 0) return null
+
+          // Take the last incoming after the anchor (covers follow-up messages)
+          const lastEl = incomingAfter[incomingAfter.length - 1]
+          return (
+            lastEl.querySelector('[data-testid="msg-text"]')?.textContent?.trim() ??
+            lastEl.querySelector('.copyable-text')?.textContent?.trim() ??
+            null
           )
-          if (incomingMsgs.length > 0) {
-            return incomingMsgs[incomingMsgs.length - 1]?.textContent?.trim() ?? null
-          }
-          const allTexts = document.querySelectorAll('[data-testid="msg-text"]')
-          const incoming = Array.from(allTexts).filter((el) => !el.closest('.message-out'))
-          return incoming[incoming.length - 1]?.textContent?.trim() ?? null
         })
 
         if (!lastIncoming) {
-          console.log(`[agent:${this.agentId}] no incoming message for ${phone}`)
+          console.log(`[agent:${this.agentId}] no reply after sent message for ${phone}`)
           continue
         }
 
+        console.log(`[agent:${this.agentId}] reply from ${phone}: "${lastIncoming.slice(0, 40)}${lastIncoming.length > 40 ? '…' : ''}"`)
         const screenshotPath = await this._saveReplyScreenshot(phone)
         await onReply({ phone, text: lastIncoming, screenshotPath })
       }

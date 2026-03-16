@@ -67,11 +67,12 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       { key: 'areaName',    width: 20 },
       { key: 'agentPhone',  width: 18 },
       { key: 'jawaban',     width: 12 },
+      { key: 'kategori',    width: 14 },
       { key: 'screenshot',  width: 32 },
     ]
 
     // Header row
-    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Screenshot']
+    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Screenshot']
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
@@ -86,18 +87,21 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       const message     = contact.messages[0]
       const reply       = message?.reply
       const agentPhone  = message?.agent?.phoneNumber ?? ''
-      const hasReply    = reply?.jawaban != null
-      const jawaban     = hasReply ? (reply!.jawaban as 0 | 1) : null
+      const hasReply    = reply != null
+      // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
+      const jawaban      = hasReply ? ((reply!.jawaban ?? 0) as 0 | 1) : null
       const jawabanLabel = jawaban === 1 ? 'Ya ✓' : jawaban === 0 ? 'Tidak ✗' : ''
       const jawabanColor = jawaban === 1 ? 'FFD1FAE5' : jawaban === 0 ? 'FFFEE2E2' : 'FFFFFFFF'
-      const excelRowIdx = rowNo + 1
+      const kategori     = reply?.claudeCategory ?? ''
+      const excelRowIdx  = rowNo + 1
 
       const absPath = reply?.screenshotPath && OUTPUT_FOLDER
         ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
         : null
       const hasImg  = absPath !== null && fs.existsSync(absPath)
 
-      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, ''])
+      // col 9 = column I (0-indexed: 8) for screenshot image
+      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, ''])
       dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
       dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
@@ -119,6 +123,21 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         jawabanCell.value = 'Pending'
       }
 
+      // Kategori cell (col 8)
+      const kategoriColors: Record<string, string> = {
+        confirmed: 'FF6EE7B7',
+        denied:    'FFFCA5A5',
+        question:  'FFFDE68A',
+        unclear:   'FFE5E7EB',
+        other:     'FFBFDBFE',
+      }
+      const kategoriCell     = dataRow.getCell(8)
+      kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
+      if (kategori) {
+        kategoriCell.font = { color: { argb: 'FF374151' } }
+        kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
+      }
+
       if (rowNo % 2 === 0) {
         for (let c = 1; c <= 6; c++) {
           const cell = dataRow.getCell(c)
@@ -134,16 +153,16 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
           const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-          // col 7 = column H (0-indexed), row = excelRowIdx - 1 (0-indexed)
+          // col 8 = column I (0-indexed), row = excelRowIdx - 1 (0-indexed)
           sheet.addImage(imageId, {
-            tl:     { col: 7, row: excelRowIdx - 1 },
+            tl:     { col: 8, row: excelRowIdx - 1 },
             ext:    { width: IMG_W, height: IMG_H },
             editAs: 'oneCell',
           })
         } catch {
-          dataRow.getCell(8).value     = absPath
-          dataRow.getCell(8).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-          dataRow.getCell(8).alignment = { vertical: 'middle', wrapText: true }
+          dataRow.getCell(9).value     = absPath
+          dataRow.getCell(9).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+          dataRow.getCell(9).alignment = { vertical: 'middle', wrapText: true }
         }
       }
 

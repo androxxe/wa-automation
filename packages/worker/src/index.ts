@@ -221,12 +221,20 @@ phoneCheckWorker.on('failed', (job, err) => {
 
 // ─── Reply polling ────────────────────────────────────────────────────────────
 
-async function getUnrepliedPhones(): Promise<Set<string>> {
+// Returns Map<phone, sentAt> so pollReplies can anchor to when each message was sent.
+async function getUnrepliedPhones(): Promise<Map<string, Date>> {
   const messages = await db.message.findMany({
     where:  { status: { in: ['SENT', 'DELIVERED', 'READ'] }, reply: null },
-    select: { phone: true },
+    select: { phone: true, sentAt: true },
   })
-  return new Set(messages.map((m) => m.phone))
+  const map = new Map<string, Date>()
+  for (const m of messages) {
+    // Keep the EARLIEST sentAt per phone so the anchor covers all sent messages
+    const existing = map.get(m.phone)
+    const ts = m.sentAt ?? new Date(0)
+    if (!existing || ts < existing) map.set(m.phone, ts)
+  }
+  return map
 }
 
 async function handleReply(params: {
@@ -364,7 +372,7 @@ function startReplyPolling() {
       const unrepliedPhones = await getUnrepliedPhones()
       if (unrepliedPhones.size === 0) return
       console.log(`[agent:${online.agentId}][poll] checking ${unrepliedPhones.size} unreplied phone(s)`)
-      await online.agent.pollReplies(handleReply, unrepliedPhones)
+      await online.agent.pollReplies(handleReply, unrepliedPhones as Map<string, Date>)
       console.log(`[agent:${online.agentId}][poll] done`)
     } catch (err) {
       console.error('[worker] reply poll error:', err)

@@ -61,7 +61,9 @@ export async function generateAreaReport(
     const message   = contact.messages[0]
     const reply     = message?.reply
     const agentPhone = message?.agent?.phoneNumber ?? ''
-    const jawaban   = reply?.jawaban != null ? String(reply.jawaban) : ''
+    // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
+    const jawaban   = reply != null ? String(reply.jawaban ?? 0) : ''
+    const kategori  = reply?.claudeCategory ?? ''
     const screenshot = reply?.screenshotPath
       ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
       : ''
@@ -73,6 +75,7 @@ export async function generateAreaReport(
       areaName:    area.name,
       agentPhone,
       jawaban,
+      kategori,
       screenshot,
     }
   })
@@ -82,7 +85,7 @@ export async function generateAreaReport(
   fs.mkdirSync(dir, { recursive: true })
 
   const csvPath = path.join(dir, `${area.name}_${bulan}_${today}.csv`)
-  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Screenshot'
+  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Kategori,Screenshot'
   const lines   = rows.map((r) =>
     [
       csvEscape(r.namaToko),
@@ -91,6 +94,7 @@ export async function generateAreaReport(
       csvEscape(r.areaName),
       csvEscape(r.agentPhone),
       r.jawaban,
+      csvEscape(r.kategori),
       csvEscape(r.screenshot),
     ].join(','),
   )
