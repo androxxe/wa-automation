@@ -416,20 +416,20 @@ export default function Agents() {
                 >
                   Edit
                 </button>
-                {agent.status === 'OFFLINE' ? (
+                {['OFFLINE', 'STARTING', 'ERROR'].includes(agent.status) ? (
                   <button
                     type="button"
                     onClick={() => startMutation.mutate(agent.id)}
                     disabled={startMutation.isPending}
                     className="bg-primary text-primary-foreground text-sm px-3 py-1.5 rounded-md disabled:opacity-50"
                   >
-                    Start
+                    {agent.status === 'STARTING' ? 'Restart' : agent.status === 'ERROR' ? 'Retry' : 'Start'}
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => stopMutation.mutate(agent.id)}
-                    disabled={agent.status === 'STARTING' || stopMutation.isPending}
+                    disabled={stopMutation.isPending}
                     className="border text-sm px-3 py-1.5 rounded-md disabled:opacity-50"
                   >
                     Stop

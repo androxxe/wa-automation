@@ -117,7 +117,12 @@ export class BrowserAgent {
   // ─── Launch ───────────────────────────────────────────────────────────────
 
   async launch(): Promise<void> {
-    if (this.context) return
+    // Should not happen — AgentManager calls close() before relaunch.
+    // Guard against double-launch just in case.
+    if (this.context) {
+      console.warn(`[agent:${this.agentId}] launch() called but context already exists — skipping`)
+      return
+    }
 
     this._status = 'loading'
 
@@ -148,6 +153,20 @@ export class BrowserAgent {
 
     const pages = this.context.pages()
     this.page = pages.length > 0 ? pages[0] : await this.context.newPage()
+
+    // Detect when the browser window is closed externally (user closes the window,
+    // process killed, crash, etc.) and reset internal state so AgentManager's
+    // status polling publishes OFFLINE and the user can click Start again.
+    this.context.on('close', () => {
+      console.log(`[agent:${this.agentId}] browser context closed — resetting to disconnected`)
+      this._status = 'disconnected'
+      this.context = null
+      this.page    = null
+      if (this._pollTimer) {
+        clearInterval(this._pollTimer)
+        this._pollTimer = null
+      }
+    })
 
     await this.page.goto('https://web.whatsapp.com', { waitUntil: 'domcontentloaded' })
 
@@ -439,11 +458,12 @@ export class BrowserAgent {
       clearInterval(this._pollTimer)
       this._pollTimer = null
     }
-    if (this.context) {
-      await this.context.close()
-      this.context = null
-      this.page    = null
-      this._status = 'disconnected'
-    }
+    // Clear internal refs FIRST so launch() can proceed even if close() throws
+    // (e.g. browser was already killed externally — context.close() would error)
+    const ctx    = this.context
+    this.context = null
+    this.page    = null
+    this._status = 'disconnected'
+    if (ctx) await ctx.close().catch(() => {})
   }
 }

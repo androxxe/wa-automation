@@ -15,6 +15,6 @@
     "db:migrate": "pnpm --filter @aice/api db:migrate",
     "db:fresh": "pnpm --filter @aice/api db:fresh",
     "redis:flush": "redis-cli FLUSHALL",
-    "clean:browser": "rm -rf packages/worker/browser-profile"
+    "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"
   }
 }

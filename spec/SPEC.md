@@ -702,21 +702,42 @@ Polling every 10s for 3 minutes after each send.
 A background loop runs per agent every `REPLY_POLL_INTERVAL_MS` (60s):
 
 ```
-1. Scan chat list for items with unread badge
-2. For each unread chat:
-   a. Click the chat, extract phone number from the header
-   b. FILTER — skip if phone is NOT in our sent-messages list
-      (prevents processing random incoming messages on your personal WhatsApp)
-   c. Read last incoming message text from DOM
-   d. Take a **cropped screenshot of the chat panel only** (not the full browser window):
-      - Target element: `#main` (WhatsApp Web's chat panel — message header + message list + compose box)
-      - Captured via Playwright element screenshot: `page.locator('#main').screenshot()`
-      - Fallback: if `#main` is not found, fall back to full-page screenshot
-      - Saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
-   e. Create Reply record in DB (with screenshotPath)
-   f. POST /api/analyze/reply → Claude analyzes → CSV report regenerated
-3. Only phones we have a SENT/DELIVERED/READ message to are processed
+1. Query DB: find all phones with SENT/DELIVERED/READ messages and no Reply record yet
+   → returns Map<phone, sentAt>   (earliest sentAt per phone)
+
+2. For each phone in the map:
+   a. Navigate to https://web.whatsapp.com/send?phone={number}
+   b. Wait for chat to load (compose box visible, max 20s)
+
+   c. Position-based anchor — prevents old chat history from being mistaken as a reply:
+      - Collect all message rows in DOM order (= chronological order)
+      - Find the LAST .message-out row (our most recent sent campaign message) → anchor
+      - If no .message-out found → our message not in view yet → skip this phone
+      - Collect all .message-in rows that appear strictly AFTER the anchor
+      - If none → contact hasn't replied yet → skip this phone
+      - Take the LAST incoming after the anchor as the reply text
+        (handles follow-up messages: if contact sends "iya" then "sudah dikonfirmasi",
+         takes "sudah dikonfirmasi" — Claude can still classify it correctly)
+
+   d. Take a **cropped screenshot of the chat panel only** (`#main` element);
+      falls back to full-page if element not found.
+      Saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
+
+   e. Fan-out: find ALL unreplied messages for this phone (covers STIK + KARDUS),
+      call Claude ONCE, create Reply records for each message
+
+   f. Trigger CSV report for each affected (areaId, bulan, campaignType)
 ```
+
+**Why position-based instead of timestamp-based:**
+WhatsApp Web renders messages in chronological order top-to-bottom. Finding the last `.message-out` and reading only `.message-in` elements after it is reliable across all WhatsApp Web versions, doesn't require parsing locale-dependent timestamp strings, and handles pre-existing chat history correctly.
+
+| Scenario | Result |
+|---|---|
+| Old chat exists, no new reply | Last `.message-out` is anchor; nothing after it → skipped |
+| Old chat exists, contact replied | Incoming after anchor found → correct reply captured |
+| Contact sends follow-up after reply | Takes last incoming after anchor → handled correctly |
+| Our message not yet visible in DOM | No `.message-out` found → skipped safely |
 
 ---
 

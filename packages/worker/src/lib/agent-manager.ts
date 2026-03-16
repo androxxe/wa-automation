@@ -91,6 +91,12 @@ export class AgentManager {
       agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
     }
 
+    // If the agent has a dead/stale context (e.g. browser was closed externally
+    // while status was stuck at STARTING), force-close it before relaunching.
+    if (agent.status === 'disconnected' || agent.status === 'loading') {
+      await agent.close().catch(() => {})
+    }
+
     console.log(`[agent:${agentId}] starting…`)
     await this._setStatus(agentId, 'STARTING')
 
