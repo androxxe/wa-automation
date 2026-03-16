@@ -4,9 +4,25 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { AppConfigData } from '@aice/shared'
 
-const DEFAULT_TEMPLATES: Record<string, string> = {
-  STIK:   `Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stik ke distributor?`,
-  KARDUS: `Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran kupon Kardus ke distributor?`,
+// 3 template variants per type — structurally different so each campaign
+// starts from a meaningfully different base. Claude varies each one further
+// before send, giving effectively unlimited uniqueness across contacts.
+const DEFAULT_TEMPLATES: Record<string, string[]> = {
+  STIK: [
+    `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stik ke distributor?`,
+    `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} toko bapak/ibu sudah melakukan penukaran Stik bersama distributor?`,
+    `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah dilakukan penukaran Stik ke distributor? Mohon konfirmasinya, terima kasih.`,
+  ],
+  KARDUS: [
+    `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran kupon Kardus?`,
+    `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} toko bapak/ibu sudah melakukan penukaran kupon Kardus bersama distributor?`,
+    `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah dilakukan penukaran kupon Kardus? Mohon konfirmasinya, terima kasih.`,
+  ],
+}
+
+function pickTemplate(type: string): string {
+  const pool = DEFAULT_TEMPLATES[type] ?? DEFAULT_TEMPLATES['STIK']
+  return pool[Math.floor(Math.random() * pool.length)]
 }
 
 type CampaignType = 'STIK' | 'KARDUS'
@@ -34,7 +50,7 @@ export default function NewCampaign() {
   const [name, setName]             = useState('')
   const [bulan, setBulan]           = useState('')
   const [campaignType, setCampaignType] = useState<CampaignType>('STIK')
-  const [template, setTemplate]     = useState(DEFAULT_TEMPLATES.STIK)
+  const [template, setTemplate]         = useState(() => pickTemplate('STIK'))
   const [templateEdited, setTemplateEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>('')
   const [replyRate, setReplyRate]   = useState<string>('')
@@ -87,7 +103,7 @@ export default function NewCampaign() {
     setCampaignType(t)
     setSelectedAreas(new Set())
     // Only switch the template if the user hasn't manually edited it
-    if (!templateEdited) setTemplate(DEFAULT_TEMPLATES[t])
+    if (!templateEdited) setTemplate(pickTemplate(t))
   }, [templateEdited])
 
   function toggleArea(areaId: string) {
@@ -195,20 +211,30 @@ export default function NewCampaign() {
           <p className="text-xs text-muted-foreground">Only areas imported as {campaignType} will be shown below.</p>
         </div>
 
-        {/* Template */}
-        <div className="space-y-1.5">
-          <label htmlFor="camp-template" className="text-sm font-medium">Message template</label>
-          <textarea
-            id="camp-template"
-            value={template}
-            onChange={(e) => { setTemplate(e.target.value); setTemplateEdited(true) }}
-            rows={5}
-            className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
-          />
-          <p className="text-xs text-muted-foreground">
-            Variables: {'{{nama_toko}}'} {'{{bulan}}'} {'{{department}}'} {'{{area}}'} {'{{tipe}}'}
-          </p>
-        </div>
+         {/* Template */}
+         <div className="space-y-1.5">
+           <div className="flex items-center justify-between">
+             <label htmlFor="camp-template" className="text-sm font-medium">Message template</label>
+             <button
+               type="button"
+               onClick={() => { setTemplate(pickTemplate(campaignType)); setTemplateEdited(false) }}
+               className="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-0.5 flex items-center gap-1"
+               title={`Pick a different template (${DEFAULT_TEMPLATES[campaignType]?.length ?? 3} variants available)`}
+             >
+               ↺ Randomize
+             </button>
+           </div>
+           <textarea
+             id="camp-template"
+             value={template}
+             onChange={(e) => { setTemplate(e.target.value); setTemplateEdited(true) }}
+             rows={5}
+             className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
+           />
+           <p className="text-xs text-muted-foreground">
+             Variables: {'{{nama_toko}}'} {'{{bulan}}'} {'{{department}}'} {'{{area}}'} {'{{tipe}}'}
+           </p>
+         </div>
 
         {/* Target areas */}
         <div className="space-y-2">
