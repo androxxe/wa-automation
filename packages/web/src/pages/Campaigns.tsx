@@ -7,10 +7,13 @@ interface Campaign {
   id: string
   name: string
   bulan: string
+  campaignType: string
   status: CampaignStatus
   totalCount: number
   sentCount: number
   replyCount: number
+  targetRepliesPerArea: number | null
+  areas: { areaId: string }[]
   createdAt: string
 }
 
@@ -61,7 +64,7 @@ export default function Campaigns() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['Name', 'Month', 'Status', 'Progress', 'Reply Rate', 'Created', 'Actions'].map((h) => (
+              {['Name', 'Type', 'Month', 'Status', 'Progress', 'Replies', 'Created', 'Actions'].map((h) => (
                 <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
@@ -74,12 +77,22 @@ export default function Campaigns() {
               <tr><td colSpan={7} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
             {!loading && campaigns.map((c) => {
-              const progress = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
-              const replyRate = c.sentCount > 0 ? Math.round((c.replyCount / c.sentCount) * 100) : 0
+              const progress     = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
+              // Total target = per-area target × number of areas in this campaign
+              const totalTarget  = c.targetRepliesPerArea ? c.targetRepliesPerArea * c.areas.length : null
+              const targetMet    = totalTarget !== null && c.replyCount >= totalTarget
+
               return (
                 <tr key={c.id} className="hover:bg-accent/50 transition-colors">
                   <td className="px-4 py-2.5 font-medium">
                     <Link to={`/campaigns/${c.id}`} className="hover:underline">{c.name}</Link>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      c.campaignType === 'STIK' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                    }`}>
+                      {c.campaignType}
+                    </span>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground">{c.bulan}</td>
                   <td className="px-4 py-2.5">
@@ -95,7 +108,17 @@ export default function Campaigns() {
                       <span className="text-xs text-muted-foreground">{c.sentCount}/{c.totalCount}</span>
                     </div>
                   </td>
-                  <td className="px-4 py-2.5 text-muted-foreground">{replyRate}%</td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`font-semibold ${c.replyCount > 0 ? 'text-green-600' : 'text-muted-foreground'}`}>
+                        {c.replyCount}
+                      </span>
+                      {totalTarget !== null && (
+                        <span className="text-muted-foreground text-xs">/ {totalTarget}</span>
+                      )}
+                      {targetMet && <span className="text-xs text-green-600 font-bold">✓</span>}
+                    </div>
+                  </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
                     {new Date(c.createdAt).toLocaleDateString()}
                   </td>

@@ -6,25 +6,47 @@ import type { MessageJob } from '@aice/shared'
 
 const router: import('express').Router = Router()
 
-// GET /api/campaigns
+// ─── GET /api/campaigns ───────────────────────────────────────────────────────
+
 router.get('/', async (_req, res) => {
   try {
     const campaigns = await db.campaign.findMany({
       include: { areas: { include: { area: { include: { department: true } } } } },
       orderBy: { createdAt: 'desc' },
     })
-    res.json({ ok: true, data: campaigns })
+
+    // Compute actual reply count from Reply records (one query for all campaigns)
+    // to avoid trusting the potentially-stale denormalized replyCount counter.
+    const campaignIds = campaigns.map((c) => c.id)
+    const replyCounts = await db.message.groupBy({
+      by:    ['campaignId'],
+      where: { campaignId: { in: campaignIds }, reply: { isNot: null } },
+      _count: { id: true },
+    })
+    const replyCountMap = new Map(replyCounts.map((r) => [r.campaignId, r._count.id]))
+
+    const data = campaigns.map((c) => ({
+      ...c,
+      replyCount: replyCountMap.get(c.id) ?? 0,
+    }))
+
+    res.json({ ok: true, data })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
 
-// POST /api/campaigns
+// ─── POST /api/campaigns ──────────────────────────────────────────────────────
+
 const CreateCampaign = z.object({
-  name: z.string().min(1),
-  template: z.string().min(1),
-  bulan: z.string().min(1),
-  areaIds: z.array(z.string()).min(1),
+  name:                    z.string().min(1),
+  template:                z.string().min(1),
+  bulan:                   z.string().min(1),
+  campaignType:            z.enum(['STIK', 'KARDUS']),
+  areaIds:                 z.array(z.string()).min(1),
+  targetRepliesPerArea:    z.number().int().min(1).optional(),
+  expectedReplyRate:       z.number().min(0.01).max(1).optional(),
+  stopOnTargetReached:     z.boolean().optional(),
 })
 
 router.post('/', async (req, res) => {
@@ -33,16 +55,19 @@ router.post('/', async (req, res) => {
     res.status(400).json({ ok: false, error: parsed.error.message })
     return
   }
-  const { name, template, bulan, areaIds } = parsed.data
+  const { name, template, bulan, campaignType, areaIds,
+          targetRepliesPerArea, expectedReplyRate, stopOnTargetReached } = parsed.data
   try {
     const campaign = await db.campaign.create({
       data: {
         name,
         template,
         bulan,
-        areas: {
-          create: areaIds.map((id) => ({ areaId: id })),
-        },
+        campaignType,
+        ...(targetRepliesPerArea !== undefined && { targetRepliesPerArea }),
+        ...(expectedReplyRate    !== undefined && { expectedReplyRate }),
+        ...(stopOnTargetReached  !== undefined && { stopOnTargetReached }),
+        areas: { create: areaIds.map((id) => ({ areaId: id })) },
       },
     })
     res.status(201).json({ ok: true, data: campaign })
@@ -51,24 +76,28 @@ router.post('/', async (req, res) => {
   }
 })
 
-// GET /api/campaigns/:id
+// ─── GET /api/campaigns/:id ───────────────────────────────────────────────────
+
 router.get('/:id', async (req, res) => {
   try {
     const campaign = await db.campaign.findUnique({
-      where: { id: req.params.id },
-      include: { areas: { include: { area: { include: { department: true } } } } },
+      where:   { id: req.params.id },
+      include: {
+        areas: {
+          include: { area: { include: { department: true } } },
+        },
+      },
     })
-    if (!campaign) {
-      res.status(404).json({ ok: false, error: 'Campaign not found' })
-      return
-    }
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
+
     res.json({ ok: true, data: campaign })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
 
-// PATCH /api/campaigns/:id
+// ─── PATCH /api/campaigns/:id ─────────────────────────────────────────────────
+
 router.patch('/:id', async (req, res) => {
   try {
     const campaign = await db.campaign.findUnique({ where: { id: req.params.id } })
@@ -77,17 +106,15 @@ router.patch('/:id', async (req, res) => {
       res.status(400).json({ ok: false, error: 'Only DRAFT campaigns can be edited' })
       return
     }
-    const updated = await db.campaign.update({
-      where: { id: req.params.id },
-      data: req.body,
-    })
+    const updated = await db.campaign.update({ where: { id: req.params.id }, data: req.body })
     res.json({ ok: true, data: updated })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
 
-// DELETE /api/campaigns/:id
+// ─── DELETE /api/campaigns/:id ────────────────────────────────────────────────
+
 router.delete('/:id', async (req, res) => {
   try {
     const campaign = await db.campaign.findUnique({ where: { id: req.params.id } })
@@ -103,81 +130,157 @@ router.delete('/:id', async (req, res) => {
   }
 })
 
-// POST /api/campaigns/:id/enqueue — enqueue all contacts into bullmq
+// ─── POST /api/campaigns/:id/enqueue ─────────────────────────────────────────
+// ?preview=true → return plan without writing anything
+// Body: { contactIds?: string[] } — if provided, only enqueue those contacts
+
 router.post('/:id/enqueue', async (req, res) => {
+  const preview    = req.query.preview === 'true'
+  const { contactIds } = req.body as { contactIds?: string[] }
+  const hasCustomSelection = Array.isArray(contactIds) && contactIds.length > 0
+
   try {
     const campaign = await db.campaign.findUnique({
-      where: { id: req.params.id },
-      include: { areas: true },
+      where:   { id: req.params.id },
+      include: { areas: { include: { area: true } } },
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Not found' }); return }
-    if (!['DRAFT', 'PAUSED'].includes(campaign.status)) {
+    if (!preview && !['DRAFT', 'PAUSED'].includes(campaign.status)) {
       res.status(400).json({ ok: false, error: 'Campaign cannot be started in its current state' })
       return
     }
 
-    const areaIds = campaign.areas.map((a) => a.areaId)
-    const contactsWithArea = await db.contact.findMany({
-      where: { areaId: { in: areaIds }, phoneValid: true, waChecked: true },
-      include: { area: true, department: true },
-    })
+    // Resolve effective targeting config
+    const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
+    const target    = campaign.targetRepliesPerArea ?? appConfig?.defaultTargetRepliesPerArea ?? 20
+    const rate      = campaign.expectedReplyRate    ?? appConfig?.defaultExpectedReplyRate    ?? 0.5
+    const sendLimit = Math.ceil(target / rate)
 
-    console.log(`[api] enqueue campaign ${campaign.id} — ${contactsWithArea.length} contacts found (phoneValid+waChecked)`)
+    const previewRows: Array<{
+      areaId:        string
+      areaName:      string
+      totalInArea:   number
+      wrongType:     number
+      notValidated:  number
+      invalidPhone:  number
+      available:     number
+      willSend:      number
+      target:        number
+      warning?:      string
+    }> = []
 
-    // Create Message records and enqueue jobs
     const jobs: Array<{ name: string; data: MessageJob }> = []
 
-    for (const contact of contactsWithArea) {
-      // Render template
-      const body = campaign.template
-        .replace('{{no}}', contact.seqNo ?? '')
-        .replace('{{nama_toko}}', contact.storeName)
-        .replace('{{bulan}}', campaign.bulan)
-        .replace('{{area}}', contact.area.name)
-        .replace('{{department}}', contact.department.name)
+    for (const ca of campaign.areas) {
+      const area = ca.area
 
-      const message = await db.message.create({
-        data: {
-          campaignId: campaign.id,
-          contactId: contact.id,
-          phone: contact.phoneNorm,
-          body,
-          status: 'QUEUED',
+      // Breakdown counts so the user understands why contacts are excluded
+      const [totalInArea, wrongType, notValidated, invalidPhone, available] = await Promise.all([
+        db.contact.count({ where: { areaId: area.id } }),
+        db.contact.count({ where: { areaId: area.id, contactType: { not: campaign.campaignType } } }),
+        db.contact.count({ where: { areaId: area.id, contactType: campaign.campaignType, phoneValid: true, waChecked: false } }),
+        db.contact.count({ where: { areaId: area.id, contactType: campaign.campaignType, phoneValid: false } }),
+        db.contact.count({
+          where: {
+            areaId:      area.id,
+            contactType: campaign.campaignType,
+            phoneValid:  true,
+            waChecked:   true,
+            messages:    { none: { campaignId: campaign.id } },
+          },
+        }),
+      ])
+
+      // Fetch actual contacts for enqueuing (skip on preview)
+      // If contactIds provided: filter to only selected contacts within this area
+      const contacts = preview ? [] : await db.contact.findMany({
+        where: {
+          areaId:      area.id,
+          contactType: campaign.campaignType,
+          phoneValid:  true,
+          waChecked:   true,
+          messages:    { none: { campaignId: campaign.id } },
+          ...(hasCustomSelection && { id: { in: contactIds } }),
         },
+        orderBy: { createdAt: 'asc' },
+        // Only apply sendLimit when auto-selecting — custom selection uses exact list
+        take: hasCustomSelection ? undefined : sendLimit,
       })
 
-      console.log(`[api] enqueue job msg:${message.id} → phone ${contact.phoneNorm}`)
+      const willSend = preview ? Math.min(available, sendLimit) : contacts.length
 
-      jobs.push({
-        name: `msg:${message.id}`,
-        data: {
-          messageId: message.id,
-          campaignId: campaign.id,
-          contactId: contact.id,
-          phone: contact.phoneNorm,
-          body,
-        },
-      })
+      const warnings: string[] = []
+      if (notValidated > 0) warnings.push(`${notValidated} not WA-validated yet`)
+      if (wrongType > 0)    warnings.push(`${wrongType} wrong type (not ${campaign.campaignType})`)
+      if (available < sendLimit) warnings.push(`only ${available} ready (need ${sendLimit})`)
+
+      const row = {
+        areaId:       area.id,
+        areaName:     area.name,
+        totalInArea,
+        wrongType,
+        notValidated,
+        invalidPhone,
+        available,
+        willSend,
+        target,
+        ...(warnings.length > 0 && { warning: warnings.join('; ') }),
+      }
+      previewRows.push(row)
+
+      if (preview) continue
+
+      for (const contact of contacts) {
+        // Format campaign type for display: STIK → "Stik", KARDUS → "Kardus"
+        const tipe = campaign.campaignType.charAt(0).toUpperCase() +
+                     campaign.campaignType.slice(1).toLowerCase()
+
+        const body = campaign.template
+          .replace(/\{\{no\}\}/g,          contact.seqNo   ?? '')
+          .replace(/\{\{nama_toko\}\}/g,   contact.storeName)
+          .replace(/\{\{bulan\}\}/g,       campaign.bulan)
+          .replace(/\{\{area\}\}/g,        area.name)
+          .replace(/\{\{department\}\}/g,  contact.departmentId)
+          .replace(/\{\{tipe\}\}/g,        tipe)
+
+        const message = await db.message.create({
+          data: { campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body, status: 'QUEUED' },
+        })
+
+        jobs.push({
+          name: `msg:${message.id}`,
+          data: { messageId: message.id, campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body },
+        })
+      }
+
+      if (!preview) {
+        await db.campaignArea.update({
+          where: { campaignId_areaId: { campaignId: campaign.id, areaId: area.id } },
+          data:  { sendLimit },
+        })
+      }
     }
 
-    console.log(`[api] messageQueue.addBulk → ${jobs.length} jobs pushing to Redis`)
-    await messageQueue.addBulk(jobs as never)
-    console.log(`[api] messageQueue.addBulk done`)
+    if (preview) {
+      res.json({ ok: true, data: previewRows })
+      return
+    }
 
+    await messageQueue.addBulk(jobs as never)
+    const totalEnqueued = jobs.length
     await db.campaign.update({
       where: { id: campaign.id },
-      data: { status: 'RUNNING', totalCount: contactsWithArea.length, startedAt: new Date() },
+      data:  { status: 'RUNNING', totalCount: totalEnqueued, startedAt: new Date() },
     })
-    console.log(`[api] campaign ${campaign.id} status → RUNNING`)
 
-    res.json({ ok: true, data: { enqueued: jobs.length } })
+    res.json({ ok: true, data: { enqueued: totalEnqueued, preview: previewRows } })
   } catch (err) {
-    console.error(`[api][error] enqueue campaign ${req.params.id}:`, err)
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
 
-// POST /api/campaigns/:id/pause
+// ─── POST /api/campaigns/:id/pause ───────────────────────────────────────────
+
 router.post('/:id/pause', async (req, res) => {
   try {
     await messageQueue.pause()
@@ -188,7 +291,8 @@ router.post('/:id/pause', async (req, res) => {
   }
 })
 
-// POST /api/campaigns/:id/resume
+// ─── POST /api/campaigns/:id/resume ──────────────────────────────────────────
+
 router.post('/:id/resume', async (req, res) => {
   try {
     await messageQueue.resume()
@@ -199,14 +303,18 @@ router.post('/:id/resume', async (req, res) => {
   }
 })
 
-// POST /api/campaigns/:id/cancel
+// ─── POST /api/campaigns/:id/cancel ──────────────────────────────────────────
+
 router.post('/:id/cancel', async (req, res) => {
   try {
-    // Drain pending jobs for this campaign
     const waiting = await messageQueue.getWaiting()
     for (const job of waiting) {
       if (job.data.campaignId === req.params.id) await job.remove()
     }
+    await db.message.updateMany({
+      where: { campaignId: req.params.id, status: { in: ['PENDING', 'QUEUED'] } },
+      data:  { status: 'CANCELLED' },
+    })
     await db.campaign.update({ where: { id: req.params.id }, data: { status: 'CANCELLED' } })
     res.json({ ok: true, data: null })
   } catch (err) {
@@ -214,33 +322,200 @@ router.post('/:id/cancel', async (req, res) => {
   }
 })
 
-// GET /api/campaigns/:id/events — SSE live progress
+// ─── POST /api/campaigns/:id/topup ───────────────────────────────────────────
+// Enqueue the next batch of fresh contacts for areas that sent all their initial
+// batch but haven't reached the reply target yet.
+// Body: { areaId? } — omit to top-up ALL eligible areas in the campaign.
+
+router.post('/:id/topup', async (req, res) => {
+  const { areaId: specificAreaId } = req.body as { areaId?: string }
+
+  try {
+    const campaign = await db.campaign.findUnique({
+      where:   { id: req.params.id },
+      include: { areas: { include: { area: true } } },
+    })
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
+    if (!['RUNNING', 'PAUSED'].includes(campaign.status)) {
+      res.status(400).json({ ok: false, error: 'Campaign must be RUNNING or PAUSED to top up' })
+      return
+    }
+
+    const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
+    const target    = campaign.targetRepliesPerArea ?? appConfig?.defaultTargetRepliesPerArea ?? 20
+    const rate      = campaign.expectedReplyRate    ?? appConfig?.defaultExpectedReplyRate    ?? 0.5
+    const batchSize = Math.ceil(target / rate)
+
+    const areaEntries = specificAreaId
+      ? campaign.areas.filter((ca) => ca.areaId === specificAreaId)
+      : campaign.areas
+
+    const results: Array<{ areaId: string; areaName: string; enqueued: number; skipped: string | null }> = []
+    const jobs: Array<{ name: string; data: MessageJob }> = []
+
+    for (const ca of areaEntries) {
+      // Skip areas that already reached their target
+      if (ca.targetReached) {
+        results.push({ areaId: ca.areaId, areaName: ca.area.name, enqueued: 0, skipped: 'Target already reached' })
+        continue
+      }
+      // Skip areas that still have pending/queued messages
+      const pending = await db.message.count({
+        where: { campaignId: campaign.id, contact: { areaId: ca.areaId }, status: { in: ['PENDING', 'QUEUED'] } },
+      })
+      if (pending > 0) {
+        results.push({ areaId: ca.areaId, areaName: ca.area.name, enqueued: 0, skipped: `${pending} messages still pending` })
+        continue
+      }
+
+      // Find fresh contacts not yet messaged in this campaign
+      const contacts = await db.contact.findMany({
+        where: {
+          areaId:      ca.areaId,
+          contactType: campaign.campaignType,
+          phoneValid:  true,
+          waChecked:   true,
+          messages:    { none: { campaignId: campaign.id } },
+        },
+        orderBy: { createdAt: 'asc' },
+        take:    batchSize,
+      })
+
+      if (contacts.length === 0) {
+        results.push({ areaId: ca.areaId, areaName: ca.area.name, enqueued: 0, skipped: 'No fresh contacts remaining' })
+        continue
+      }
+
+      for (const contact of contacts) {
+        const tipe = campaign.campaignType.charAt(0).toUpperCase() +
+                     campaign.campaignType.slice(1).toLowerCase()
+
+        const body = campaign.template
+          .replace(/\{\{no\}\}/g,         contact.seqNo ?? '')
+          .replace(/\{\{nama_toko\}\}/g,  contact.storeName)
+          .replace(/\{\{bulan\}\}/g,      campaign.bulan)
+          .replace(/\{\{area\}\}/g,       ca.area.name)
+          .replace(/\{\{department\}\}/g, contact.departmentId)
+          .replace(/\{\{tipe\}\}/g,       tipe)
+
+        const message = await db.message.create({
+          data: { campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body, status: 'QUEUED' },
+        })
+        jobs.push({
+          name: `msg:${message.id}`,
+          data: { messageId: message.id, campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body },
+        })
+      }
+
+      // Update sendLimit to reflect total contacts now queued for this area
+      await db.campaignArea.update({
+        where: { campaignId_areaId: { campaignId: campaign.id, areaId: ca.areaId } },
+        data:  { sendLimit: { increment: contacts.length } },
+      })
+
+      results.push({ areaId: ca.areaId, areaName: ca.area.name, enqueued: contacts.length, skipped: null })
+    }
+
+    if (jobs.length > 0) {
+      await messageQueue.addBulk(jobs as never)
+      await db.campaign.update({
+        where: { id: campaign.id },
+        data:  { totalCount: { increment: jobs.length } },
+      })
+    }
+
+    res.json({ ok: true, data: { totalEnqueued: jobs.length, areas: results } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── GET /api/campaigns/:id/contacts ─────────────────────────────────────────
+// Returns up to 100 eligible contacts per area for the contact picker.
+// Each contact includes alreadyReplied: true if they already have a Reply in any
+// campaign with the same bulan + campaignType — to prevent double-sending.
+
+router.get('/:id/contacts', async (req, res) => {
+  try {
+    const campaign = await db.campaign.findUnique({
+      where:   { id: req.params.id },
+      include: { areas: { include: { area: true } } },
+    })
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
+
+    // Find all contacts who already replied in any campaign with same bulan + campaignType
+    const repliedContacts = await db.contact.findMany({
+      where: {
+        messages: {
+          some: {
+            reply:    { isNot: null },
+            campaign: { bulan: campaign.bulan, campaignType: campaign.campaignType },
+          },
+        },
+      },
+      select: { id: true },
+    })
+    const repliedSet = new Set(repliedContacts.map((c) => c.id))
+
+    const grouped = await Promise.all(
+      campaign.areas.map(async (ca) => {
+        const contacts = await db.contact.findMany({
+          where: {
+            areaId:      ca.areaId,
+            contactType: campaign.campaignType,
+            phoneValid:  true,
+            waChecked:   true,
+          },
+          select: {
+            id:        true,
+            storeName: true,
+            phoneNorm: true,
+            seqNo:     true,
+          },
+          orderBy: [{ seqNo: 'asc' }, { storeName: 'asc' }],
+          take:    100,
+        })
+
+        return {
+          areaId:   ca.areaId,
+          areaName: ca.area.name,
+          contacts: contacts.map((c) => ({
+            ...c,
+            alreadyReplied: repliedSet.has(c.id),
+          })),
+        }
+      }),
+    )
+
+    res.json({ ok: true, data: grouped })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── GET /api/campaigns/:id/events ───────────────────────────────────────────
+
 router.get('/:id/events', (req, res) => {
-  const campaignId = req.params.id
   res.setHeader('Content-Type', 'text/event-stream')
   res.setHeader('Cache-Control', 'no-cache')
   res.setHeader('Connection', 'keep-alive')
   res.flushHeaders()
-
-  // TODO: subscribe to Redis pub/sub channel `campaign:${campaignId}:events`
   const keepAlive = setInterval(() => res.write(': ping\n\n'), 15000)
   req.on('close', () => clearInterval(keepAlive))
 })
 
-// GET /api/campaigns/:id/messages
+// ─── GET /api/campaigns/:id/messages ─────────────────────────────────────────
+
 router.get('/:id/messages', async (req, res) => {
   const { page = '1', limit = '50', status } = req.query as Record<string, string>
   try {
-    const where = {
-      campaignId: req.params.id,
-      ...(status && { status }),
-    }
+    const where = { campaignId: req.params.id, ...(status && { status }) }
     const [messages, total] = await Promise.all([
       db.message.findMany({
         where,
-        include: { contact: true, reply: true },
-        skip: (Number(page) - 1) * Number(limit),
-        take: Number(limit),
+        include: { contact: { include: { area: true } }, reply: true, agent: true },
+        skip:    (Number(page) - 1) * Number(limit),
+        take:    Number(limit),
         orderBy: { createdAt: 'asc' },
       }),
       db.message.count({ where }),

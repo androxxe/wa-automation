@@ -1,4 +1,18 @@
 -- CreateTable
+CREATE TABLE `Agent` (
+    `id` INTEGER NOT NULL AUTO_INCREMENT,
+    `name` VARCHAR(191) NOT NULL,
+    `profilePath` VARCHAR(500) NOT NULL,
+    `status` VARCHAR(191) NOT NULL DEFAULT 'OFFLINE',
+    `departmentId` VARCHAR(191) NULL,
+    `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    UNIQUE INDEX `Agent_name_key`(`name`),
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- CreateTable
 CREATE TABLE `Department` (
     `id` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
@@ -14,6 +28,7 @@ CREATE TABLE `Department` (
 CREATE TABLE `Area` (
     `id` VARCHAR(191) NOT NULL,
     `name` VARCHAR(191) NOT NULL,
+    `contactType` VARCHAR(191) NOT NULL DEFAULT 'STIK',
     `fileName` VARCHAR(191) NOT NULL,
     `filePath` VARCHAR(500) NOT NULL,
     `columnMapping` JSON NULL,
@@ -21,7 +36,7 @@ CREATE TABLE `Area` (
     `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     `updatedAt` DATETIME(3) NOT NULL,
 
-    UNIQUE INDEX `Area_departmentId_name_key`(`departmentId`, `name`),
+    UNIQUE INDEX `Area_departmentId_name_contactType_key`(`departmentId`, `name`, `contactType`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
@@ -33,7 +48,9 @@ CREATE TABLE `Contact` (
     `freezerId` VARCHAR(191) NULL,
     `phoneRaw` VARCHAR(191) NOT NULL,
     `phoneNorm` VARCHAR(191) NOT NULL,
+    `contactType` VARCHAR(191) NOT NULL DEFAULT 'STIK',
     `phoneValid` BOOLEAN NOT NULL DEFAULT true,
+    `waChecked` BOOLEAN NOT NULL DEFAULT false,
     `exchangeCount` INTEGER NULL,
     `awardCount` INTEGER NULL,
     `totalCount` INTEGER NULL,
@@ -52,7 +69,11 @@ CREATE TABLE `Campaign` (
     `name` VARCHAR(191) NOT NULL,
     `template` TEXT NOT NULL,
     `bulan` VARCHAR(191) NOT NULL,
+    `campaignType` VARCHAR(191) NOT NULL DEFAULT 'STIK',
     `status` VARCHAR(191) NOT NULL DEFAULT 'DRAFT',
+    `targetRepliesPerArea` INTEGER NULL,
+    `expectedReplyRate` DOUBLE NULL,
+    `stopOnTargetReached` BOOLEAN NOT NULL DEFAULT true,
     `totalCount` INTEGER NOT NULL DEFAULT 0,
     `sentCount` INTEGER NOT NULL DEFAULT 0,
     `deliveredCount` INTEGER NOT NULL DEFAULT 0,
@@ -69,11 +90,15 @@ CREATE TABLE `Campaign` (
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
-CREATE TABLE `CampaignDepartment` (
+CREATE TABLE `CampaignArea` (
     `campaignId` VARCHAR(191) NOT NULL,
-    `departmentId` VARCHAR(191) NOT NULL,
+    `areaId` VARCHAR(191) NOT NULL,
+    `sendLimit` INTEGER NULL,
+    `sentCount` INTEGER NOT NULL DEFAULT 0,
+    `replyCount` INTEGER NOT NULL DEFAULT 0,
+    `targetReached` BOOLEAN NOT NULL DEFAULT false,
 
-    PRIMARY KEY (`campaignId`, `departmentId`)
+    PRIMARY KEY (`campaignId`, `areaId`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- CreateTable
@@ -81,6 +106,7 @@ CREATE TABLE `Message` (
     `id` VARCHAR(191) NOT NULL,
     `campaignId` VARCHAR(191) NOT NULL,
     `contactId` VARCHAR(191) NOT NULL,
+    `agentId` INTEGER NULL,
     `phone` VARCHAR(191) NOT NULL,
     `body` TEXT NOT NULL,
     `status` VARCHAR(191) NOT NULL DEFAULT 'PENDING',
@@ -105,6 +131,8 @@ CREATE TABLE `Reply` (
     `claudeSentiment` VARCHAR(191) NULL,
     `claudeSummary` TEXT NULL,
     `claudeRaw` JSON NULL,
+    `jawaban` INTEGER NULL,
+    `screenshotPath` VARCHAR(500) NULL,
     `receivedAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
 
     UNIQUE INDEX `Reply_messageId_key`(`messageId`),
@@ -122,6 +150,19 @@ CREATE TABLE `DailySendLog` (
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
+-- CreateTable
+CREATE TABLE `AppConfig` (
+    `id` VARCHAR(191) NOT NULL DEFAULT 'singleton',
+    `defaultTargetRepliesPerArea` INTEGER NOT NULL DEFAULT 20,
+    `defaultExpectedReplyRate` DOUBLE NOT NULL DEFAULT 0.5,
+    `updatedAt` DATETIME(3) NOT NULL,
+
+    PRIMARY KEY (`id`)
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- AddForeignKey
+ALTER TABLE `Agent` ADD CONSTRAINT `Agent_departmentId_fkey` FOREIGN KEY (`departmentId`) REFERENCES `Department`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
 -- AddForeignKey
 ALTER TABLE `Area` ADD CONSTRAINT `Area_departmentId_fkey` FOREIGN KEY (`departmentId`) REFERENCES `Department`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
@@ -132,10 +173,10 @@ ALTER TABLE `Contact` ADD CONSTRAINT `Contact_areaId_fkey` FOREIGN KEY (`areaId`
 ALTER TABLE `Contact` ADD CONSTRAINT `Contact_departmentId_fkey` FOREIGN KEY (`departmentId`) REFERENCES `Department`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `CampaignDepartment` ADD CONSTRAINT `CampaignDepartment_campaignId_fkey` FOREIGN KEY (`campaignId`) REFERENCES `Campaign`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `CampaignArea` ADD CONSTRAINT `CampaignArea_campaignId_fkey` FOREIGN KEY (`campaignId`) REFERENCES `Campaign`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `CampaignDepartment` ADD CONSTRAINT `CampaignDepartment_departmentId_fkey` FOREIGN KEY (`departmentId`) REFERENCES `Department`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `CampaignArea` ADD CONSTRAINT `CampaignArea_areaId_fkey` FOREIGN KEY (`areaId`) REFERENCES `Area`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `Message` ADD CONSTRAINT `Message_campaignId_fkey` FOREIGN KEY (`campaignId`) REFERENCES `Campaign`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
@@ -144,4 +185,8 @@ ALTER TABLE `Message` ADD CONSTRAINT `Message_campaignId_fkey` FOREIGN KEY (`cam
 ALTER TABLE `Message` ADD CONSTRAINT `Message_contactId_fkey` FOREIGN KEY (`contactId`) REFERENCES `Contact`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE `Message` ADD CONSTRAINT `Message_agentId_fkey` FOREIGN KEY (`agentId`) REFERENCES `Agent`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE `Reply` ADD CONSTRAINT `Reply_messageId_fkey` FOREIGN KEY (`messageId`) REFERENCES `Message`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+

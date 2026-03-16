@@ -9,7 +9,7 @@ const router: import('express').Router = Router()
 // POST /api/analyze/headers — Claude Job 1
 router.post('/headers', async (req, res) => {
   const { headers, sampleRows } = req.body as {
-    headers: string[]
+    headers:    string[]
     sampleRows: Record<string, unknown>[]
   }
   if (!headers || !sampleRows) {
@@ -17,18 +17,19 @@ router.post('/headers', async (req, res) => {
     return
   }
   try {
-    const mapping = await mapHeaders(headers, sampleRows)
-    res.json({ ok: true, data: mapping })
+    res.json({ ok: true, data: await mapHeaders(headers, sampleRows) })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
 
 // POST /api/analyze/reply — Claude Job 2
+// Used by the worker for fan-out replies. Only performs Claude analysis;
+// Reply records are created by the worker itself.
 const AnalyzeReplyBody = z.object({
-  replyId: z.string(),
-  replyText: z.string(),
-  bulan: z.string(),
+  replyText:    z.string(),
+  bulan:        z.string(),
+  campaignType: z.string().optional(),
 })
 
 router.post('/reply', async (req, res) => {
@@ -37,38 +38,32 @@ router.post('/reply', async (req, res) => {
     res.status(400).json({ ok: false, error: parsed.error.message })
     return
   }
-  const { replyId, replyText, bulan } = parsed.data
+  const { replyText, bulan } = parsed.data
   try {
     const analysis = await analyzeReply(replyText, bulan)
+    res.json({ ok: true, data: { ...analysis, jawaban: analysis.jawaban ?? null } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
 
-    // jawaban comes directly from Claude — no keyword matching needed
-    const jawaban = analysis.jawaban ?? null
-
-    // Persist Claude's analysis + jawaban
-    await db.reply.update({
-      where: { id: replyId },
-      data: {
-        claudeCategory: analysis.category,
-        claudeSentiment: analysis.sentiment,
-        claudeSummary: analysis.summary,
-        claudeRaw: JSON.parse(JSON.stringify(analysis)),
-        jawaban,
-      },
-    })
-
-    // Fetch areaId for report generation (separate query for correct typing)
-    const replyWithContact = await db.reply.findUnique({
-      where: { id: replyId },
-      include: { message: { include: { contact: true } } },
-    })
-
-    if (replyWithContact?.message?.contact?.areaId) {
-      generateAreaReport(replyWithContact.message.contact.areaId).catch((err) =>
-        console.error('[report] failed to generate area report:', err),
-      )
-    }
-
-    res.json({ ok: true, data: { ...analysis, jawaban } })
+// POST /api/export/report-area — triggers CSV regeneration for one (area, bulan, campaignType)
+// Called fire-and-forget by the worker after fan-out reply processing.
+router.post('/report-area', async (req, res) => {
+  const { areaId, bulan, campaignType } = req.body as {
+    areaId:       string
+    bulan:        string
+    campaignType: string
+  }
+  if (!areaId || !bulan || !campaignType) {
+    res.status(400).json({ ok: false, error: 'areaId, bulan, campaignType required' })
+    return
+  }
+  try {
+    generateAreaReport(areaId, bulan, campaignType).catch((err) =>
+      console.error('[report] generate failed:', err),
+    )
+    res.json({ ok: true, data: null })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -77,13 +72,9 @@ router.post('/reply', async (req, res) => {
 // POST /api/analyze/vary — Claude Job 3
 router.post('/vary', async (req, res) => {
   const { message } = req.body as { message: string }
-  if (!message) {
-    res.status(400).json({ ok: false, error: 'message is required' })
-    return
-  }
+  if (!message) { res.status(400).json({ ok: false, error: 'message is required' }); return }
   try {
-    const varied = await varyMessage(message)
-    res.json({ ok: true, data: { varied } })
+    res.json({ ok: true, data: { varied: await varyMessage(message) } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

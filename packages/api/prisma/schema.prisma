@@ -7,31 +7,53 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── Agent ────────────────────────────────────────────────────────────────────
+
+model Agent {
+  id           Int            @id @default(autoincrement())
+  name         String         @unique
+  profilePath  String         @db.VarChar(500)
+  status       String         @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
+  departmentId String?
+  department   Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  messages     Message[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+// ─── Department ───────────────────────────────────────────────────────────────
+
 model Department {
   id        String    @id @default(cuid())
   name      String    @unique
   path      String    @db.VarChar(500)
   areas     Area[]
   contacts  Contact[]
+  agents    Agent[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
 
+// ─── Area ─────────────────────────────────────────────────────────────────────
+
 model Area {
-  id            String        @id @default(cuid())
+  id            String         @id @default(cuid())
   name          String
+  contactType   String         @default("STIK") // "STIK" | "KARDUS" — top-level DATA_FOLDER subfolder
   fileName      String
-  filePath      String        @db.VarChar(500)
+  filePath      String         @db.VarChar(500)
   columnMapping Json?
   departmentId  String
-  department    Department    @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  department    Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
   contacts      Contact[]
   campaigns     CampaignArea[]
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 
-  @@unique([departmentId, name])
+  @@unique([departmentId, name, contactType]) // Aceh Barat STIK ≠ Aceh Barat KARDUS
 }
+
+// ─── Contact ──────────────────────────────────────────────────────────────────
 
 model Contact {
   id            String     @id @default(cuid())
@@ -40,6 +62,7 @@ model Contact {
   freezerId     String?
   phoneRaw      String
   phoneNorm     String
+  contactType   String     @default("STIK") // "STIK" | "KARDUS" — denormalized from area
   phoneValid    Boolean    @default(true)
   waChecked     Boolean    @default(false)
   exchangeCount Int?
@@ -53,15 +76,24 @@ model Contact {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
-  @@unique([areaId, phoneNorm])
+  @@unique([areaId, phoneNorm]) // areaId already encodes the type — same phone OK per type
 }
 
+// ─── Campaign ─────────────────────────────────────────────────────────────────
+
 model Campaign {
-  id             String         @id @default(cuid())
-  name           String
-  template       String         @db.Text
-  bulan          String
-  status         String         @default("DRAFT")
+  id           String         @id @default(cuid())
+  name         String
+  template     String         @db.Text
+  bulan        String
+  campaignType String         @default("STIK") // "STIK" | "KARDUS"
+  status       String         @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
+
+  // Send targeting — null = use global AppConfig default at enqueue time
+  targetRepliesPerArea Int?
+  expectedReplyRate    Float?
+  stopOnTargetReached  Boolean @default(true)
+
   areas          CampaignArea[]
   messages       Message[]
   totalCount     Int            @default(0)
@@ -77,14 +109,24 @@ model Campaign {
   updatedAt      DateTime       @updatedAt
 }
 
+// ─── CampaignArea ─────────────────────────────────────────────────────────────
+
 model CampaignArea {
-  campaignId String
-  areaId     String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  area       Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  campaignId    String
+  areaId        String
+  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  area          Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  // Populated at enqueue time
+  sendLimit     Int?
+  sentCount     Int     @default(0)
+  replyCount    Int     @default(0)
+  targetReached Boolean @default(false)
 
   @@id([campaignId, areaId])
 }
+
+// ─── Message ──────────────────────────────────────────────────────────────────
 
 model Message {
   id          String    @id @default(cuid())
@@ -92,9 +134,11 @@ model Message {
   campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   contactId   String
   contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  agentId     Int?
+  agent       Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
   phone       String
   body        String    @db.Text
-  status      String    @default("PENDING")
+  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED|CANCELLED
   sentAt      DateTime?
   deliveredAt DateTime?
   readAt      DateTime?
@@ -104,6 +148,8 @@ model Message {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
 }
+
+// ─── Reply ────────────────────────────────────────────────────────────────────
 
 model Reply {
   id              String   @id @default(cuid())
@@ -115,14 +161,25 @@ model Reply {
   claudeSentiment String?
   claudeSummary   String?  @db.Text
   claudeRaw       Json?
-  jawaban         Int?     // 1 = confirmed (Ya), 0 = denied (Tidak), null = unclear
+  jawaban         Int?
   screenshotPath  String?  @db.VarChar(500)
   receivedAt      DateTime @default(now())
 }
 
+// ─── DailySendLog ─────────────────────────────────────────────────────────────
+
 model DailySendLog {
   id        String   @id @default(cuid())
-  date      String   @unique
+  date      String   @unique // "YYYY-MM-DD" in WIB — single-agent for now
   count     Int      @default(0)
   updatedAt DateTime @updatedAt
+}
+
+// ─── AppConfig (singleton) ────────────────────────────────────────────────────
+
+model AppConfig {
+  id                          String   @id @default("singleton")
+  defaultTargetRepliesPerArea Int      @default(20)
+  defaultExpectedReplyRate    Float    @default(0.5)
+  updatedAt                   DateTime @updatedAt
 }

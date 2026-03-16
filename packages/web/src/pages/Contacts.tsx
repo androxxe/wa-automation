@@ -8,8 +8,10 @@ interface Contact {
   freezerId: string | null
   phoneRaw: string
   phoneNorm: string
+  contactType: string
   phoneValid: boolean
   waChecked: boolean
+  waChecking: boolean   // true = job is in queue, result not yet available
   exchangeCount: number | null
   department: { name: string }
   area: { name: string }
@@ -24,32 +26,40 @@ interface ContactsPage {
 
 // ─── WA status badge ─────────────────────────────────────────────────────────
 
-function WaStatusBadge({ phoneValid, waChecked }: { phoneValid: boolean; waChecked: boolean }) {
+function WaStatusBadge({
+  phoneValid,
+  waChecked,
+  waChecking,
+}: {
+  phoneValid:  boolean
+  waChecked:   boolean
+  waChecking:  boolean
+}) {
   if (!phoneValid) {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">Tidak valid</span>
+  }
+  if (waChecked) {
+    return <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">Terdaftar</span>
+  }
+  if (waChecking) {
     return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-red-100 text-red-600">
-        Tidak valid
+      <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-600 flex items-center gap-1 w-fit">
+        <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+        </svg>
+        Pending Checking
       </span>
     )
   }
-  if (!waChecked) {
-    return (
-      <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">
-        Belum dicek
-      </span>
-    )
-  }
-  return (
-    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 text-green-700">
-      Terdaftar
-    </span>
-  )
+  return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Belum dicek</span>
 }
 
 export default function Contacts() {
   const [data, setData] = useState<ContactsPage | null>(null)
   const [page, setPage] = useState(1)
-  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [statusFilter, setStatusFilter]   = useState<string>('')
+  const [typeFilter, setTypeFilter]       = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [validating, setValidating] = useState(false)
   const [validateMsg, setValidateMsg] = useState<string | null>(null)
@@ -58,16 +68,16 @@ export default function Contacts() {
     setLoading(true)
     const params = new URLSearchParams({ page: String(page), limit: '50' })
 
-    // Map UI filter → API query params
     if (statusFilter === 'invalid')   params.set('phoneValid', 'false')
     if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
     if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
+    if (typeFilter) params.set('contactType', typeFilter)
 
     apiFetch<ContactsPage>(`/api/contacts?${params}`)
       .then(setData)
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [page, statusFilter])
+  }, [page, statusFilter, typeFilter])
 
   useEffect(() => {
     loadContacts()
@@ -87,6 +97,9 @@ export default function Contacts() {
         setValidateMsg(
           `${result.queued} nomor diantrekan untuk dicek${recheck ? ' (ulang)' : ''}. Status akan diperbarui otomatis.`
         )
+        // Refetch immediately so "Pending Checking" badges appear right away,
+        // then again after 3s to catch any fast completions.
+        loadContacts()
         setTimeout(loadContacts, 3000)
       }
     } catch (err) {
@@ -109,11 +122,20 @@ export default function Contacts() {
         </div>
         <div className="flex items-center gap-2">
           <select
+            value={typeFilter}
+            onChange={(e) => { setTypeFilter(e.target.value); setPage(1) }}
+            className="text-sm border rounded-md px-3 py-1.5 bg-background"
+          >
+            <option value="">Semua Tipe</option>
+            <option value="STIK">STIK</option>
+            <option value="KARDUS">KARDUS</option>
+          </select>
+          <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
             className="text-sm border rounded-md px-3 py-1.5 bg-background"
           >
-            <option value="">Semua</option>
+            <option value="">Semua Status</option>
             <option value="unchecked">Belum dicek</option>
             <option value="valid">Terdaftar</option>
             <option value="invalid">Tidak valid</option>
@@ -149,7 +171,7 @@ export default function Contacts() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['No', 'Store Name', 'Department', 'Area', 'Phone (raw)', 'Phone (normalized)', 'Status WA', 'Exchange'].map((h) => (
+              {['No', 'Store Name', 'Department', 'Area', 'Tipe', 'Phone (raw)', 'Phone (normalized)', 'Status WA', 'Exchange'].map((h) => (
                 <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
@@ -157,7 +179,7 @@ export default function Contacts() {
           <tbody className="divide-y">
             {loading && (
               <tr>
-                <td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td>
+                <td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">Loading...</td>
               </tr>
             )}
             {!loading && data?.contacts.map((c) => (
@@ -166,10 +188,17 @@ export default function Contacts() {
                 <td className="px-4 py-2.5 font-medium">{c.storeName}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{c.department.name}</td>
                 <td className="px-4 py-2.5 text-muted-foreground">{c.area.name}</td>
+                <td className="px-4 py-2.5">
+                  <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                    c.contactType === 'STIK' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                  }`}>
+                    {c.contactType}
+                  </span>
+                </td>
                 <td className="px-4 py-2.5 font-mono text-xs">{c.phoneRaw}</td>
                 <td className="px-4 py-2.5 font-mono text-xs">{c.phoneNorm}</td>
                 <td className="px-4 py-2.5">
-                  <WaStatusBadge phoneValid={c.phoneValid} waChecked={c.waChecked} />
+                  <WaStatusBadge phoneValid={c.phoneValid} waChecked={c.waChecked} waChecking={c.waChecking} />
                 </td>
                 <td className="px-4 py-2.5 text-muted-foreground">{c.exchangeCount ?? '—'}</td>
               </tr>

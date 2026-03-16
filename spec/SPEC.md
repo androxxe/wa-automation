@@ -2,7 +2,11 @@
 
 ## Overview
 
-A full-stack web application for managing bulk WhatsApp messaging campaigns targeting AICE ice cream distribution partners. Reads contact data from `.xlsx` files organized by department and market area, sends personalized WhatsApp messages via a real visible Chromium browser controlled by Playwright (mimicking genuine human interaction to minimize ban risk), captures replies via DOM polling, analyzes them with Claude AI, writes results back to output Excel files, and auto-generates per-area CSV reports with binary confirmation answers (1 = confirmed, 0 = denied).
+A full-stack web application for managing bulk WhatsApp messaging campaigns targeting AICE ice cream distribution partners. Reads contact data from `.xlsx` files organized by department and market area, sends personalized WhatsApp messages via real visible Chromium browsers controlled by Playwright (mimicking genuine human interaction to minimize ban risk), captures replies via DOM polling, analyzes them with Claude AI, writes results back to output Excel files, and auto-generates per-area CSV reports with binary confirmation answers (1 = confirmed, 0 = denied).
+
+**Multi-agent:** The system supports N independent browser agents running in parallel. Each agent = one WhatsApp account + one Playwright Chromium window + one persistent browser profile. Agents share a single BullMQ message queue; the worker selects the least-busy online agent for each job. Agents can optionally be assigned to a specific department (agent-per-department mode) or float in a shared pool.
+
+**Send targeting:** Each campaign has a configurable **target replies per area** and **expected reply rate**. At enqueue time the system calculates `sendLimit = ceil(targetReplies / replyRate)` per area and only queues that many contacts. Once an area's reply count hits the target, all remaining queued messages for that area are automatically cancelled — no wasted sends.
 
 ---
 
@@ -13,7 +17,7 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 | Monorepo | pnpm workspaces | latest | 4 packages: shared, api, worker, web |
 | API server | Express.js + TypeScript | latest | REST + SSE |
 | Frontend | React + Vite + Tailwind CSS | latest | Port 5173 |
-| Browser Automation | playwright | latest | Controls real visible Chromium window |
+| Browser Automation | playwright | latest | Controls N real visible Chromium windows |
 | Anti-Detection | Custom stealth init script | — | Removes headless/automation fingerprints via `addInitScript` |
 | Excel Parsing | xlsx (SheetJS) | latest | Read `.xlsx`, inconsistent headers |
 | AI | @anthropic-ai/sdk | latest | Header mapping, reply analysis, message variation |
@@ -32,7 +36,7 @@ whatsapp-automation/
 ├── packages/
 │   ├── shared/          # TypeScript types only — no runtime deps
 │   ├── api/             # Express.js server + all server-side lib + Prisma
-│   ├── worker/          # BullMQ worker — owns the Playwright browser
+│   ├── worker/          # BullMQ worker — owns all Playwright browsers via AgentManager
 │   └── web/             # React + Vite frontend
 ├── .env                 # Single env file for all packages
 ├── .env.example
@@ -45,12 +49,12 @@ whatsapp-automation/
 
 | Package | Responsibility |
 |---|---|
-| `@aice/shared` | Shared TypeScript interfaces (MessageJob, PhoneCheckJob, CampaignStatus, SSE event types, etc.) |
+| `@aice/shared` | Shared TypeScript interfaces (MessageJob, PhoneCheckJob, CampaignStatus, AgentStatus, AgentInfo, SSE event types, etc.) |
 | `@aice/api` | Express routes, lib utilities (excel, phone, claude, queue producer, exporter, report), Prisma schema |
-| `@aice/worker` | BullMQ consumers (message + phone-check), BrowserManager singleton, scheduler, Claude variation |
+| `@aice/worker` | BullMQ consumers (message + phone-check), AgentManager (N BrowserAgent instances), scheduler, Claude variation |
 | `@aice/web` | React SPA — all UI pages, Vite proxy to API |
 
-> **BrowserManager ownership**: The Playwright browser runs inside `@aice/worker`. The API reads browser status from Redis. Browser control commands (start/stop) are sent via Redis pub/sub from API → worker.
+> **AgentManager ownership**: All Playwright browsers run inside `@aice/worker` under `AgentManager`. The API reads per-agent status from Redis. Browser control commands (start/stop) are sent via Redis pub/sub from API → worker, keyed per agent (`browser:command:{agentId}`).
 
 ---
 
@@ -71,8 +75,8 @@ DATABASE_URL=mysql://root@localhost:3306/wa_automation
 REDIS_URL=redis://localhost:6379
 
 # Browser automation
-BROWSER_PROFILE_PATH=./browser-profile      # persistent Chromium user data dir
-BROWSER_HEADLESS=false                      # always false — visible window required
+BROWSER_PROFILE_PATH=./browser-profile      # base directory for all agent profiles; each agent's profile lives at {BROWSER_PROFILE_PATH}/{agentId}/
+BROWSER_HEADLESS=false                      # always false — visible windows required
 
 # Working hours (WIB = Asia/Jakarta, UTC+7)
 WORKING_HOURS_START=08:00
@@ -87,13 +91,16 @@ RATE_LIMIT_MIN_MS=20000                     # hard floor — never faster than 2
 RATE_LIMIT_MAX_MS=90000                     # hard ceiling — never slower than 90s
 
 # Safety caps
-DAILY_SEND_CAP=150                          # max messages per day
-MID_SESSION_BREAK_EVERY=30                  # pause after every N messages
+DAILY_SEND_CAP=150                          # max messages per day PER AGENT
+MID_SESSION_BREAK_EVERY=30                  # pause after every N messages (per agent)
 MID_SESSION_BREAK_MIN_MS=180000             # min break duration (3 min)
 MID_SESSION_BREAK_MAX_MS=480000             # max break duration (8 min)
 
 # Reply polling
-REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s
+REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s (per agent)
+
+# Phone check parallelism — set to match your number of agents (default 3)
+PHONE_CHECK_CONCURRENCY=3                  # how many phone-check jobs run in parallel
 
 # API server
 PORT=3001
@@ -101,6 +108,8 @@ PORT=3001
 # Web (Vite — must be prefixed VITE_)
 VITE_API_URL=http://localhost:3001
 ```
+
+> **Note**: `BROWSER_PROFILE_PATH` is the base directory for all agent profiles. Each agent's profile is auto-created at `{BROWSER_PROFILE_PATH}/{agentId}/` — no manual path entry needed when creating agents. `BROWSER_PROFILES_DIR` is accepted as an alias.
 
 ### Startup Validation
 
@@ -112,6 +121,7 @@ Both `@aice/api` and `@aice/worker` run a startup validation before accepting tr
 4. **MySQL connection** — `SELECT 1` query
 5. **Redis connection** — `PING`
 6. **DATA_FOLDER exists** (API only)
+7. **BROWSER_PROFILE_PATH exists or is creatable** (worker only)
 
 Process exits with code 1 and a clear error summary if any check fails.
 
@@ -121,16 +131,24 @@ Process exits with code 1 and a clear error summary if any check fails.
 
 ```
 data/
-├── Department 1/
-│   ├── Aceh Barat.xlsx
-│   ├── Aceh Utara.xlsx
+├── STIK/
+│   ├── Department 1/
+│   │   ├── Aceh Barat.xlsx
+│   │   ├── Aceh Utara.xlsx
+│   │   └── ...
+│   ├── Department 2/
+│   │   └── ...
 │   └── ...
-├── Department 2/
-│   └── ...
-...
-└── Department 9/
+└── KARDUS/
+    ├── Department 1/
+    │   ├── Aceh Barat.xlsx
+    │   └── ...
     └── ...
 ```
+
+The top-level subfolder name (`STIK` / `KARDUS`) is the **contact type**. The folder scanner reads it as the type and passes it through to the import flow. All contacts imported from a type subfolder are tagged with that `contactType`.
+
+> Additional types can be supported in the future by adding new top-level subfolders — no code changes required beyond updating the allowed-values list.
 
 ### Excel File Format (sample)
 
@@ -175,6 +193,28 @@ Indonesian mobile numbers are normalized to E.164 format for WhatsApp. All forma
 
 ---
 
+## Duplicate Phone Numbers (STIK × KARDUS)
+
+The same phone number can appear in both the STIK and KARDUS import files for the same area. This is expected — a store owner may exchange both product types. The system handles duplicates at three points:
+
+### At import
+`Area.contactType` differentiates the two records. `Contact.@@unique([areaId, phoneNorm])` — since the STIK area and KARDUS area have different `areaId`s, the same phone imports cleanly as two independent Contact records with no conflict.
+
+### At WA registration check
+`POST /api/contacts/validate-wa` deduplicates by `phoneNorm` before enqueuing jobs — one Playwright navigation per unique phone, never two. The worker writes the result with `updateMany({ where: { phoneNorm } })`, so both the STIK and KARDUS contact records are updated in a single DB write.
+
+### At reply detection
+When a phone replies, `handleReply` finds **all** unreplied messages for that phone — spanning both STIK and KARDUS campaigns if applicable. Claude is called **once** with the reply text. The same `{ jawaban, category, sentiment, summary }` is written to every Reply record created in that fan-out. Each affected campaign and area report is then updated independently.
+
+| Scenario | Result |
+|---|---|
+| Same phone, STIK and KARDUS both sent, store replies once | Both messages get a Reply record with the same text + jawaban. Both CSV reports updated. |
+| Same phone, only STIK sent so far | Only the STIK message gets a Reply. KARDUS stays unreplied until KARDUS send happens. |
+| Same phone, store replies twice (one per campaign) | First reply fans out to all unreplied at that moment. Second reply fans out to whatever remains unreplied. |
+| Screenshot | One screenshot per poll visit. Same path referenced in all Reply records from that poll. |
+
+---
+
 ## WhatsApp Registration Validation
 
 Format-valid phones are not guaranteed to be registered on WhatsApp. A separate WA check step is required before sending.
@@ -200,6 +240,8 @@ Race:
 
 If popup appears, it is **dismissed** (button clicked) before returning, so it never blocks the next navigation.
 
+Phone-check jobs are dispatched through `AgentManager.getLeastBusyAgent()` — the same agent-selection logic used for sends. Any online agent can perform a phone check.
+
 ### Automatic invalidation during send
 
 If `sendMessage` encounters the "Nomor tidak terdaftar" popup during a live campaign, the worker:
@@ -209,9 +251,19 @@ If `sendMessage` encounters the "Nomor tidak terdaftar" popup during a live camp
 
 This ensures the contact is excluded from all future campaigns without needing a manual re-validation.
 
-### Browser lock
+### Browser lock (per agent)
 
-All browser operations (`sendMessage`, `checkPhoneRegistered`, `pollReplies`) are serialised through a `_withBrowserLock` mutex on `BrowserManager`, preventing the message-send worker and phone-check worker from colliding on the same Playwright page.
+All browser operations (`sendMessage`, `checkPhoneRegistered`, `pollReplies`) are serialised through a `_withBrowserLock` mutex **on each `BrowserAgent` instance**. Only one operation runs at a time per agent — the rest queue and run in order after the current one finishes. Different agents operate concurrently with no shared lock.
+
+**Blocking behaviour (by design):**
+
+| Scenario | Result |
+|---|---|
+| Poll fires while `sendMessage` is running | Poll waits. Send completes fully (navigate → type → click send). Then poll runs. |
+| Send job queued while `pollReplies` is running | Send waits. Poll visits all unreplied phones, then releases lock. Send runs normally. |
+| `checkPhoneRegistered` queued behind a send | Same — waits, then runs after send releases. |
+
+This is intentional: the Playwright page can only be in one place at a time. Serialisation ensures the page is never navigated away mid-send, mid-type, or mid-poll. All operations complete cleanly before the next one starts.
 
 ---
 
@@ -219,11 +271,21 @@ All browser operations (`sendMessage`, `checkPhoneRegistered`, `pollReplies`) ar
 
 Static per-campaign template with variable substitution. Variables use `{{variable_name}}` syntax.
 
-### Default Template
+### Default Templates (per campaign type)
 
+The UI pre-fills the template based on the selected campaign type. The user can edit freely after selection.
+
+**STIK:**
 ```
-Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stick ke distributor?
+Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stik ke distributor?
 ```
+
+**KARDUS:**
+```
+Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran kupon Kardus ke distributor?
+```
+
+> The templates differ in phrasing (not just a word swap), so two separate defaults are used rather than a single `{{tipe}}` variable. Switching campaign type in the create form updates the template automatically — unless the user has already manually edited it.
 
 ### Available Variables
 
@@ -233,6 +295,7 @@ Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi ai
 | `{{bulan}}` | Campaign-level static field (user sets once, e.g. `"12"` or `"Desember"`) |
 | `{{department}}` | Department name |
 | `{{area}}` | Area / market name |
+| `{{tipe}}` | Campaign type, title-cased — `"Stik"` or `"Kardus"` |
 
 ### Message Variation (Claude Job 3)
 
@@ -257,12 +320,26 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model Agent {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  profilePath  String        @db.VarChar(500)  // absolute path to Chromium user data dir
+  status       String        @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
+  departmentId String?       // optional — if set, prefer this agent for dept contacts
+  department   Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  messages     Message[]
+  dailySendLogs DailySendLog[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
 model Department {
   id        String    @id @default(cuid())
   name      String    @unique
   path      String    @db.VarChar(500)
   areas     Area[]
   contacts  Contact[]
+  agents    Agent[]
   createdAt DateTime  @default(now())
   updatedAt DateTime  @updatedAt
 }
@@ -270,6 +347,7 @@ model Department {
 model Area {
   id            String         @id @default(cuid())
   name          String
+  contactType   String         // "STIK" | "KARDUS" — inferred from DATA_FOLDER top-level subfolder
   fileName      String
   filePath      String         @db.VarChar(500)
   columnMapping Json?                          // Claude-mapped column keys
@@ -280,7 +358,7 @@ model Area {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  @@unique([departmentId, name])
+  @@unique([departmentId, name, contactType])  // Aceh Barat STIK ≠ Aceh Barat KARDUS
 }
 
 model Contact {
@@ -290,6 +368,7 @@ model Contact {
   freezerId     String?
   phoneRaw      String
   phoneNorm     String
+  contactType   String     // "STIK" | "KARDUS" — denormalized from area.contactType for fast filtering
   phoneValid    Boolean    @default(true)   // false = bad format OR not on WA
   waChecked     Boolean    @default(false)  // true = has been validated against WA Web
   exchangeCount Int?
@@ -303,6 +382,8 @@ model Contact {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
+  // areaId already encodes the type (STIK area ≠ KARDUS area for same market),
+  // so the same phone can exist once per type within the same market.
   @@unique([areaId, phoneNorm])
 }
 
@@ -312,6 +393,14 @@ model Campaign {
   template       String         @db.Text
   bulan          String
   status         String         @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
+
+  campaignType          String  // "STIK" | "KARDUS" — determines which contacts are enqueued
+
+  // Send targeting — null means "use global AppConfig default at enqueue time"
+  targetRepliesPerArea  Int?    // desired replies per area (e.g. 20)
+  expectedReplyRate     Float?  // expected reply rate 0.0–1.0 (e.g. 0.5)
+  stopOnTargetReached   Boolean @default(true)  // cancel remaining msgs once area hits target
+
   areas          CampaignArea[]
   messages       Message[]
   totalCount     Int                  @default(0)
@@ -328,10 +417,16 @@ model Campaign {
 }
 
 model CampaignArea {
-  campaignId String
-  areaId     String
-  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  area       Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
+  campaignId    String
+  areaId        String
+  campaign      Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  area          Area     @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  // Populated at enqueue time
+  sendLimit     Int?     // max contacts enqueued for this area: ceil(targetReplies / replyRate)
+  sentCount     Int      @default(0)   // messages successfully sent for this area
+  replyCount    Int      @default(0)   // replies received for this area
+  targetReached Boolean  @default(false) // true once replyCount >= campaign.targetRepliesPerArea
 
   @@id([campaignId, areaId])
 }
@@ -342,9 +437,11 @@ model Message {
   campaign    Campaign  @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   contactId   String
   contact     Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  agentId     String?   // which agent sent this message (null = not yet sent)
+  agent       Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
   phone       String
   body        String    @db.Text
-  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED
+  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED|CANCELLED
   sentAt      DateTime?
   deliveredAt DateTime?
   readAt      DateTime?
@@ -372,9 +469,21 @@ model Reply {
 
 model DailySendLog {
   id        String   @id @default(cuid())
-  date      String   @unique  // "YYYY-MM-DD" in WIB
+  agentId   String
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  date      String   // "YYYY-MM-DD" in WIB
   count     Int      @default(0)
   updatedAt DateTime @updatedAt
+
+  @@unique([agentId, date])  // each agent tracks its own daily count independently
+}
+
+// Singleton row (id = "singleton") — stores global UI-configurable defaults
+model AppConfig {
+  id                          String   @id @default("singleton")
+  defaultTargetRepliesPerArea Int      @default(20)   // target replies per area per campaign
+  defaultExpectedReplyRate    Float    @default(0.5)  // 0.0–1.0 (e.g. 0.5 = 50%)
+  updatedAt                   DateTime @updatedAt
 }
 ```
 
@@ -382,25 +491,49 @@ model DailySendLog {
 
 ## API Routes
 
-### Browser / WhatsApp Session
+### App Configuration
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/browser/status` | Browser + WA Web connection status (connected/disconnected/qr/loading) |
-| `GET` | `/api/browser/screenshot` | Current browser screenshot as base64 (for UI preview) |
-| `POST` | `/api/browser/start` | Send start command to worker via Redis pub/sub |
-| `POST` | `/api/browser/stop` | Send stop command to worker via Redis pub/sub |
-| `GET` | `/api/browser/events` | SSE stream — browser status, delivery updates, reply notifications |
+| `GET` | `/api/config` | Get global app config (defaultTargetRepliesPerArea, defaultExpectedReplyRate, computed defaultSendPerArea) |
+| `PATCH` | `/api/config` | Update global app config. Body: `{ defaultTargetRepliesPerArea?, defaultExpectedReplyRate? }` |
+
+`defaultSendPerArea` is a **computed field** returned by `GET /api/config`:
+```
+defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate)
+```
+
+### Agents
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/agents` | List all agents with status, active job count, daily send count |
+| `POST` | `/api/agents` | Register a new agent. Body: `{ name, departmentId? }`. `profilePath` is auto-derived as `{BROWSER_PROFILE_PATH}/{agentId}` — no manual path required. |
+| `GET` | `/api/agents/:id` | Single agent detail |
+| `PATCH` | `/api/agents/:id` | Update agent name or department assignment |
+| `DELETE` | `/api/agents/:id` | Remove agent (must be OFFLINE) |
+| `GET` | `/api/agents/:id/status` | Live status from Redis |
+| `GET` | `/api/agents/:id/screenshot` | Current screenshot as base64 |
+| `POST` | `/api/agents/:id/start` | Send start command via Redis pub/sub |
+| `POST` | `/api/agents/:id/stop` | Send stop command via Redis pub/sub |
+| `GET` | `/api/agents/:id/events` | SSE stream — status changes for this agent |
+
+### Browser / WhatsApp Session (aggregate)
+
+| Method | Route | Description |
+|---|---|---|
+| `GET` | `/api/browser/status` | Aggregate status: `{ agents: AgentStatus[], anyOnline: boolean }` |
+| `GET` | `/api/browser/events` | SSE stream — all agents' status changes + delivery updates + reply notifications |
 
 ### Files / Import
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/files/scan` | Scan DATA_FOLDER, return dept/area tree (folder-based) |
-| `GET` | `/api/files/areas` | Return imported areas from DB grouped by department (with IDs) |
+| `GET` | `/api/files/scan` | Scan DATA_FOLDER, return `type → dept → area` tree. Response includes `contactType` on each area node. |
+| `GET` | `/api/files/areas` | Return imported areas from DB grouped by `contactType → department`. Each area includes `contactType`. |
 | `POST` | `/api/files/parse` | Parse a single xlsx, return headers + sample rows |
 | `POST` | `/api/analyze/headers` | Send headers+samples to Claude, get column mapping suggestion |
-| `POST` | `/api/files/import` | Confirm mapping, normalize phones, save to DB |
+| `POST` | `/api/files/import` | Confirm mapping, normalize phones, save to DB. Body must include `contactType` (inferred from folder path by the UI). |
 
 ### Contacts
 
@@ -408,7 +541,7 @@ model DailySendLog {
 |---|---|---|
 | `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked) |
 | `GET` | `/api/contacts/:id` | Single contact detail |
-| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaId?, recheck? }`. Default: only unchecked contacts. `recheck: true` re-checks all. |
+| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaId?, recheck? }`. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
 | `GET` | `/api/contacts/validate-wa/status` | Live phone-check queue counts: `{ waiting, active, completed, failed, total }` |
 
 ### Campaigns
@@ -416,11 +549,12 @@ model DailySendLog {
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/campaigns` | List all campaigns |
-| `POST` | `/api/campaigns` | Create new campaign |
-| `GET` | `/api/campaigns/:id` | Get campaign detail + stats |
+| `POST` | `/api/campaigns` | Create new campaign. Body includes `targetRepliesPerArea?`, `expectedReplyRate?` (null = use global defaults) |
+| `GET` | `/api/campaigns/:id` | Get campaign detail + stats + per-area breakdown (`CampaignArea` with sendLimit, sentCount, replyCount, targetReached) |
 | `PATCH` | `/api/campaigns/:id` | Update campaign (draft only) |
 | `DELETE` | `/api/campaigns/:id` | Delete campaign (draft only) |
-| `POST` | `/api/campaigns/:id/enqueue` | Enqueue contacts (`phoneValid=true AND waChecked=true` only) |
+| `POST` | `/api/campaigns/:id/enqueue` | Enqueue contacts. Body: `{ contactIds?: string[] }` — if provided, only enqueue those contacts; otherwise auto-select up to `sendLimit` per area. Returns per-area preview: `{ areaId, areaName, available, willSend, target }[]` |
+| `GET` | `/api/campaigns/:id/contacts` | Returns up to 100 eligible contacts per area for the contact picker. Each contact includes `alreadyReplied: boolean` — true if they already have a reply in any campaign with the same `bulan` + `campaignType`. |
 | `POST` | `/api/campaigns/:id/pause` | Pause campaign |
 | `POST` | `/api/campaigns/:id/resume` | Resume paused campaign |
 | `POST` | `/api/campaigns/:id/cancel` | Cancel campaign |
@@ -441,6 +575,7 @@ model DailySendLog {
 | `GET` | `/api/export/responses` | Download all responses as xlsx (filter: date, dept, area) |
 | `POST` | `/api/export/write` | Write response xlsx files to OUTPUT_FOLDER |
 | `POST` | `/api/export/report` | Regenerate CSV report(s). Body: `{ areaId? }` — omit to regenerate all |
+| `GET` | `/api/export/report-xlsx?campaignId=` | Download per-campaign XLSX — one sheet per area, screenshots in column E. Filename: `{Type}_{Bulan}_{YYYY-MM-DD}.xlsx` |
 
 ---
 
@@ -448,27 +583,58 @@ model DailySendLog {
 
 ### Architecture
 
-The Playwright browser runs as a **long-lived singleton** managed by `packages/worker/src/lib/browser.ts` inside the worker process. It is launched once when the worker starts and kept alive for the session.
+The Playwright browsers run as **long-lived instances** managed by `AgentManager` inside the worker process. Each `BrowserAgent` is launched independently and kept alive for its session.
 
 ```
-packages/worker/src/lib/browser.ts
-  └── BrowserManager (singleton)
-        ├── launch()                — starts Chromium with persistent profile + stealth
-        ├── getPage()               — returns active WhatsApp Web page
-        ├── sendMessage()           — full human-simulation send flow (browser-locked)
-        ├── checkPhoneRegistered()  — Promise.race compose/popup detection (browser-locked)
-        ├── pollReplies()           — DOM scan for unread chats
-        ├── getStatus()             — connected | qr | loading | disconnected
-        ├── screenshot()            — base64 screenshot for UI preview
-        └── _withBrowserLock()      — mutex serialising all page interactions
+packages/worker/src/lib/agent-manager.ts
+  └── AgentManager
+        ├── agents: Map<agentId, BrowserAgent>
+        ├── initFromDB()             — loads agents from DB at startup, starts ONLINE ones
+        ├── getLeastBusyAgent()      — returns the ONLINE agent with lowest activeJobCount
+        ├── startAgent(agentId)      — launches BrowserAgent, publishes status to Redis
+        ├── stopAgent(agentId)       — gracefully closes BrowserAgent
+        └── handleCommand(agentId, cmd) — responds to Redis pub/sub commands
+
+packages/worker/src/lib/browser-agent.ts
+  └── BrowserAgent (one per WhatsApp account)
+        ├── agentId: string
+        ├── profilePath: string
+        ├── activeJobCount: number   — tracked in-memory and in Redis
+        ├── launch()                 — starts Chromium with persistent profile + stealth
+        ├── getPage()                — returns active WhatsApp Web page
+        ├── sendMessage()            — full human-simulation send flow (agent-locked)
+        ├── checkPhoneRegistered()   — Promise.race compose/popup detection (agent-locked)
+        ├── pollReplies()            — DOM scan for unread chats
+        ├── getStatus()              — connected | qr | loading | disconnected
+        ├── screenshot()             — base64 screenshot for UI preview
+        └── _withBrowserLock()       — per-agent mutex serialising all page interactions
 ```
 
-The API reads browser status by querying Redis (updated by the worker on every status change). Browser control commands (start/stop) travel from API → Redis pub/sub → worker.
+The API reads per-agent status from Redis keys `agent:{agentId}:status`. Agent control commands travel from API → Redis pub/sub channel `browser:command:{agentId}` → AgentManager → BrowserAgent.
 
-### Browser Launch Config
+### Agent Selection: `getLeastBusyAgent()`
+
+```
+1. Filter agents where Redis status = "connected"
+2. Among those, find the one with the lowest activeJobCount
+3. If a tie, pick the one with the lowest daily send count today
+4. If no agents are ONLINE: poll every 10s, up to 10 min, then fail the job
+```
+
+`activeJobCount` is incremented in Redis (`agent:{agentId}:active_jobs`) when a job is assigned to an agent and decremented when the job finishes (success or failure).
+
+### Department-Affinity Routing
+
+When `MessageJob.agentId` is set (because the contact's department has an assigned agent):
+1. Check if that agent is ONLINE — if yes, use it directly
+2. If not ONLINE, fall back to `getLeastBusyAgent()` from the pool
+
+This allows agent-per-department assignment while gracefully degrading to pool routing if the preferred agent is offline.
+
+### Browser Launch Config (per agent)
 
 ```ts
-this.context = await chromium.launchPersistentContext(PROFILE_PATH, {
+this.context = await chromium.launchPersistentContext(this.profilePath, {
   headless: false,                    // visible window — required
   args: [
     '--no-sandbox',
@@ -520,9 +686,9 @@ await this.context.addInitScript(STEALTH_SCRIPT)
 
 Polling every 10s for 3 minutes after each send.
 
-### Reply Detection (DOM Polling)
+### Reply Detection (DOM Polling, per agent)
 
-A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
+A background loop runs per agent every `REPLY_POLL_INTERVAL_MS` (60s):
 
 ```
 1. Scan chat list for items with unread badge
@@ -531,7 +697,11 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
    b. FILTER — skip if phone is NOT in our sent-messages list
       (prevents processing random incoming messages on your personal WhatsApp)
    c. Read last incoming message text from DOM
-   d. Take a screenshot of the chat → save to OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg
+   d. Take a **cropped screenshot of the chat panel only** (not the full browser window):
+      - Target element: `#main` (WhatsApp Web's chat panel — message header + message list + compose box)
+      - Captured via Playwright element screenshot: `page.locator('#main').screenshot()`
+      - Fallback: if `#main` is not found, fall back to full-page screenshot
+      - Saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
    e. Create Reply record in DB (with screenshotPath)
    f. POST /api/analyze/reply → Claude analyzes → CSV report regenerated
 3. Only phones we have a SENT/DELIVERED/READ message to are processed
@@ -544,13 +714,24 @@ A background loop runs every `REPLY_POLL_INTERVAL_MS` (60s):
 ### Flow
 
 ```
-Worker detects reply
-  → creates Reply record in DB
-  → POST /api/analyze/reply
-      → Claude categorizes (confirmed/denied/question/unclear/other)
-      → determineJawaban() resolves binary 1 or 0
-      → generateAreaReport(areaId) regenerates CSV (fire-and-forget)
+Worker detects reply (phone + text + screenshotPath)
+  → find ALL unreplied messages for this phone
+    (status IN SENT/DELIVERED/READ, no Reply record yet)
+    — may be >1 if same phone has both STIK and KARDUS unreplied messages
+  → create one Reply record per unreplied message (same body + screenshotPath)
+  → call Claude ONCE with the reply text
+  → write { claudeCategory, sentiment, summary, jawaban } to ALL reply records
+  → for each affected message:
+      → increment Campaign.replyCount
+      → generateAreaReport(areaId, bulan, campaignType) — fire-and-forget
+        (bulan from message.campaign.bulan, contactType from message.contact.area.contactType)
 ```
+
+**Why fan-out instead of attributing to the most recent message only:**
+The same phone number can have unreplied messages in both a STIK campaign and a KARDUS campaign. One reply from the store owner answers both — the jawaban (1/0) is product-agnostic. Attributing to all unreplied messages ensures both reports are complete without requiring the store to reply twice.
+
+**Why call Claude once:**
+Same reply text + same question context → same classification result every time. Calling Claude per reply record would be redundant and wasteful.
 
 ### Jawaban determination
 
@@ -566,17 +747,28 @@ Claude handles all informal Indonesian variations: "iya", "betul", "sudah", "ada
 
 ### CSV Output Format
 
-Written to `OUTPUT_FOLDER/{Department Name}/{Area Name}_{YYYY-MM-DD}.csv` — date suffix shows when the file was last generated. Same date = overwritten. New date = new file alongside previous ones.
+Written to `OUTPUT_FOLDER/{Type}/{Department Name}/{Area Name}_{Bulan}_{YYYY-MM-DD}.csv`
+
+- `{Type}` = "STIK" or "KARDUS" (from `area.contactType`)
+- `{Bulan}` = campaign's `bulan` value (e.g. "Januari" or "01") — scopes the report to one month
+- Date suffix shows when the file was last generated. Same date = overwritten. New date = new file alongside previous ones.
+
+Because a market (area) can appear in both STIK and KARDUS campaigns and in multiple months, **each combination is a separate file**. The `generateAreaReport` function signature becomes `generateAreaReport(areaId, bulan, campaignType)`.
 
 ```csv
-Nama Toko,Nomor HP Toko,Jawaban,Screenshot
-Toko ABC,+628121234567,1,/path/to/output/screenshots/628121234567_2026-03-14T08-30-00.jpg
-Toko XYZ,+628121234568,0,/path/to/output/screenshots/628121234568_2026-03-14T09-15-00.jpg
+Nama Toko,Nomor HP Toko,Department,Area,Jawaban,Screenshot
+Toko ABC,+628121234567,Department 1,Aceh Barat,1,/path/to/output/screenshots/628121234567_2026-03-14T08-30-00.jpg
+Toko XYZ,+628121234568,Department 1,Aceh Barat,0,/path/to/output/screenshots/628121234568_2026-03-14T09-15-00.jpg
 ```
+
+> `Department` and `Area` are added as columns so the file is self-describing when opened standalone. The filename already encodes type + bulan + area, but column values ensure rows remain identifiable if the file is merged or copied.
+>
+> `Tipe` (STIK/KARDUS) column will be added once the `contactType` schema migration is applied.
 
 - Only contacts with a clear `1` or `0` are included
 - `Screenshot` column contains the absolute path to the `.jpg` file — open in any image viewer
-- Screenshots saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
+- Screenshots are **cropped to the chat panel only** (`#main` element) — excludes browser chrome, sidebar, and chat list. Falls back to full-page if the element is not found.
+- Saved to `OUTPUT_FOLDER/screenshots/{phone}_{timestamp}.jpg`
 - File is fully rewritten on each reply (idempotent)
 - Triggered automatically on every analyzed reply
 - Can be manually triggered via `POST /api/export/report`
@@ -593,27 +785,33 @@ interface MessageJob {
   messageId: string
   campaignId: string
   contactId: string
-  phone: string   // +62...
-  body: string    // rendered message (pre-variation)
+  phone: string      // +62...
+  body: string       // rendered message (pre-variation)
+  agentId?: string   // preferred agent (set if dept has assigned agent); worker falls back to pool
 }
 ```
 
 **Worker logic (per job):**
-1. Verify message still exists in DB (skip stale jobs)
-2. Wait for browser to be connected (poll every 10s, max 10 min)
-3. Check `DailySendLog` — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
-4. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
-5. Check mid-session break counter — if N messages since last break: sleep random 3–8 min
-6. Call Claude to generate varied message body (Job 3)
-7. `await sleep(gaussianDelay())` — human-like interval
-8. Call `browserManager.sendMessage(phone, variedBody)` — browser-locked
-9. Update `Message.status = SENT`, `sentAt = now()`
-10. Increment `DailySendLog.count`
-11. Increment `Campaign.sentCount`
+1. Verify message exists in DB AND `status != 'CANCELLED'` — skip silently if missing or cancelled
+2. Resolve agent:
+   - If `agentId` is set and that agent is ONLINE → use it
+   - Otherwise call `agentManager.getLeastBusyAgent()` (poll every 10s, max 10 min)
+3. Increment `agent:{agentId}:active_jobs` in Redis
+4. Check `DailySendLog` for this agent — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
+5. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
+6. Check mid-session break counter (per agent) — if N messages since last break: sleep random 3–8 min
+7. Call Claude to generate varied message body (Job 3)
+8. `await sleep(gaussianDelay())` — human-like interval
+9. Call `agent.sendMessage(phone, variedBody)` — agent-locked
+10. Update `Message.status = SENT`, `sentAt = now()`, `agentId = agent.id`
+11. Increment `DailySendLog.count` for this agent
+12. Increment `Campaign.sentCount`
+13. Decrement `agent:{agentId}:active_jobs` in Redis
 
 **On failure:**
 - Mark `Message.status = FAILED`, store `failReason`
 - If `failReason` contains `"tidak terdaftar"`: also set `contact.phoneValid = false, waChecked = true`
+- Always decrement `agent:{agentId}:active_jobs`
 
 **Retry:** 3 attempts with exponential backoff (5s base).
 
@@ -630,14 +828,141 @@ interface PhoneCheckJob {
 ```
 
 **Worker logic (per job):**
-1. Wait for browser to be connected (poll every 5s, max 5 min)
-2. Call `browserManager.checkPhoneRegistered(phone)` — browser-locked
-3. If `contactId` provided: update `contact.phoneValid = registered, waChecked = true`
-4. Log result
+1. Call `agentManager.getLeastBusyAgent()` (poll every 5s, max 5 min)
+2. Increment `agent:{agentId}:active_jobs`
+3. Call `agent.checkPhoneRegistered(phone)` — agent-locked
+4. Update **all contacts** sharing that `phoneNorm` — one result propagates to both STIK and KARDUS records:
+   ```ts
+   db.contact.updateMany({ where: { phoneNorm: phone }, data: { phoneValid: registered, waChecked: true } })
+   ```
+5. Decrement `agent:{agentId}:active_jobs`
 
-**No retries** (attempts: 1) — a failed check is simply not recorded; the contact stays `waChecked: false` and can be re-queued.
+**No retries** (attempts: 1) — a failed check is simply not recorded; all contacts with that phone stay `waChecked: false` and can be re-queued.
 
-**Queued by:** `POST /api/contacts/validate-wa`
+**Queued by:** `POST /api/contacts/validate-wa` — deduplicates by `phoneNorm` before enqueuing, so the same phone number is never checked twice even if it appears in both STIK and KARDUS imports.
+
+---
+
+## Send Targeting
+
+### Goal
+
+Reach a **target number of replies per area** without wasting sends on contacts who won't respond. The system calculates how many messages to send per area based on an expected reply rate, and stops early once the target is met.
+
+### Configuration hierarchy
+
+```
+AppConfig.defaultTargetRepliesPerArea  ← global default (editable in Settings UI)
+AppConfig.defaultExpectedReplyRate
+
+        overridden by
+
+Campaign.targetRepliesPerArea          ← per-campaign override (set at creation)
+Campaign.expectedReplyRate
+```
+
+At runtime, the effective values are resolved as:
+```ts
+const target = campaign.targetRepliesPerArea ?? appConfig.defaultTargetRepliesPerArea
+const rate   = campaign.expectedReplyRate     ?? appConfig.defaultExpectedReplyRate
+const limit  = Math.ceil(target / rate)       // e.g. ceil(20 / 0.5) = 40
+```
+
+### Enqueue logic (per area)
+
+At `POST /api/campaigns/:id/enqueue`:
+
+```
+For each area in the campaign:
+  1. Resolve effective target and rate (campaign override ?? global default)
+  2. sendLimit = ceil(target / rate)
+  3. contacts = query contacts where:
+       - areaId = this area
+       - contactType = campaign.campaignType   ← only enqueue matching type
+       - phoneValid = true
+       - waChecked = true
+       - NOT already enqueued in this campaign
+     ORDER BY createdAt ASC
+     LIMIT sendLimit
+  4. Create Message records (status=PENDING) + add to BullMQ queue
+  5. Set CampaignArea.sendLimit = sendLimit
+  6. Update Campaign.totalCount += contacts.length
+```
+
+If an area has fewer valid contacts than `sendLimit`, all available contacts are enqueued — the target may not be reached, but the system sends what it has.
+
+### Top-up (manual)
+
+After the initial batch is fully sent, replies arrive over the following day(s). If after waiting the reply count is still short of the target, the user can manually trigger a **top-up** from the campaign detail page.
+
+**`POST /api/campaigns/:id/topup`** — Body: `{ areaId? }` (omit to top-up all eligible areas)
+
+Logic per area:
+1. Skip if `targetReached = true`
+2. Skip if there are still PENDING/QUEUED messages for this area (batch not finished yet)
+3. Query the next batch of fresh contacts (`contactType = campaignType`, `phoneValid`, `waChecked`, not yet messaged in this campaign), up to `sendLimit` contacts
+4. Create Message records + enqueue jobs
+5. Increment `CampaignArea.sendLimit` and `Campaign.totalCount`
+6. Return per-area result: `{ enqueued, skipped? }`
+
+**UI — per-area table:**
+
+| Status badge | Meaning |
+|---|---|
+| `Running` (blue) | Batch still in progress |
+| `Short by N` (yellow) | All sent, replies < target — user may top up when ready |
+| `Target reached` (green) | Reply target met, no further sends needed |
+
+The "Short by N" badge appears as soon as the batch is fully sent and target is not reached. There is **no automatic waiting period** — the user decides when to top up based on how long they want to wait for replies.
+
+Both a per-area **Top-up** button and a **"Top-up all areas"** button (header of the table) are shown while the campaign is RUNNING or PAUSED.
+
+### Adaptive stop (per area)
+
+Triggered every time a reply is received and its `POST /api/analyze/reply` completes:
+
+```
+1. Identify the area of the replied-to message
+2. Increment CampaignArea.replyCount for (campaignId, areaId)
+3. If campaign.stopOnTargetReached AND replyCount >= effectiveTarget:
+   a. Set CampaignArea.targetReached = true
+   b. UPDATE Message SET status = 'CANCELLED'
+      WHERE campaignId = X AND areaId = X AND status IN ('PENDING', 'QUEUED')
+   c. Emit SSE event: { type: 'area_target_reached', areaId, areaName, replyCount }
+4. Worker skips any job whose Message.status = 'CANCELLED' at step 1 of job logic
+```
+
+`CANCELLED` messages are distinct from `FAILED` — they are shown differently in the campaign detail UI (greyed out, no error badge).
+
+### Enqueue preview + contact picker
+
+The "Start Campaign" button opens a two-tab modal:
+
+**Tab 1 — Preview**
+Calls `POST /api/campaigns/:id/enqueue?preview=true`. Returns per-area counts without writing anything:
+
+| Column | Meaning |
+|---|---|
+| Total | All contacts in area |
+| Wrong Type | Wrong contactType |
+| Not Validated | Need WA check |
+| Ready | phoneValid + waChecked + correct type |
+| Will Send | min(sendLimit, ready) |
+| Target | targetRepliesPerArea |
+
+**Tab 2 — Select Contacts**
+Calls `GET /api/campaigns/:id/contacts`. Returns up to 100 eligible contacts per area.
+
+Each contact has:
+- `alreadyReplied: boolean` — true if they have a Reply in **any campaign** with the same `bulan` + `campaignType`. These rows are **disabled** (grey, checkbox locked unchecked) to prevent double-sending to contacts who already answered the same question.
+
+UI behaviour:
+- Contacts grouped by area with a per-area "Select all / Clear" toggle
+- Search box filters client-side by store name (no pagination — all ≤ 100 shown in a scrollable container)
+- Default selection: all non-disabled contacts pre-checked
+- Live counter: `42 / 87 selected (12 already replied)`
+
+When confirming, the selected `contactIds[]` are passed to `POST /api/campaigns/:id/enqueue`. If the user skips the tab and confirms from Preview, no `contactIds` are passed and the auto-select behaviour applies.
 
 ---
 
@@ -647,9 +972,9 @@ interface PhoneCheckJob {
 
 | Measure | Implementation |
 |---|---|
-| Non-headless browser | `headless: false` — real visible Chromium window |
+| Non-headless browser | `headless: false` — real visible Chromium windows |
 | Stealth fingerprint removal | Custom `addInitScript` patches (webdriver, chrome runtime, plugins, languages, permissions) |
-| Persistent browser profile | `launchPersistentContext` — same cookies/localStorage across sessions |
+| Persistent browser profile | `launchPersistentContext` — same cookies/localStorage across sessions (per agent) |
 | Real viewport + screen | `viewport: null` matches physical screen size |
 | Real locale + timezone | `locale: 'id-ID'`, `timezoneId: 'Asia/Jakarta'` |
 
@@ -665,10 +990,10 @@ interface PhoneCheckJob {
 
 | Measure | Implementation |
 |---|---|
-| Gaussian interval | Mean 35s, stddev 8s, floor 20s, ceiling 90s — never mechanical |
-| Working hours only | 08:00–17:00 WIB, Mon–Sat |
-| Daily hard cap | `DAILY_SEND_CAP=150` — stops queue when reached |
-| Mid-session breaks | Every 30 messages → random 3–8 min pause |
+| Gaussian interval | Mean 35s, stddev 8s, floor 20s, ceiling 90s — never mechanical (per agent) |
+| Working hours only | 08:00–17:00 WIB, Mon–Sat (enforced per agent) |
+| Daily hard cap | `DAILY_SEND_CAP=150` per agent — stops that agent's queue slot when reached |
+| Mid-session breaks | Every 30 messages per agent → random 3–8 min pause |
 
 ### Content Layer
 
@@ -681,9 +1006,10 @@ interface PhoneCheckJob {
 
 | Measure | Implementation |
 |---|---|
-| Never log out | Browser profile persisted indefinitely |
-| Single session only | One Playwright instance — no parallel sends |
-| Consistent "device" | Same browser profile = same fingerprint every session |
+| Never log out | Browser profile persisted indefinitely (per agent) |
+| Serialized per agent | One Playwright page per agent — no parallel sends within an agent |
+| Consistent "device" | Same browser profile = same fingerprint every session (per agent) |
+| Independent accounts | Each agent is a separate WhatsApp identity — one ban does not affect others |
 
 ---
 
@@ -791,15 +1117,27 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 ## UI Pages
 
 ### `/` — Dashboard
-- Cards: Total contacts, active campaigns, messages sent today, reply rate today, daily cap remaining
+- Cards: Total contacts, active campaigns, messages sent today (across all agents), reply rate today, daily cap remaining (per agent, shown as a mini-table)
 - Recent campaigns table (name, status, progress bar, reply rate)
-- Browser status badge (connected / needs QR / disconnected)
-- Live browser screenshot preview (refreshes every 5s)
+- Agent status overview — one badge per agent (online/QR/offline), clickable to navigate to `/agents`
+- Live screenshot of the first ONLINE agent (refreshes every 5s)
+
+### `/agents` — Agent Manager
+- List of all registered agents with:
+  - Name, department assignment (or "Pool"), status badge, active jobs, messages sent today
+  - Live screenshot thumbnail (refreshes every 5s)
+  - Start / Stop buttons
+  - Edit button (rename, change department assignment)
+  - Delete button (only if OFFLINE)
+- **"Add Agent"** button → modal: name + optional department assignment → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
+- Per-agent QR code prompt when WA Web needs re-authentication (screenshot shows QR — user scans)
 
 ### `/import` — Import Contacts
-- Folder tree of Department 1–9 → Areas
+- Folder tree scanned from DATA_FOLDER: **Type (STIK / KARDUS) → Department → Area**
+- Each area node shows its `contactType` badge (e.g. `[STIK]`)
 - Per-area: import button → shows parsed headers
 - Claude suggests column mapping → user reviews + confirms
+- `contactType` is passed automatically in the import body (read from the folder path — no manual selection needed)
 - Import progress: valid contacts / invalid phones / skipped duplicates
 
 ### `/contacts` — Contact Browser
@@ -822,19 +1160,43 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 
 ### `/campaigns/new` — Create Campaign
 1. Name + `{{bulan}}` field
-2. Message template editor
-3. Select target areas — **Department → Area tree** (collapsible, per-area checkboxes with dept-level select-all)
-4. Selected area count shown live
-5. Submit → status = DRAFT; "Start Campaign" button on detail page
+2. **Campaign type** — radio button: `STIK` / `KARDUS`. Selecting a type filters the area tree in step 3 to only show areas of that type.
+3. Message template editor
+4. Select target areas — **Department → Area tree** filtered to the selected campaign type (collapsible, per-area checkboxes with dept-level select-all)
+5. Selected area count shown live
+6. **Send Configuration** section (pre-filled from `AppConfig` global defaults, user can override):
+   - "Target replies per area" — number input
+   - "Expected reply rate" — percentage input
+   - "Messages to send per area" — computed read-only: `ceil(target / rate)`
+   - These values are saved on the Campaign record (`targetRepliesPerArea`, `expectedReplyRate`)
+7. Submit → status = DRAFT; "Start Campaign" button on detail page
 
-Campaign targets specific **areas** (not whole departments). At enqueue time, only contacts with `phoneValid = true AND waChecked = true` are queued.
+Campaign targets specific **areas** of a single type (not whole departments). At enqueue time, only contacts with `contactType = campaign.campaignType AND phoneValid = true AND waChecked = true` are queued. If a contact's department has an assigned agent, `MessageJob.agentId` is set at enqueue time.
 
 ### `/campaigns/:id` — Campaign Detail
-- Progress: sent / delivered / read / failed
+- Progress: sent / delivered / read / failed (campaign totals)
 - Live SSE feed updating counts in real-time
 - Pause / Resume / Cancel buttons
-- Message table (paginated, filterable by status)
-- **FAILED messages** show a clickable "FAILED ℹ" badge — clicking opens a modal (`FailReasonModal`) with the full `failReason` (e.g. "Nomor +628xx tidak terdaftar di WhatsApp")
+- **"Start Campaign" button (DRAFT only)**:
+  - First shows the **enqueue preview table** (calls `POST /api/campaigns/:id/enqueue?preview=true`):
+
+    | Area | Valid contacts | Will send | Target replies | Warning |
+    |---|---|---|---|---|
+    | Aceh Barat | 87 | 40 | 20 | — |
+    | Aceh Utara | 12 | 12 | 20 | Only 12 contacts available |
+
+  - User confirms → actual enqueue (`POST /api/campaigns/:id/enqueue`)
+- **Per-area progress table** (live, updates via SSE):
+
+  | Area | Sent | Replies | Target | Status |
+  |---|---|---|---|---|
+  | Aceh Barat | 18 | 7 | 20 | Running |
+  | Aceh Utara | 12 | 12 | 20 | **Target reached** (green badge) |
+
+  Status badges: Running / Target Reached / Completed (all sent) / Paused
+- Message table (paginated, filterable by status — includes CANCELLED) — includes **Agent** column
+- **FAILED messages** show a clickable "FAILED ℹ" badge — clicking opens `FailReasonModal`
+- **CANCELLED messages** shown greyed out with a "CANCELLED" badge (no error)
 - Reply summary (confirmed % / denied % / unclear %)
 
 ### `/responses` — Reply Inbox
@@ -842,11 +1204,20 @@ Campaign targets specific **areas** (not whole departments). At enqueue time, on
 - Export to XLSX button (`GET /api/export/responses`)
 - "Write to Output Folder" button (`POST /api/export/write`)
 - "Regenerate CSV Reports" button (`POST /api/export/report`)
+- **Download Report (with screenshots)** bar:
+  - Campaign picker — `<select>` populated from `GET /api/campaigns`, each option labelled `{Name} — {Bulan} — {Type}` (e.g. "Campaign Jan — Januari — STIK")
+  - "Download XLSX" button — disabled until a campaign is selected
+  - On click: fetches `GET /api/export/report-xlsx?campaignId=xxx` as a blob, triggers browser download with filename `{Type}_{Bulan}_{YYYY-MM-DD}.xlsx`
+  - Button shows a spinner + "Generating…" label while the request is in-flight
 
 ### `/settings` — Settings
-- Browser: live screenshot, status badge, Open / Close / Refresh buttons
-- QR code prompt when WA Web needs re-authentication
+- **Campaign Defaults** section (editable, saved to `AppConfig` via `PATCH /api/config`):
+  - "Target replies per area" — number input (default 20)
+  - "Expected reply rate" — percentage input (default 50%)
+  - "Messages to send per area" — computed read-only: `ceil(target / rate)`, e.g. "40 messages"
+  - Save button
 - Config display (working hours, rate limits, daily cap) — read-only from env
+- Link to `/agents` for browser/agent management (browser controls moved to `/agents`)
 
 ---
 
@@ -854,10 +1225,45 @@ Campaign targets specific **areas** (not whole departments). At enqueue time, on
 
 ### XLSX — full response log
 
-Written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx`:
+Written to `OUTPUT_FOLDER/responses_YYYY-MM-DD.xlsx` (or downloaded via `GET /api/export/responses`):
 
-| Nama Toko | No HP | Pesan Dikirim | Status | Waktu Kirim | Balasan | Kategori | Sentimen | Ringkasan | Waktu Balas |
-|---|---|---|---|---|---|---|---|---|---|
+| No | Department | Area | Nama Toko | No HP | Pesan Dikirim | Status | Waktu Kirim | Balasan | Kategori | Waktu Balas |
+|---|---|---|---|---|---|---|---|---|---|---|
+
+> `Sentimen` and `Ringkasan` removed — not needed. `Department` and `Area` added so each row is self-identifying without needing to cross-reference the filename.
+
+### XLSX — per-area report with embedded screenshots (on-demand download)
+
+Generated by `GET /api/export/report-xlsx?campaignId=xxx` using **ExcelJS** (not SheetJS — SheetJS free tier does not support image embedding).
+
+One workbook per campaign download. The campaign already encodes `bulan` + `campaignType`, so each download is naturally scoped to one month + one type.
+
+Only contacts with a clear `jawaban` (1 or 0) are included — same filter as the CSV report.
+
+**Workbook structure:**
+- One sheet per area in the campaign, named `{Area Name}` (truncated to 31 chars)
+- Final sheet named `Info` — campaign name, type, bulan, department, date generated, total rows across all areas
+
+**Each area sheet columns:**
+
+| Col | Header | Notes |
+|---|---|---|
+| A | No | Row number |
+| B | Nama Toko | Store name |
+| C | Nomor HP Toko | Normalized phone |
+| D | Department | Department name |
+| E | Area | Market/area name |
+| F | Jawaban | "Ya ✓" (green cell) or "Tidak ✗" (red cell) |
+| G | Screenshot | Actual `.jpg` image embedded in the cell |
+
+> `Tipe` column (STIK/KARDUS) will be added to column H once the `contactType` schema migration is applied. The workbook filename and `Info` sheet already identify the type from the campaign.
+
+- Row height auto-set to fit the image (~140pt) for rows that have a screenshot
+- Alternate row shading for readability
+- If a screenshot file is missing from disk, column E shows the path as plain text instead
+- Triggered on-demand only (not auto-generated after each reply like the CSV)
+
+**Dependency:** `exceljs` must be added to `@aice/api`
 
 ### CSV — binary confirmation report (auto-generated per reply)
 
@@ -882,13 +1288,29 @@ pnpm dev:api          # API server only
 pnpm dev:worker       # worker only
 pnpm dev:web          # web only
 
-pnpm db:migrate       # run Prisma migrations
+pnpm db:migrate       # run Prisma migrations (safe — additive only)
 pnpm db:generate      # regenerate Prisma client
 pnpm db:studio        # open Prisma Studio
-pnpm db:fresh         # drop + recreate DB (destructive)
+pnpm db:fresh         # ⚠️  drop + recreate DB — DESTROYS ALL DATA — never run in production
 
 pnpm redis:flush      # FLUSHALL — clear all Redis keys + BullMQ queues
 ```
+
+### Database migration rules
+
+**NEVER** use `prisma db push --force-reset` or `pnpm db:fresh` on any environment that has real data. These commands drop the entire database with no recovery path.
+
+For schema changes on a live database, always use additive migrations:
+
+```bash
+# Add new columns / tables — safe, does not touch existing rows
+npx prisma db push --schema=prisma/schema.prisma --accept-data-loss
+
+# Or generate a named migration file first, review it, then apply
+npx prisma migrate dev --name describe_the_change
+```
+
+`--accept-data-loss` only silences warnings about constraint changes — it does **not** drop data unless `--force-reset` is also passed.
 
 ---
 
@@ -898,22 +1320,25 @@ pnpm redis:flush      # FLUSHALL — clear all Redis keys + BullMQ queues
 whatsapp-automation/
 ├── packages/
 │   ├── shared/
-│   │   └── src/index.ts              # All shared TypeScript types
+│   │   └── src/index.ts              # All shared TypeScript types (incl. AgentStatus, AgentInfo)
 │   ├── api/
 │   │   ├── prisma/schema.prisma      # MySQL schema (single source of truth)
 │   │   └── src/
 │   │       ├── index.ts              # Express app + startup validation
 │   │       ├── lib/
 │   │       │   ├── db.ts             # Prisma client
-│   │       │   ├── excel.ts          # SheetJS folder scanner + xlsx parser
+│   │       │   ├── excel.ts          # SheetJS folder scanner (type→dept→area) + xlsx parser
 │   │       │   ├── phone.ts          # Indonesian phone normalizer + validator
 │   │       │   ├── claude.ts         # Anthropic SDK (Job 1: headers, Job 2: reply)
 │   │       │   ├── queue.ts          # bullmq queue producers (messages + phone-check) + Redis
-│   │       │   ├── exporter.ts       # Output xlsx writer
+│   │       │   ├── exporter.ts       # Output xlsx writer (SheetJS — full response log)
 │   │       │   ├── report.ts         # Per-area CSV report generator (Jawaban 1/0)
+│   │       │   ├── report-xlsx.ts    # Per-area XLSX report with embedded screenshots (ExcelJS)
 │   │       │   └── validate.ts       # Startup env + connection checks
 │   │       └── routes/
-│   │           ├── browser.ts        # /api/browser/*
+│   │           ├── agents.ts         # /api/agents/* (NEW)
+│   │           ├── browser.ts        # /api/browser/* (aggregate status + events)
+│   │           ├── config.ts         # /api/config (NEW — AppConfig CRUD)
 │   │           ├── files.ts          # /api/files/*
 │   │           ├── contacts.ts       # /api/contacts/* (incl. validate-wa)
 │   │           ├── campaigns.ts      # /api/campaigns/*
@@ -923,7 +1348,8 @@ whatsapp-automation/
 │   │   └── src/
 │   │       ├── index.ts              # BullMQ workers (messages + phone-check) + startup
 │   │       └── lib/
-│   │           ├── browser.ts        # BrowserManager singleton (Playwright + browser lock)
+│   │           ├── agent-manager.ts  # NEW: owns N BrowserAgent instances, getLeastBusyAgent()
+│   │           ├── browser-agent.ts  # RENAMED from browser.ts — scoped to one profile/session
 │   │           ├── claude.ts         # Anthropic SDK (Job 3: message variation)
 │   │           ├── db.ts             # Prisma client
 │   │           ├── redis.ts          # Redis connection
@@ -939,7 +1365,8 @@ whatsapp-automation/
 │           │   ├── Sidebar.tsx
 │           │   └── WaValidationBanner.tsx  # Global banner while phone-check queue is active
 │           └── pages/                # Dashboard, Import, Contacts, Campaigns,
-│                                     # NewCampaign, CampaignDetail, Responses, Settings
+│                                     # NewCampaign, CampaignDetail, Responses, Settings,
+│                                     # Agents (NEW)
 ├── .env
 ├── .env.example
 ├── package.json                      # pnpm workspace root + scripts
@@ -954,29 +1381,39 @@ whatsapp-automation/
 
 | Risk | Mitigation |
 |---|---|
-| WhatsApp account ban | Visible browser, stealth init script, Gaussian timing, daily cap, working hours, message variation, mid-session breaks |
-| WhatsApp Web UI changes | Playwright selectors abstracted in `browser.ts` for easy updates |
-| Browser crashes | BrowserManager restarts on crash; bullmq jobs are durable (Redis-backed) |
+| WhatsApp account ban | Visible browser, stealth init script, Gaussian timing, daily cap per agent, working hours, message variation, mid-session breaks |
+| One agent banned | Other agents continue operating; banned agent is marked OFFLINE; its pending jobs are re-assigned to pool |
+| Ban + reconnect: replies missed during downtime | Reply poll runs immediately when browser status transitions to `'connected'` (reconnect watcher checks every 5s). WA Web loads full message history, so replies sent during the ban are captured on the first poll after QR scan. |
+| Ban + reconnect: messages that failed to send | Messages mid-queue during ban hit the 10-min timeout and become `FAILED`. They are NOT automatically re-sent after reconnect — user must manually re-enqueue them (future: "Retry failed" button on campaign detail). |
+| Concurrent reply polls | `_isPolling` flag in `startReplyPolling` prevents two polls running simultaneously (e.g. if a poll takes longer than `REPLY_POLL_INTERVAL`). Without this, duplicate `Reply` records would be created. |
+| WhatsApp Web UI changes | Playwright selectors abstracted in `browser-agent.ts` for easy updates |
+| Browser crashes | BrowserAgent restarts on crash; bullmq jobs are durable (Redis-backed); AgentManager detects crash and updates status |
+| Agent profile dir missing | Worker creates `{BROWSER_PROFILE_PATH}/{agentId}/` on first launch |
 | Inconsistent Excel headers | Claude-assisted mapping with user confirmation step |
 | Excel strips leading zero from phone | Normalizer detects `8xxx` prefix and prepends `62` |
 | Excel scientific notation for phone | Normalizer detects and parses `8.12E+10` before stripping |
 | Messages sent to unregistered numbers | `checkPhoneRegistered` validates before campaign; send failure also auto-invalidates contact |
 | Phone check misses unregistered numbers | Promise.race on compose box vs popup — reliable for both valid and invalid numbers |
-| Send + phone-check browser collision | `_withBrowserLock` mutex serialises all page interactions |
-| Messages sent outside hours | Worker working-hours check sleeps until next 08:00 WIB |
-| Daily cap exceeded | `DailySendLog` checked before every job |
+| Send + phone-check collision within one agent | `_withBrowserLock` mutex per BrowserAgent serialises all page interactions for that agent |
+| No agents online when job is picked up | Worker polls `getLeastBusyAgent()` every 10s up to 10 min before failing the job |
+| Messages sent outside hours | Worker working-hours check sleeps until next 08:00 WIB (per agent) |
+| Daily cap exceeded | `DailySendLog` checked per agent before every job |
 | Invalid phone numbers | Format-validated at import; WA-validated before campaign enqueue |
 | Redis unavailable | Startup validation exits with error before accepting traffic |
 | MySQL unavailable | Startup validation exits with error before accepting traffic |
 | Missing env vars | Startup validation exits with clear per-variable error list |
-| Session expired (QR needed) | Browser screenshot in Settings shows QR; user scans to re-auth |
+| Session expired (QR needed) | Agent screenshot in `/agents` page shows QR; user scans to re-auth per agent |
+| Area has fewer contacts than sendLimit | All available contacts enqueued; UI shows warning in preview table |
+| Reply target never reached | Area shows "Short by N" badge once batch is fully sent. User manually triggers top-up when ready (e.g. after waiting a day for replies). |
 | Stale BullMQ jobs after DB reset | `pnpm redis:flush` clears all queues |
 
 ---
 
 ## Notes
 
-- The Playwright browser runs as a **visible Chromium window** inside `@aice/worker`. It must not be minimized while campaigns are active.
+- Each Playwright browser runs as a **visible Chromium window** for its agent inside `@aice/worker`. Windows must not be minimized while campaigns are active.
 - All timestamps are stored as UTC in MySQL. Timezone conversion to `Asia/Jakarta` happens in the scheduler and UI display layer.
 - In production, manage the three processes with `pm2`: API server, worker, and optionally a static web build served by nginx.
+- `DAILY_SEND_CAP` applies **per agent**. With 3 agents, total daily throughput = up to 450 messages/day.
+- `sendLimit` (send targeting) and `DAILY_SEND_CAP` are independent caps — whichever is hit first stops sends for that scope (area vs. agent-day). A campaign with `sendLimit=40` across 10 areas = 400 total messages, spread across days if the daily cap is lower.
 - This project uses the WhatsApp Web interface via browser automation. It is against WhatsApp's Terms of Service. Use responsibly. For large-scale or commercial deployments, migrate to the official Meta WhatsApp Business API.

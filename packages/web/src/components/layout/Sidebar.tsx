@@ -6,6 +6,7 @@ import {
   Megaphone,
   MessageSquareText,
   Settings,
+  Bot,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -14,8 +15,9 @@ const nav = [
   { to: '/import', label: 'Import', icon: Upload },
   { to: '/contacts', label: 'Contacts', icon: Users },
   { to: '/campaigns', label: 'Campaigns', icon: Megaphone },
+  { to: '/agents',    label: 'Agents',    icon: Bot },
   { to: '/responses', label: 'Responses', icon: MessageSquareText },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/settings',  label: 'Settings',  icon: Settings },
 ]
 
 export default function Sidebar() {

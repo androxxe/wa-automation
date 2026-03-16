@@ -1,4 +1,9 @@
-// ─── Campaign ───────────────────────────────────────────────────────────────
+// ─── Contact / Campaign types ─────────────────────────────────────────────────
+
+export type ContactType  = 'STIK' | 'KARDUS'
+export type CampaignType = 'STIK' | 'KARDUS'
+
+// ─── Campaign ─────────────────────────────────────────────────────────────────
 
 export type CampaignStatus =
   | 'DRAFT'
@@ -7,7 +12,7 @@ export type CampaignStatus =
   | 'COMPLETED'
   | 'CANCELLED'
 
-// ─── Message ─────────────────────────────────────────────────────────────────
+// ─── Message ──────────────────────────────────────────────────────────────────
 
 export type MessageStatus =
   | 'PENDING'
@@ -16,20 +21,38 @@ export type MessageStatus =
   | 'DELIVERED'
   | 'READ'
   | 'FAILED'
+  | 'CANCELLED'
 
-// ─── Queue job payload ────────────────────────────────────────────────────────
+// ─── Agent ────────────────────────────────────────────────────────────────────
+
+export type AgentStatus = 'OFFLINE' | 'STARTING' | 'ONLINE' | 'QR' | 'ERROR'
+
+export interface AgentInfo {
+  id: number              // integer autoincrement — e.g. 1, 2, 3
+  name: string
+  profilePath: string
+  status: AgentStatus
+  departmentId: string | null
+  departmentName: string | null
+  activeJobCount: number
+  sentToday: number
+  screenshot: string | null  // base64 jpeg, null when offline
+}
+
+// ─── Queue job payloads ───────────────────────────────────────────────────────
 
 export interface MessageJob {
   messageId: string
   campaignId: string
   contactId: string
-  phone: string   // +62...
-  body: string    // rendered template (pre-variation)
+  phone: string      // +62...
+  body: string       // rendered template (pre-variation)
+  agentId?: number   // preferred agent (int) — falls back to pool if offline
 }
 
 export interface PhoneCheckJob {
   phone: string       // +62...
-  contactId?: string  // if provided, worker updates contact.phoneValid
+  contactId?: string  // kept for logging; worker uses updateMany by phoneNorm
 }
 
 export interface PhoneCheckResult {
@@ -49,54 +72,58 @@ export interface ColumnMapping {
   total_count: string | null
 }
 
-export type ReplyCategory = 'confirmed' | 'denied' | 'question' | 'unclear' | 'other'
+export type ReplyCategory  = 'confirmed' | 'denied' | 'question' | 'unclear' | 'other'
 export type ReplySentiment = 'positive' | 'neutral' | 'negative'
 
 export interface ReplyAnalysis {
-  category: ReplyCategory
+  category:  ReplyCategory
   sentiment: ReplySentiment
-  summary: string
-  jawaban: 1 | 0 | null  // AI-determined binary answer: 1=Ya, 0=Tidak, null=unclear
+  summary:   string
+  jawaban:   1 | 0 | null
 }
 
-// ─── Browser status ───────────────────────────────────────────────────────────
+// ─── Browser / Agent status ───────────────────────────────────────────────────
 
 export type BrowserStatus = 'connected' | 'qr' | 'loading' | 'disconnected'
 
 export interface BrowserStatusPayload {
-  status: BrowserStatus
-  qrDataUrl?: string   // base64 data URL when status === 'qr'
+  status:     BrowserStatus
+  qrDataUrl?: string
 }
 
 // ─── SSE event shapes ─────────────────────────────────────────────────────────
 
 export type SseEventType =
-  | 'browser:status'
+  | 'agent:status'
+  | 'agent:screenshot'
+  | 'browser:status'        // kept for backward compat (single-agent)
   | 'message:sent'
   | 'message:delivered'
   | 'message:read'
   | 'message:failed'
+  | 'message:cancelled'
   | 'reply:received'
   | 'campaign:progress'
+  | 'campaign:area_target_reached'
   | 'campaign:break'
   | 'campaign:completed'
   | 'daily:cap'
 
 export interface SseEvent<T = unknown> {
-  type: SseEventType
+  type:    SseEventType
   payload: T
 }
 
 // ─── API response wrappers ────────────────────────────────────────────────────
 
 export interface ApiOk<T> {
-  ok: true
+  ok:   true
   data: T
 }
 
 export interface ApiError {
-  ok: false
-  error: string
+  ok:       false
+  error:    string
   details?: unknown
 }
 
@@ -105,41 +132,70 @@ export type ApiResponse<T> = ApiOk<T> | ApiError
 // ─── File scan tree ───────────────────────────────────────────────────────────
 
 export interface AreaFile {
-  name: string       // "Aceh Barat"
-  fileName: string   // "Aceh Barat.xlsx"
-  filePath: string
+  name:        string  // "Aceh Barat"
+  fileName:    string  // "Aceh Barat.xlsx"
+  filePath:    string
+  contactType: ContactType
 }
 
 export interface DepartmentTree {
-  name: string       // "Department 1"
-  path: string
+  name:  string    // "Department 1"
+  path:  string
   areas: AreaFile[]
+}
+
+export interface ContactTypeTree {
+  contactType: ContactType
+  departments: DepartmentTree[]
 }
 
 // ─── Excel parse result ───────────────────────────────────────────────────────
 
 export interface ParsedSheet {
-  headers: string[]
+  headers:    string[]
   sampleRows: Record<string, unknown>[]
-  totalRows: number
+  totalRows:  number
 }
 
 // ─── Import result ────────────────────────────────────────────────────────────
 
 export interface ImportResult {
-  imported: number
-  invalid: number
+  imported:   number
+  invalid:    number
   duplicates: number
 }
 
 // ─── Campaign progress ────────────────────────────────────────────────────────
 
 export interface CampaignProgress {
-  campaignId: string
-  totalCount: number
-  sentCount: number
+  campaignId:    string
+  totalCount:    number
+  sentCount:     number
   deliveredCount: number
-  readCount: number
-  failedCount: number
-  replyCount: number
+  readCount:     number
+  failedCount:   number
+  replyCount:    number
+}
+
+// ─── Per-area enqueue preview ─────────────────────────────────────────────────
+
+export interface AreaEnqueuePreview {
+  areaId:       string
+  areaName:     string
+  totalInArea:  number  // all contacts in this area regardless of type/status
+  wrongType:    number  // contacts with a different contactType
+  notValidated: number  // correct type, valid phone, but waChecked=false
+  invalidPhone: number  // correct type, phoneValid=false
+  available:    number  // ready to send: correct type + phoneValid + waChecked
+  willSend:     number  // min(sendLimit, available)
+  target:       number  // targetRepliesPerArea
+  warning?:     string  // human-readable explanation of any limiting factor
+}
+
+// ─── AppConfig ────────────────────────────────────────────────────────────────
+
+export interface AppConfigData {
+  defaultTargetRepliesPerArea: number
+  defaultExpectedReplyRate:    number
+  defaultSendPerArea:          number  // computed: ceil(target / rate)
 }

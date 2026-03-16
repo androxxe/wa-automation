@@ -145,8 +145,9 @@ Open `http://localhost:5173`.
 1. Go to **Import**
 2. Select a department/area xlsx file from the tree
 3. Click **Suggest Column Mapping with Claude** — Claude reads the headers and maps them to internal fields
-4. Review the mapping and click **Confirm and Import**
-5. Repeat for each area you want to target
+4. Review the mapping confirmation screen — it shows the total row count, a sample data preview (first 2 rows), and the field-to-column mapping table
+5. Click **Confirm and Import** — results show imported / invalid-phone / duplicate counts
+6. Repeat for each area you want to target
 
 The importer handles bilingual (Indonesian/Chinese) headers and normalizes all Indonesian phone numbers to E.164 format (`+62...`). All real-world xlsx formats are handled automatically:
 

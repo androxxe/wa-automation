@@ -6,43 +6,27 @@ const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
 
 export type Jawaban = 1 | 0
 
-/**
- * Determine Jawaban purely from Claude's category.
- *   confirmed → 1 (Ya)
- *   denied    → 0 (Tidak)
- *   anything else → null (excluded from report)
- */
-export function determineJawaban(
-  claudeCategory: string | null | undefined,
-): Jawaban | null {
-  if (claudeCategory === 'confirmed') return 1
-  if (claudeCategory === 'denied') return 0
-  return null
-}
-
-// ─── CSV helpers ──────────────────────────────────────────────────────────────
-
 function csvEscape(value: string): string {
-  // Wrap in quotes if value contains comma, quote, or newline
-  if (/[,"\n\r]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`
-  }
+  if (/[,"\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
   return value
 }
 
-// ─── Report generator ─────────────────────────────────────────────────────────
-
 /**
- * Regenerate the CSV report for one area.
+ * Regenerate the CSV report for one (area × bulan × campaignType) combination.
  *
- * Output path: OUTPUT_FOLDER/{Department Name}/{Area Name}.csv
+ * Output: OUTPUT_FOLDER/{Type}/{Department}/{Area}_{Bulan}_{YYYY-MM-DD}.csv
  *
- * Only includes contacts that have replied with a clear Yes (1) or No (0).
- * Re-running is idempotent — the file is fully rewritten each time.
+ * Columns: Nama Toko, Nomor HP Toko, Department, Area, Jawaban, Screenshot
+ * Only contacts with jawaban = 1 or 0 are included.
+ * Fully rewritten on each call (idempotent).
  */
-export async function generateAreaReport(areaId: string): Promise<string | null> {
+export async function generateAreaReport(
+  areaId:       string,
+  bulan:        string,
+  campaignType: string,
+): Promise<string | null> {
   if (!OUTPUT_FOLDER) {
-    console.warn('[report] OUTPUT_FOLDER is not set, skipping CSV generation')
+    console.warn('[report] OUTPUT_FOLDER not set, skipping CSV generation')
     return null
   }
 
@@ -51,10 +35,13 @@ export async function generateAreaReport(areaId: string): Promise<string | null>
     include: {
       area: { include: { department: true } },
       messages: {
-        where: { status: { in: ['SENT', 'DELIVERED', 'READ'] } },
-        include: { reply: true },
-        orderBy: { sentAt: 'desc' },
-        take: 1,
+        where: {
+          status:   { in: ['SENT', 'DELIVERED', 'READ'] },
+          campaign: { bulan, campaignType },
+        },
+        include:  { reply: true },
+        orderBy:  { sentAt: 'desc' },
+        take:     1,
       },
     },
     orderBy: [{ seqNo: 'asc' }, { storeName: 'asc' }],
@@ -65,82 +52,79 @@ export async function generateAreaReport(areaId: string): Promise<string | null>
   const area = contacts[0].area
   const dept = area.department
 
-  // Build rows — only contacts with a clear answer
   const rows: Array<{
-    namaToko: string
-    nomorHp: string
-    jawaban: Jawaban
+    namaToko:       string
+    nomorHp:        string
+    department:     string
+    areaName:       string
+    jawaban:        Jawaban
     screenshotPath: string
   }> = []
 
   for (const contact of contacts) {
     const reply = contact.messages[0]?.reply
-    // Use AI-determined jawaban stored on the reply record.
-    // null means Claude couldn't classify (question/unclear/other) — excluded.
     if (reply?.jawaban == null) continue
-    const jawaban = reply.jawaban as Jawaban
-
-    // Screenshot path: relative to OUTPUT_FOLDER, stored in reply.screenshotPath
-    // Full path = OUTPUT_FOLDER/{screenshotPath}
-    const screenshotPath = reply?.screenshotPath
-      ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
-      : ''
 
     rows.push({
-      namaToko: contact.storeName,
-      nomorHp: contact.phoneNorm,
-      jawaban,
-      screenshotPath,
+      namaToko:       contact.storeName,
+      nomorHp:        contact.phoneNorm,
+      department:     dept.name,
+      areaName:       area.name,
+      jawaban:        reply.jawaban as Jawaban,
+      screenshotPath: reply.screenshotPath
+        ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
+        : '',
     })
   }
 
   if (rows.length === 0) return null
 
-  // Write CSV — filename includes date so users can see when data was last updated.
-  // Same date = file is overwritten. New date = new file alongside previous ones.
-  const today = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
-  const dir = path.join(OUTPUT_FOLDER, dept.name)
+  const today   = new Date().toISOString().slice(0, 10)
+  const dir     = path.join(OUTPUT_FOLDER, campaignType, dept.name)
   fs.mkdirSync(dir, { recursive: true })
 
-  const csvPath = path.join(dir, `${area.name}_${today}.csv`)
-  // Screenshot column stores the absolute path to the .jpg file.
-  // Images can't be embedded in CSV — open the path in any viewer.
-  const header = 'Nama Toko,Nomor HP Toko,Jawaban,Screenshot'
-  const lines = rows.map(
+  const csvPath = path.join(dir, `${area.name}_${bulan}_${today}.csv`)
+  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Jawaban,Screenshot'
+  const lines   = rows.map(
     (r) =>
-      `${csvEscape(r.namaToko)},${csvEscape(r.nomorHp)},${r.jawaban},${csvEscape(r.screenshotPath)}`,
+      `${csvEscape(r.namaToko)},${csvEscape(r.nomorHp)},${csvEscape(r.department)},${csvEscape(r.areaName)},${r.jawaban},${csvEscape(r.screenshotPath)}`,
   )
 
   fs.writeFileSync(csvPath, [header, ...lines].join('\n'), 'utf-8')
-
-  console.log(`[report] wrote ${rows.length} row(s) → ${csvPath}`)
+  console.log(`[report] ${rows.length} row(s) → ${csvPath}`)
   return csvPath
 }
 
 /**
- * Regenerate CSV reports for ALL areas that have at least one analyzed reply.
- * Useful for bulk re-export or recovery.
+ * Regenerate CSV reports for all (area × bulan × campaignType) combos
+ * that have at least one analyzed reply.
  */
 export async function generateAllReports(): Promise<string[]> {
-  const areas = await db.area.findMany({
+  const msgs = await db.message.findMany({
     where: {
-      contacts: {
-        some: {
-          messages: {
-            some: {
-              reply: { claudeCategory: { not: null } },
-            },
-          },
-        },
-      },
+      status: { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:  { claudeCategory: { not: null } },
     },
-    select: { id: true },
+    select: {
+      campaign: { select: { bulan: true, campaignType: true } },
+      contact:  { select: { areaId: true } },
+    },
   })
 
+  const seen  = new Set<string>()
   const paths: string[] = []
-  for (const area of areas) {
-    const p = await generateAreaReport(area.id)
+
+  for (const msg of msgs) {
+    const key = `${msg.contact.areaId}|${msg.campaign.bulan}|${msg.campaign.campaignType}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    const p = await generateAreaReport(
+      msg.contact.areaId,
+      msg.campaign.bulan,
+      msg.campaign.campaignType,
+    )
     if (p) paths.push(p)
   }
+
   return paths
 }
