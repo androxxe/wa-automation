@@ -16,7 +16,7 @@
     "db:fresh": "pnpm --filter @aice/api db:fresh",
     "redis:start": "redis-server redis/redis.conf",
     "redis:stop": "redis-cli -p 6380 shutdown",
-    "redis:flush": "redis-cli -p 6380 FLUSHALL",
+    "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
     "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"
   }
 }
