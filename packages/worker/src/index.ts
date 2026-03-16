@@ -12,7 +12,7 @@ import {
   randomBreakDuration,
   sleep,
 } from './lib/scheduler'
-import { varyMessage } from './lib/claude'
+
 
 const QUEUE_NAME             = 'whatsapp-messages'
 const PHONE_CHECK_QUEUE_NAME = 'phone-check'
@@ -25,18 +25,18 @@ const sessionSendCount = new Map<number, number>()
 
 // ─── Daily cap helpers ────────────────────────────────────────────────────────
 
-async function todaySendCount(): Promise<number> {
+async function todaySendCount(agentId: number): Promise<number> {
   const today = new Date().toISOString().slice(0, 10)
-  const log   = await db.dailySendLog.findUnique({ where: { date: today } })
+  const log   = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId, date: today } } })
   return log?.count ?? 0
 }
 
-async function incrementDailyCount(): Promise<void> {
+async function incrementDailyCount(agentId: number): Promise<void> {
   const today = new Date().toISOString().slice(0, 10)
   await db.dailySendLog.upsert({
-    where:  { date: today },
+    where:  { agentId_date: { agentId, date: today } },
     update: { count: { increment: 1 } },
-    create: { date: today, count: 1 },
+    create: { agentId, date: today, count: 1 },
   })
 }
 
@@ -44,7 +44,7 @@ async function incrementDailyCount(): Promise<void> {
 
 const worker = new Worker<MessageJob>(
   QUEUE_NAME,
-  async (job: Job<MessageJob>) => {
+  async (job: Job<MessageJob>, token?: string) => {
     const { messageId, phone, body, campaignId, contactId, agentId: preferredAgentId } = job.data
 
     // 0a. Skip stale or CANCELLED messages
@@ -61,18 +61,49 @@ const worker = new Worker<MessageJob>(
       return
     }
 
-    // 0b. Resolve agent — prefer specified, fall back to least-busy pool
+    // 0b. Resolve agent — pick the least-busy online agent that hasn't hit its daily cap.
+    //     If all agents are capped, reschedule the job via BullMQ delayed queue (no sleeping).
     const AGENT_WAIT_TIMEOUT = 10 * 60 * 1000
     const agentWaitStart     = Date.now()
 
-    let agent = await agentManager.getLeastBusyAgent(preferredAgentId).catch(() => null)
+    let agent: ReturnType<typeof agentManager.getAgent> = undefined
     while (!agent) {
       if (Date.now() - agentWaitStart > AGENT_WAIT_TIMEOUT) {
         throw new Error('No agent online after 10 minutes — scan the QR code in the Agents page')
       }
-      console.log('[worker] no agent online, waiting 10s…')
-      await sleep(10_000)
-      agent = await agentManager.getLeastBusyAgent(preferredAgentId).catch(() => null)
+
+      const online = agentManager.getAllAgents()
+        .filter(({ agent: a }) => a.status === 'connected')
+
+      if (online.length === 0) {
+        console.log('[worker] no agent online, waiting 10s…')
+        await sleep(10_000)
+        continue
+      }
+
+      // Sort by activity; bump preferred agent to front if specified
+      online.sort((a, b) => a.agent.activeJobCount - b.agent.activeJobCount)
+      if (preferredAgentId) {
+        const idx = online.findIndex(({ agentId }) => agentId === preferredAgentId)
+        if (idx > 0) online.unshift(...online.splice(idx, 1))
+      }
+
+      // Pick first agent under its daily cap
+      for (const { agent: candidate } of online) {
+        const sent = await todaySendCount(candidate.agentId)
+        if (sent < candidate.dailySendCap) {
+          agent = candidate
+          break
+        }
+      }
+
+      if (!agent) {
+        // All online agents have hit their cap — release job back to BullMQ delayed queue
+        const delay = msUntilNextOpen()
+        console.log(`[worker] all agents at daily cap, rescheduling in ${Math.round(delay / 60000)}m`)
+        await job.moveToDelayed(Date.now() + delay, token)
+        return
+      }
     }
 
     agent.activeJobCount++
@@ -82,22 +113,16 @@ const worker = new Worker<MessageJob>(
     try {
       log(`picked up msg:${messageId} → ${phone}`)
 
-      // 1. Daily cap — use this agent's cap (falls back to DAILY_SEND_CAP env)
-      const sentToday = await todaySendCount()
-      if (sentToday >= agent.dailySendCap) {
-        const delay = msUntilNextOpen()
-        log(`daily cap reached (${sentToday}/${agent.dailySendCap}), sleeping ${Math.round(delay / 60000)}m`)
-        await sleep(delay)
-      }
-
-      // 2. Working hours
+      // 1. Working hours — reschedule via BullMQ instead of sleeping
       if (!isWorkingHours()) {
         const delay = msUntilNextOpen()
-        log(`outside working hours, sleeping ${Math.round(delay / 60000)}m`)
-        await sleep(delay)
+        log(`outside working hours, rescheduling in ${Math.round(delay / 60000)}m`)
+        agent.activeJobCount--
+        await job.moveToDelayed(Date.now() + delay, token)
+        return
       }
 
-      // 3. Mid-session break (per agent — uses agent's own break settings)
+      // 2. Mid-session break (per agent — uses agent's own break settings)
       const count = (sessionSendCount.get(usedAgentId) ?? 0) + 1
       sessionSendCount.set(usedAgentId, count)
       if (count > 0 && count % agent.breakEvery === 0) {
@@ -106,26 +131,23 @@ const worker = new Worker<MessageJob>(
         await sleep(dur)
       }
 
-      // 4. Gaussian delay
+      // 3. Gaussian delay
       const delay = gaussianDelay()
       log(`waiting ${Math.round(delay / 1000)}s before send (session #${count})`)
       await sleep(delay)
 
-      // 5. Vary message via Claude
-      const variedBody = await varyMessage(body).catch(() => body)
-
-      // 6. Send
+      // 4. Send
       log(`sending to ${phone}…`)
-      await agent.sendMessage(phone, variedBody)
+      await agent.sendMessage(phone, body)
 
-      // 7. Update message record
+      // 6. Update message record
       await db.message.updateMany({
         where: { id: messageId },
-        data:  { status: 'SENT', sentAt: new Date(), body: variedBody, agentId: usedAgentId },
+        data:  { status: 'SENT', sentAt: new Date(), body: body, agentId: usedAgentId },
       })
-      await incrementDailyCount()
+      await incrementDailyCount(usedAgentId)
 
-      // 8. Update campaign totals + CampaignArea sentCount
+      // 7. Update campaign totals + CampaignArea sentCount
       const campaign = await db.campaign.update({
         where: { id: campaignId },
         data:  { sentCount: { increment: 1 } },
@@ -141,7 +163,7 @@ const worker = new Worker<MessageJob>(
           data:  { sentCount: { increment: 1 } },
         })
 
-        // 9. Trigger CSV report so this contact appears immediately (fire-and-forget)
+        // 8. Trigger CSV report so this contact appears immediately (fire-and-forget)
         const apiUrl = `http://localhost:${process.env.PORT ?? 3001}`
         fetch(`${apiUrl}/api/export/report-area`, {
           method:  'POST',
@@ -159,7 +181,12 @@ const worker = new Worker<MessageJob>(
       agent.activeJobCount--
     }
   },
-  { connection: redis as never, concurrency: 1 },
+  {
+    connection:   redis as never,
+    concurrency:  1,
+    // Must cover mid-session break (max 8 min) + Gaussian delay (max 90s) + send time + buffer
+    lockDuration: 15 * 60 * 1000,
+  },
 )
 
 worker.on('failed', async (job, err) => {

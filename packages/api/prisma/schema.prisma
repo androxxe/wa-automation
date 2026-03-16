@@ -23,7 +23,8 @@ model Agent {
   typeDelayMaxMs Int?  // max keystroke delay ms         (null = TYPE_DELAY_MAX_MS env, default 180)
   departmentId String?
   department   Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  messages     Message[]
+  messages      Message[]
+  dailySendLogs DailySendLog[]
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 }
@@ -177,9 +178,13 @@ model Reply {
 
 model DailySendLog {
   id        String   @id @default(cuid())
-  date      String   @unique // "YYYY-MM-DD" in WIB — single-agent for now
+  agentId   Int
+  agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  date      String   // "YYYY-MM-DD" in WIB
   count     Int      @default(0)
   updatedAt DateTime @updatedAt
+
+  @@unique([agentId, date])
 }
 
 // ─── AppConfig (singleton) ────────────────────────────────────────────────────

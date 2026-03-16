@@ -340,6 +340,7 @@ model Agent {
   departmentId   String?       // optional — if set, prefer this agent for dept contacts
   department     Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   messages       Message[]
+  dailySendLogs  DailySendLog[]
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 }
@@ -480,7 +481,7 @@ model Reply {
 
 model DailySendLog {
   id        String   @id @default(cuid())
-  agentId   String
+  agentId   Int
   agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
   date      String   // "YYYY-MM-DD" in WIB
   count     Int      @default(0)
@@ -623,22 +624,24 @@ packages/worker/src/lib/browser-agent.ts
 
 The API reads per-agent status from Redis keys `agent:{agentId}:status`. Agent control commands travel from API → Redis pub/sub channel `browser:command:{agentId}` → AgentManager → BrowserAgent.
 
-### Agent Selection: `getLeastBusyAgent()`
+### Agent Selection (cap-aware)
 
 ```
-1. Filter agents where Redis status = "connected"
-2. Among those, find the one with the lowest activeJobCount
-3. If a tie, pick the one with the lowest daily send count today
-4. If no agents are ONLINE: poll every 10s, up to 10 min, then fail the job
+1. Collect all agents where status = "connected", sorted by activeJobCount ascending
+2. If MessageJob.agentId is set (department affinity), check that agent first
+3. For each candidate in order: query DailySendLog — skip if today's count >= agent.dailySendCap
+4. Use the first candidate still under its cap
+5. If no agents are ONLINE: poll every 10s, up to 10 min, then fail the job
+6. If all ONLINE agents are at their cap: reschedule job via job.moveToDelayed(msUntilNextOpen())
 ```
 
-`activeJobCount` is incremented in Redis (`agent:{agentId}:active_jobs`) when a job is assigned to an agent and decremented when the job finishes (success or failure).
+`activeJobCount` is incremented when a job is assigned to an agent and decremented when the job finishes (success or failure).
 
 ### Department-Affinity Routing
 
 When `MessageJob.agentId` is set (because the contact's department has an assigned agent):
-1. Check if that agent is ONLINE — if yes, use it directly
-2. If not ONLINE, fall back to `getLeastBusyAgent()` from the pool
+1. Check if that agent is ONLINE and under its daily cap — if yes, use it directly
+2. Otherwise fall back to the cap-aware pool selection above
 
 This allows agent-per-department assignment while gracefully degrading to pool routing if the preferred agent is offline.
 
@@ -831,20 +834,22 @@ interface MessageJob {
 
 **Worker logic (per job):**
 1. Verify message exists in DB AND `status != 'CANCELLED'` — skip silently if missing or cancelled
-2. Resolve agent:
-   - If `agentId` is set and that agent is ONLINE → use it
-   - Otherwise call `agentManager.getLeastBusyAgent()` (poll every 10s, max 10 min)
+2. Resolve agent (cap-aware selection):
+   - Collect all ONLINE agents sorted by `activeJobCount` (ascending); if `agentId` is set, check that agent first
+   - For each candidate, query `DailySendLog` — skip agents where today's count >= `agent.dailySendCap`
+   - Use the first candidate that is still under its cap
+   - If no agents are online: poll every 10s, up to 10 min, then fail the job
+   - If all online agents have hit their cap: reschedule job via `job.moveToDelayed(msUntilNextOpen())` and return — **no sleeping inside the job**
 3. Increment `agent:{agentId}:active_jobs` in Redis
-4. Check `DailySendLog` for this agent — if today's count >= `agent.dailySendCap` (falls back to `DAILY_SEND_CAP` env): sleep until tomorrow 08:00
-5. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
-6. Check mid-session break counter (per agent) — if `agent.breakEvery` messages since last break: sleep `agent.breakMinMs`–`agent.breakMaxMs` random duration
+4. Check current time in `Asia/Jakarta` — if outside working hours: reschedule via `job.moveToDelayed(msUntilNextOpen())` and return — **no sleeping inside the job**
+5. Check mid-session break counter (per agent) — if `agent.breakEvery` messages since last break: sleep `agent.breakMinMs`–`agent.breakMaxMs` random duration
+6. `await sleep(gaussianDelay())` — human-like interval
 7. Call Claude to generate varied message body (Job 3)
-8. `await sleep(gaussianDelay())` — human-like interval
-9. Call `agent.sendMessage(phone, variedBody)` — agent-locked
-10. Update `Message.status = SENT`, `sentAt = now()`, `agentId = agent.id`
-11. Increment `DailySendLog.count` for this agent
-12. Increment `Campaign.sentCount`
-13. Decrement `agent:{agentId}:active_jobs` in Redis
+8. Call `agent.sendMessage(phone, variedBody)` — agent-locked
+9. Update `Message.status = SENT`, `sentAt = now()`, `agentId = agent.id`
+10. Increment `DailySendLog.count` for this agent
+11. Increment `Campaign.sentCount`
+12. Decrement `agent:{agentId}:active_jobs` in Redis
 
 **On failure:**
 - Mark `Message.status = FAILED`, store `failReason`
@@ -1434,8 +1439,8 @@ whatsapp-automation/
 | Phone check misses unregistered numbers | Promise.race on compose box vs popup — reliable for both valid and invalid numbers |
 | Send + phone-check collision within one agent | `_withBrowserLock` mutex per BrowserAgent serialises all page interactions for that agent |
 | No agents online when job is picked up | Worker polls `getLeastBusyAgent()` every 10s up to 10 min before failing the job |
-| Messages sent outside hours | Worker working-hours check sleeps until next 08:00 WIB (per agent) |
-| Daily cap exceeded | `DailySendLog` checked per agent before every job |
+| Messages sent outside hours | Worker reschedules job via `job.moveToDelayed(msUntilNextOpen())` — no sleeping inside the job; BullMQ re-delivers at next working-hours open |
+| Daily cap exceeded | `DailySendLog` checked per-agent at selection time; capped agents are skipped in favour of agents still under cap; if all agents are capped the job is rescheduled via `moveToDelayed` |
 | Invalid phone numbers | Format-validated at import; WA-validated before campaign enqueue |
 | Redis unavailable | Startup validation exits with error before accepting traffic |
 | MySQL unavailable | Startup validation exits with error before accepting traffic |
