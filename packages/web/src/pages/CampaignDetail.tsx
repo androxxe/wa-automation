@@ -412,6 +412,33 @@ export default function CampaignDetail() {
     onError: (e) => alert(String(e)),
   })
 
+  const deleteMessageMutation = useMutation({
+    mutationFn: (messageId: string) =>
+      apiFetch(`/api/campaigns/${id}/messages/${messageId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
+
+  const retryFailedMutation = useMutation({
+    mutationFn: (messageIds?: string[]) =>
+      apiFetch<{ retried: number; skipped: number }>(
+        `/api/campaigns/${id}/retry-failed`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(messageIds ? { messageIds } : {}) },
+      ),
+    onSuccess: (result) => {
+      const msg = result.retried > 0
+        ? `${result.retried} message${result.retried !== 1 ? 's' : ''} re-queued${result.skipped > 0 ? `, ${result.skipped} skipped (invalid phone)` : ''}.`
+        : result.skipped > 0 ? 'All failed messages have invalid phone numbers and cannot be retried.' : 'No failed messages to retry.'
+      alert(msg)
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
+
   if (!campaign) return <div className="text-muted-foreground py-8 text-center">Loading…</div>
 
   const totalPages = Math.ceil(total / 50)
@@ -492,6 +519,16 @@ export default function CampaignDetail() {
           )}
           {['RUNNING', 'PAUSED', 'DRAFT'].includes(campaign.status) && (
             <button type="button" onClick={() => actionMutation.mutate('cancel')} className="bg-destructive text-destructive-foreground text-sm px-4 py-2 rounded-md">Cancel</button>
+          )}
+          {campaign.failedCount > 0 && campaign.status !== 'CANCELLED' && (
+            <button
+              type="button"
+              onClick={() => retryFailedMutation.mutate(undefined)}
+              disabled={retryFailedMutation.isPending}
+              className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50"
+            >
+              {retryFailedMutation.isPending ? 'Retrying…' : `Retry Failed (${campaign.failedCount})`}
+            </button>
           )}
         </div>
 
@@ -584,14 +621,51 @@ export default function CampaignDetail() {
                   <td className="px-4 py-2.5 font-mono text-xs">{m.phone}</td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground">{m.agent?.name ?? '—'}</td>
                   <td className="px-4 py-2.5">
-                    {m.status === 'FAILED' && m.failReason ? (
-                      <button
-                        type="button"
-                        onClick={() => setFailModal(m.failReason!)}
-                        className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 hover:underline"
-                      >
-                        FAILED &#x2139;
-                      </button>
+                    {m.status === 'FAILED' ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600">FAILED</span>
+                        {m.failReason && (
+                          <button
+                            type="button"
+                            onClick={() => setFailModal(m.failReason!)}
+                            className="text-xs text-red-500 hover:underline"
+                            title="View fail reason"
+                          >
+                            &#x2139;
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => retryFailedMutation.mutate([m.id])}
+                          disabled={retryFailedMutation.isPending || deleteMessageMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-gray-300 hover:bg-accent disabled:opacity-50"
+                          title="Retry this message"
+                        >
+                          Retry
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { if (confirm('Cancel this message?')) deleteMessageMutation.mutate(m.id) }}
+                          disabled={deleteMessageMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-accent disabled:opacity-50"
+                          title="Cancel this message"
+                        >
+                          &#x2715;
+                        </button>
+                      </div>
+                    ) : m.status === 'QUEUED' ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-purple-100 text-purple-700">QUEUED</span>
+                        <button
+                          type="button"
+                          onClick={() => { if (confirm('Cancel this message?')) deleteMessageMutation.mutate(m.id) }}
+                          disabled={deleteMessageMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-accent disabled:opacity-50"
+                          title="Cancel this message"
+                        >
+                          &#x2715;
+                        </button>
+                      </div>
                     ) : (
                       <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${MSG_STATUS_COLORS[m.status] ?? 'bg-gray-100 text-gray-600'}`}>
                         {m.status}

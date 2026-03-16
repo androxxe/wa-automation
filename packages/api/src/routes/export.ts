@@ -29,6 +29,27 @@ router.post('/write', async (_req, res) => {
   }
 })
 
+// POST /api/export/report-area — triggered fire-and-forget by the worker after send/reply
+router.post('/report-area', async (req, res) => {
+  const { areaId, bulan, campaignType } = req.body as {
+    areaId:       string
+    bulan:        string
+    campaignType: string
+  }
+  if (!areaId || !bulan || !campaignType) {
+    res.status(400).json({ ok: false, error: 'areaId, bulan, campaignType required' })
+    return
+  }
+  try {
+    generateAreaReport(areaId, bulan, campaignType).catch((err) =>
+      console.error('[report] generate failed:', err),
+    )
+    res.json({ ok: true, data: null })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // POST /api/export/report — regenerate CSV for one (area+bulan+type) or all
 router.post('/report', async (req, res) => {
   const { areaId, bulan, campaignType } = req.body as {

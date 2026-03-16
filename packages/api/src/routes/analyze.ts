@@ -2,7 +2,6 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { mapHeaders, analyzeReply, varyMessage } from '../lib/claude'
 import { db } from '../lib/db'
-import { generateAreaReport } from '../lib/report'
 
 const router: import('express').Router = Router()
 
@@ -42,28 +41,6 @@ router.post('/reply', async (req, res) => {
   try {
     const analysis = await analyzeReply(replyText, bulan)
     res.json({ ok: true, data: { ...analysis, jawaban: analysis.jawaban ?? null } })
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err) })
-  }
-})
-
-// POST /api/export/report-area — triggers CSV regeneration for one (area, bulan, campaignType)
-// Called fire-and-forget by the worker after fan-out reply processing.
-router.post('/report-area', async (req, res) => {
-  const { areaId, bulan, campaignType } = req.body as {
-    areaId:       string
-    bulan:        string
-    campaignType: string
-  }
-  if (!areaId || !bulan || !campaignType) {
-    res.status(400).json({ ok: false, error: 'areaId, bulan, campaignType required' })
-    return
-  }
-  try {
-    generateAreaReport(areaId, bulan, campaignType).catch((err) =>
-      console.error('[report] generate failed:', err),
-    )
-    res.json({ ok: true, data: null })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

@@ -493,6 +493,122 @@ router.get('/:id/contacts', async (req, res) => {
   }
 })
 
+// ─── POST /api/campaigns/:id/retry-failed ────────────────────────────────────
+// Re-enqueue FAILED messages. Body: { messageIds?: string[] }
+// Skips contacts marked phoneValid=false (unregistered numbers) unless explicitly listed.
+
+router.post('/:id/retry-failed', async (req, res) => {
+  const { messageIds } = req.body as { messageIds?: string[] }
+  const hasFilter = Array.isArray(messageIds) && messageIds.length > 0
+
+  try {
+    const campaign = await db.campaign.findUnique({ where: { id: req.params.id } })
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Not found' }); return }
+    if (campaign.status === 'CANCELLED') {
+      res.status(400).json({ ok: false, error: 'Cannot retry messages in a cancelled campaign' })
+      return
+    }
+
+    const failedMessages = await db.message.findMany({
+      where: {
+        campaignId: req.params.id,
+        status:     'FAILED',
+        ...(hasFilter && { id: { in: messageIds } }),
+      },
+      include: { contact: true },
+    })
+
+    if (failedMessages.length === 0) {
+      res.json({ ok: true, data: { retried: 0, skipped: 0 } })
+      return
+    }
+
+    // Skip contacts whose phone was flagged as unregistered
+    const retryable = failedMessages.filter((m) => m.contact.phoneValid !== false)
+    const skipped   = failedMessages.length - retryable.length
+
+    if (retryable.length === 0) {
+      res.json({ ok: true, data: { retried: 0, skipped } })
+      return
+    }
+
+    const retryIds = retryable.map((m) => m.id)
+
+    await db.message.updateMany({
+      where: { id: { in: retryIds } },
+      data:  { status: 'QUEUED', failedAt: null, failReason: null },
+    })
+
+    await db.campaign.update({
+      where: { id: req.params.id },
+      data:  { failedCount: { decrement: retryable.length } },
+    })
+
+    const jobs = retryable.map((m) => ({
+      name: `msg:${m.id}`,
+      data: {
+        messageId:  m.id,
+        campaignId: req.params.id,
+        contactId:  m.contactId,
+        phone:      m.phone,
+        body:       m.body,
+      } satisfies import('@aice/shared').MessageJob,
+    }))
+    await messageQueue.addBulk(jobs as never)
+
+    res.json({ ok: true, data: { retried: retryable.length, skipped } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── DELETE /api/campaigns/:id/messages/:messageId ───────────────────────────
+// Cancel a single QUEUED or FAILED message (sets status → CANCELLED).
+// Pulls the job from BullMQ if still queued.
+
+router.delete('/:id/messages/:messageId', async (req, res) => {
+  try {
+    const message = await db.message.findUnique({
+      where: { id: req.params.messageId },
+    })
+    if (!message || message.campaignId !== req.params.id) {
+      res.status(404).json({ ok: false, error: 'Message not found' }); return
+    }
+    if (!['QUEUED', 'FAILED'].includes(message.status)) {
+      res.status(400).json({ ok: false, error: `Cannot cancel a message with status ${message.status}` })
+      return
+    }
+
+    // Remove from BullMQ if it is still queued (waiting / delayed)
+    if (message.status === 'QUEUED') {
+      const jobs = await messageQueue.getJobs(['waiting', 'delayed', 'prioritized'])
+      for (const job of jobs) {
+        if (job.data.messageId === req.params.messageId) {
+          await job.remove().catch(() => {})
+          break
+        }
+      }
+    }
+
+    await db.message.update({
+      where: { id: req.params.messageId },
+      data:  { status: 'CANCELLED' },
+    })
+
+    // Adjust failedCount if transitioning from FAILED → CANCELLED
+    if (message.status === 'FAILED') {
+      await db.campaign.update({
+        where: { id: req.params.id },
+        data:  { failedCount: { decrement: 1 } },
+      })
+    }
+
+    res.json({ ok: true, data: null })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // ─── GET /api/campaigns/:id/events ───────────────────────────────────────────
 
 router.get('/:id/events', (req, res) => {

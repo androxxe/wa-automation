@@ -170,6 +170,10 @@ worker.on('failed', async (job, err) => {
     where: { id: job.data.messageId },
     data:  { status: 'FAILED', failedAt: new Date(), failReason },
   }).catch(() => {})
+  await db.campaign.update({
+    where: { id: job.data.campaignId },
+    data:  { failedCount: { increment: 1 } },
+  }).catch(() => {})
   if (failReason.includes('tidak terdaftar')) {
     await db.contact.update({
       where: { id: job.data.contactId },

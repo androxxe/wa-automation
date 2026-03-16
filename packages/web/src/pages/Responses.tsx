@@ -119,6 +119,107 @@ function ScreenshotModal({ path, onClose }: { path: string; onClose: () => void 
   )
 }
 
+// ─── Campaign Combobox ────────────────────────────────────────────────────────
+
+function CampaignPicker({
+  value,
+  onChange,
+  campaigns,
+  placeholder = '— Pilih campaign —',
+  className = '',
+}: {
+  value:      string
+  onChange:   (id: string) => void
+  campaigns:  Campaign[]
+  placeholder?: string
+  className?: string
+}) {
+  const [search, setSearch] = useState('')
+  const [open,   setOpen]   = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const selected = campaigns.find((c) => c.id === value)
+  const filtered = campaigns.filter((c) => {
+    const q = search.toLowerCase()
+    return (
+      c.name.toLowerCase().includes(q) ||
+      c.bulan.toLowerCase().includes(q) ||
+      c.campaignType.toLowerCase().includes(q)
+    )
+  })
+
+  useEffect(() => {
+    function onOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', onOutside)
+    return () => document.removeEventListener('mousedown', onOutside)
+  }, [])
+
+  return (
+    <div className={`relative ${className}`} ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full text-sm rounded-md border bg-background px-2 py-1.5 text-left flex items-center justify-between gap-2"
+      >
+        <span className={selected ? 'truncate' : 'text-muted-foreground truncate'}>
+          {selected
+            ? `${selected.name} — ${selected.bulan} — ${selected.campaignType}`
+            : placeholder}
+        </span>
+        <span className="text-xs opacity-60 shrink-0">▾</span>
+      </button>
+      {open && (
+        <div className="absolute z-30 left-0 top-full mt-1 w-full min-w-[280px] rounded-lg border bg-popover shadow-md">
+          <div className="p-2 border-b">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cari campaign…"
+              ref={(el) => { if (el) el.focus() }}
+              className="w-full text-sm rounded border bg-background px-2 py-1 outline-none"
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {value && (
+              <button
+                type="button"
+                className="w-full text-left text-sm px-3 py-2 hover:bg-accent text-muted-foreground"
+                onClick={() => { onChange(''); setOpen(false); setSearch('') }}
+              >
+                — Hapus pilihan —
+              </button>
+            )}
+            {filtered.length === 0 && (
+              <p className="text-sm text-muted-foreground px-3 py-4 text-center">
+                Tidak ditemukan
+              </p>
+            )}
+            {filtered.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`w-full text-left text-sm px-3 py-2 hover:bg-accent ${c.id === value ? 'bg-accent/60 font-medium' : ''}`}
+                onClick={() => { onChange(c.id); setOpen(false); setSearch('') }}
+              >
+                <span className="font-medium">{c.name}</span>
+                <span className="text-muted-foreground text-xs ml-1">
+                  — {c.bulan} — {c.campaignType}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Export Dropdown ──────────────────────────────────────────────────────────
 
 function ExportDropdown({ campaignId, campaigns }: { campaignId: string; campaigns: Campaign[] }) {
@@ -204,18 +305,11 @@ function ExportDropdown({ campaignId, campaigns }: { campaignId: string; campaig
           {/* Per-campaign report */}
           <p className="text-xs text-muted-foreground px-3 py-1">Download report (with screenshots)</p>
           <div className="px-3 pb-2 flex flex-col gap-2">
-            <select
+            <CampaignPicker
               value={selCampaign}
-              onChange={(e) => setSelCamp(e.target.value)}
-              className="w-full text-sm rounded-md border bg-background px-2 py-1.5"
-            >
-              <option value="">— Pilih campaign —</option>
-              {campaigns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} — {c.bulan} — {c.campaignType}
-                </option>
-              ))}
-            </select>
+              onChange={setSelCamp}
+              campaigns={campaigns}
+            />
             <button
               type="button"
               onClick={handleDownload}
@@ -306,18 +400,13 @@ export default function Responses() {
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
-        <select
+        <CampaignPicker
           value={filterCampaignId}
-          onChange={(e) => updateFilter(setFilterCampaignId)(e.target.value)}
-          className="text-sm rounded-md border bg-background px-3 py-1.5"
-        >
-          <option value="">All Campaigns</option>
-          {campaigns.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} — {c.bulan} — {c.campaignType}
-            </option>
-          ))}
-        </select>
+          onChange={updateFilter(setFilterCampaignId)}
+          campaigns={campaigns}
+          placeholder="All Campaigns"
+          className="w-64"
+        />
 
         <select
           value={filterCategory}
