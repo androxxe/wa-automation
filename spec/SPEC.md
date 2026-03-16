@@ -1164,8 +1164,8 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 - List of all registered agents with:
   - Name, department assignment (or "Pool"), status badge, active jobs, messages sent today
   - Live screenshot thumbnail (refreshes every 5s)
-  - Start / Stop buttons
-  - Edit button (rename, change department assignment)
+  - **Start** button (OFFLINE) / **Restart** button (STARTING — stuck after browser closed) / **Retry** button (ERROR) / **Stop** button (ONLINE, QR)
+  - Edit button (name, phone, daily cap, break timing, typing speed, department)
   - Delete button (only if OFFLINE)
 - **"Add Agent"** button → modal: name + phone number (required) + daily send cap + break settings + typing speed + optional department — all timing fields pre-filled with env defaults, editable per agent → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
 - **Edit button** on each agent card → modal with the same fields for updating name, phone, cap, timing, and department
@@ -1425,7 +1425,7 @@ whatsapp-automation/
 | Ban + reconnect: messages that failed to send | Messages mid-queue during ban hit the 10-min timeout and become `FAILED`. They are NOT automatically re-sent after reconnect — user must manually re-enqueue them (future: "Retry failed" button on campaign detail). |
 | Concurrent reply polls | `_isPolling` flag in `startReplyPolling` prevents two polls running simultaneously (e.g. if a poll takes longer than `REPLY_POLL_INTERVAL`). Without this, duplicate `Reply` records would be created. |
 | WhatsApp Web UI changes | Playwright selectors abstracted in `browser-agent.ts` for easy updates |
-| Browser crashes | BrowserAgent restarts on crash; bullmq jobs are durable (Redis-backed); AgentManager detects crash and updates status |
+| Browser crashes or window closed externally | `context.on('close')` fires → `BrowserAgent` clears internal refs + sets status to `disconnected` → `AgentManager` 15s polling loop publishes `OFFLINE` to Redis/DB → Start button reappears automatically. `close()` always clears refs before calling `ctx.close()` so a Restart works even if the context is already dead. |
 | Agent profile dir missing | Worker creates `{BROWSER_PROFILE_PATH}/{agentId}/` on first launch |
 | Inconsistent Excel headers | Claude-assisted mapping with user confirmation step |
 | Excel strips leading zero from phone | Normalizer detects `8xxx` prefix and prepends `62` |
