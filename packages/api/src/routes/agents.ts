@@ -48,12 +48,15 @@ router.get('/', async (_req, res) => {
 
 // POST /api/agents
 const CreateAgent = z.object({
-  name:         z.string().min(1),
-  phoneNumber:  z.string().min(6, 'Phone number is required'),
-  breakEvery:   z.number().int().min(1).optional(),
-  breakMinMs:   z.number().int().min(1000).optional(),
-  breakMaxMs:   z.number().int().min(1000).optional(),
-  departmentId: z.string().optional(),
+  name:           z.string().min(1),
+  phoneNumber:    z.string().min(6, 'Phone number is required'),
+  dailySendCap:   z.number().int().min(1).optional(),
+  breakEvery:     z.number().int().min(1).optional(),
+  breakMinMs:     z.number().int().min(1000).optional(),
+  breakMaxMs:     z.number().int().min(1000).optional(),
+  typeDelayMinMs: z.number().int().min(1).optional(),
+  typeDelayMaxMs: z.number().int().min(1).optional(),
+  departmentId:   z.string().optional(),
 })
 
 router.post('/', async (req, res) => {
@@ -92,19 +95,24 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
-  const { name, departmentId, phoneNumber, breakEvery, breakMinMs, breakMaxMs } = req.body as {
+  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs } = req.body as {
     name?: string; departmentId?: string | null; phoneNumber?: string
+    dailySendCap?: number | null
     breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null
+    typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null
   }
   try {
     const updated = await db.agent.update({
       where: { id: parseId(req.params.id) },
       data: {
-        ...(name        !== undefined ? { name }        : {}),
-        ...(phoneNumber !== undefined ? { phoneNumber } : {}),
-        ...(breakEvery  !== undefined ? { breakEvery }  : {}),
-        ...(breakMinMs  !== undefined ? { breakMinMs }  : {}),
-        ...(breakMaxMs  !== undefined ? { breakMaxMs }  : {}),
+        ...(name           !== undefined ? { name }           : {}),
+        ...(phoneNumber    !== undefined ? { phoneNumber }    : {}),
+        ...(dailySendCap   !== undefined ? { dailySendCap }   : {}),
+        ...(breakEvery     !== undefined ? { breakEvery }     : {}),
+        ...(breakMinMs     !== undefined ? { breakMinMs }     : {}),
+        ...(breakMaxMs     !== undefined ? { breakMaxMs }     : {}),
+        ...(typeDelayMinMs !== undefined ? { typeDelayMinMs } : {}),
+        ...(typeDelayMaxMs !== undefined ? { typeDelayMaxMs } : {}),
         ...(departmentId !== undefined ? { department: departmentId ? { connect: { id: departmentId } } : { disconnect: true } } : {}),
       },
     })

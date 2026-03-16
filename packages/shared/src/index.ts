@@ -198,8 +198,12 @@ export interface AppConfigData {
   defaultTargetRepliesPerArea: number
   defaultExpectedReplyRate:    number
   defaultSendPerArea:          number  // computed: ceil(target / rate)
-  // Agent break defaults — read-only from env vars
+  // Agent defaults — read-only from env vars
+  defaultDailySendCap: number
   defaultBreakEvery:  number
   defaultBreakMinSec: number  // seconds
   defaultBreakMaxSec: number  // seconds
+  // Agent typing speed defaults — read-only from env vars
+  defaultTypeDelayMin: number  // ms per keystroke
+  defaultTypeDelayMax: number  // ms per keystroke
 }

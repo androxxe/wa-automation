@@ -90,11 +90,15 @@ RATE_LIMIT_STDDEV_MS=8000                   # std deviation ±8 seconds
 RATE_LIMIT_MIN_MS=20000                     # hard floor — never faster than 20s
 RATE_LIMIT_MAX_MS=90000                     # hard ceiling — never slower than 90s
 
-# Safety caps
-DAILY_SEND_CAP=150                          # max messages per day PER AGENT
-MID_SESSION_BREAK_EVERY=30                  # pause after every N messages (per agent)
+# Safety caps & timing — global defaults, all overridable per agent in the Agents UI
+DAILY_SEND_CAP=150                          # max messages per day per agent
+MID_SESSION_BREAK_EVERY=30                  # pause after every N messages
 MID_SESSION_BREAK_MIN_MS=180000             # min break duration (3 min)
 MID_SESSION_BREAK_MAX_MS=480000             # max break duration (8 min)
+
+# Typing speed
+TYPE_DELAY_MIN_MS=80                        # fastest keystroke delay (ms)
+TYPE_DELAY_MAX_MS=180                       # slowest keystroke delay (ms)
 
 # Reply polling
 REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s (per agent)
@@ -321,16 +325,23 @@ datasource db {
 }
 
 model Agent {
-  id           Int           @id @default(autoincrement())  // readable integer: 1, 2, 3
-  name         String        @unique
-  profilePath  String        @db.VarChar(500)  // auto-derived: {BROWSER_PROFILE_PATH}/{id}
-  phoneNumber  String        // WhatsApp number of this agent's account — required at creation
-  status       String        @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
-  departmentId String?       // optional — if set, prefer this agent for dept contacts
-  department   Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
-  messages     Message[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  id             Int           @id @default(autoincrement())  // readable integer: 1, 2, 3
+  name           String        @unique
+  profilePath    String        @db.VarChar(500)  // auto-derived: {BROWSER_PROFILE_PATH}/{id}
+  phoneNumber    String        // WhatsApp number — required at creation
+  status         String        @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
+  // Per-agent behaviour overrides — null = use the global .env default
+  dailySendCap   Int?          // max messages per day       (null = DAILY_SEND_CAP env, default 150)
+  breakEvery     Int?          // pause after N messages     (null = MID_SESSION_BREAK_EVERY env)
+  breakMinMs     Int?          // min break duration ms      (null = MID_SESSION_BREAK_MIN_MS env)
+  breakMaxMs     Int?          // max break duration ms      (null = MID_SESSION_BREAK_MAX_MS env)
+  typeDelayMinMs Int?          // min keystroke delay ms     (null = TYPE_DELAY_MIN_MS env, default 80)
+  typeDelayMaxMs Int?          // max keystroke delay ms     (null = TYPE_DELAY_MAX_MS env, default 180)
+  departmentId   String?       // optional — if set, prefer this agent for dept contacts
+  department     Department?   @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+  messages       Message[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 }
 
 model Department {
@@ -508,7 +519,7 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 | Method | Route | Description |
 |---|---|---|
 | `GET` | `/api/agents` | List all agents with status, active job count, daily send count |
-| `POST` | `/api/agents` | Register a new agent. Body: `{ name, phoneNumber, departmentId? }`. `phoneNumber` is required (the WhatsApp number of this account). `profilePath` is auto-derived as `{BROWSER_PROFILE_PATH}/{agentId}`. |
+| `POST` | `/api/agents` | Register a new agent. Body: `{ name, phoneNumber, dailySendCap?, breakEvery?, breakMinMs?, breakMaxMs?, typeDelayMinMs?, typeDelayMaxMs?, departmentId? }`. `phoneNumber` required. All timing fields optional — null uses env default. `profilePath` auto-derived as `{BROWSER_PROFILE_PATH}/{agentId}`. |
 | `GET` | `/api/agents/:id` | Single agent detail |
 | `PATCH` | `/api/agents/:id` | Update agent name or department assignment |
 | `DELETE` | `/api/agents/:id` | Remove agent (must be OFFLINE) |
@@ -803,9 +814,9 @@ interface MessageJob {
    - If `agentId` is set and that agent is ONLINE → use it
    - Otherwise call `agentManager.getLeastBusyAgent()` (poll every 10s, max 10 min)
 3. Increment `agent:{agentId}:active_jobs` in Redis
-4. Check `DailySendLog` for this agent — if today's count >= `DAILY_SEND_CAP`: sleep until tomorrow 08:00
+4. Check `DailySendLog` for this agent — if today's count >= `agent.dailySendCap` (falls back to `DAILY_SEND_CAP` env): sleep until tomorrow 08:00
 5. Check current time in `Asia/Jakarta` — if outside working hours: sleep until next open
-6. Check mid-session break counter (per agent) — if N messages since last break: sleep random 3–8 min
+6. Check mid-session break counter (per agent) — if `agent.breakEvery` messages since last break: sleep `agent.breakMinMs`–`agent.breakMaxMs` random duration
 7. Call Claude to generate varied message body (Job 3)
 8. `await sleep(gaussianDelay())` — human-like interval
 9. Call `agent.sendMessage(phone, variedBody)` — agent-locked
@@ -988,7 +999,7 @@ When confirming, the selected `contactIds[]` are passed to `POST /api/campaigns/
 
 | Measure | Implementation |
 |---|---|
-| Human typing speed | 80–180ms per keystroke with random jitter |
+| Human typing speed | `TYPE_DELAY_MIN_MS`–`TYPE_DELAY_MAX_MS` ms per keystroke — configurable per agent |
 | Pre/post-action pauses | Random pauses between each UI action |
 | Click vs Enter | Always click the Send button — never programmatic Enter key |
 
@@ -998,7 +1009,7 @@ When confirming, the selected `contactIds[]` are passed to `POST /api/campaigns/
 |---|---|
 | Gaussian interval | Mean 35s, stddev 8s, floor 20s, ceiling 90s — never mechanical (per agent) |
 | Working hours only | 08:00–17:00 WIB, Mon–Sat (enforced per agent) |
-| Daily hard cap | `DAILY_SEND_CAP=150` per agent — stops that agent's queue slot when reached |
+| Daily hard cap | `DAILY_SEND_CAP=150` per agent (overridable per agent) — stops that agent's queue slot when reached |
 | Mid-session breaks | Every 30 messages per agent → random 3–8 min pause |
 
 ### Content Layer
@@ -1135,7 +1146,8 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
   - Start / Stop buttons
   - Edit button (rename, change department assignment)
   - Delete button (only if OFFLINE)
-- **"Add Agent"** button → modal: name + phone number (required) + optional department → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
+- **"Add Agent"** button → modal: name + phone number (required) + daily send cap + break settings + typing speed + optional department — all timing fields pre-filled with env defaults, editable per agent → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
+- **Edit button** on each agent card → modal with the same fields for updating name, phone, cap, timing, and department
 - Per-agent QR code prompt when WA Web needs re-authentication (screenshot shows QR — user scans)
 
 ### `/import` — Import Contacts
@@ -1419,6 +1431,6 @@ whatsapp-automation/
 - Each Playwright browser runs as a **visible Chromium window** for its agent inside `@aice/worker`. Windows must not be minimized while campaigns are active.
 - All timestamps are stored as UTC in MySQL. Timezone conversion to `Asia/Jakarta` happens in the scheduler and UI display layer.
 - In production, manage the three processes with `pm2`: API server, worker, and optionally a static web build served by nginx.
-- `DAILY_SEND_CAP` applies **per agent**. With 3 agents, total daily throughput = up to 450 messages/day.
+- `DAILY_SEND_CAP` is the **global default** daily cap. Each agent can override it with `agent.dailySendCap`. With 3 agents at 150/day each, total throughput = up to 450 messages/day.
 - `sendLimit` (send targeting) and `DAILY_SEND_CAP` are independent caps — whichever is hit first stops sends for that scope (area vs. agent-day). A campaign with `sendLimit=40` across 10 areas = 400 total messages, spread across days if the daily cap is lower.
 - This project uses the WhatsApp Web interface via browser automation. It is against WhatsApp's Terms of Service. Use responsibly. For large-scale or commercial deployments, migrate to the official Meta WhatsApp Business API.

@@ -9,9 +9,12 @@ interface Agent {
   profilePath:    string
   status:         string
   phoneNumber:    string
+  dailySendCap:   number | null
   breakEvery:     number | null
   breakMinMs:     number | null
   breakMaxMs:     number | null
+  typeDelayMinMs: number | null
+  typeDelayMaxMs: number | null
   departmentId:   string | null
   departmentName: string | null
   activeJobCount: number
@@ -34,23 +37,26 @@ const STATUS_COLORS: Record<string, string> = {
 export default function Agents() {
   const queryClient = useQueryClient()
   const [showAdd, setShowAdd]   = useState(false)
-  const [form, setForm]         = useState({ name: '', phoneNumber: '', departmentId: '', breakEvery: '', breakMinMs: '', breakMaxMs: '' })
+  const [form, setForm]         = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
   const [editing, setEditing]   = useState<Agent | null>(null)
-  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', breakEvery: '', breakMinMs: '', breakMaxMs: '' })
+  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
 
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
     queryFn:  () => apiFetch<AppConfigData>('/api/config'),
   })
 
-  // Pre-fill break defaults from env when opening the Add form
+  // Pre-fill defaults from env when opening the Add form
   useEffect(() => {
     if (showAdd && config) {
       setForm((f) => ({
         ...f,
-        breakEvery: f.breakEvery || String(config.defaultBreakEvery),
-        breakMinMs: f.breakMinMs || String(config.defaultBreakMinSec),
-        breakMaxMs: f.breakMaxMs || String(config.defaultBreakMaxSec),
+        dailySendCap: f.dailySendCap || String(config.defaultDailySendCap),
+        breakEvery:   f.breakEvery   || String(config.defaultBreakEvery),
+        breakMinMs:   f.breakMinMs   || String(config.defaultBreakMinSec),
+        breakMaxMs:   f.breakMaxMs   || String(config.defaultBreakMaxSec),
+        typeDelayMin: f.typeDelayMin || String(config.defaultTypeDelayMin),
+        typeDelayMax: f.typeDelayMax || String(config.defaultTypeDelayMax),
       }))
     }
   }, [showAdd, config])
@@ -83,7 +89,7 @@ export default function Agents() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; dailySendCap?: number | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null; typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null } }) =>
       apiFetch(`/api/agents/${id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -96,7 +102,7 @@ export default function Agents() {
   })
 
   const createMutation = useMutation({
-    mutationFn: (data: { name: string; phoneNumber: string; departmentId?: string; breakEvery?: number; breakMinMs?: number; breakMaxMs?: number }) =>
+    mutationFn: (data: { name: string; phoneNumber: string; departmentId?: string; dailySendCap?: number; breakEvery?: number; breakMinMs?: number; breakMaxMs?: number; typeDelayMinMs?: number; typeDelayMaxMs?: number }) =>
       apiFetch('/api/agents', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -106,7 +112,7 @@ export default function Agents() {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       setShowAdd(false)
       // Reset to empty — useEffect will re-fill break defaults on next open
-      setForm({ name: '', phoneNumber: '', departmentId: '', breakEvery: '', breakMinMs: '', breakMaxMs: '' })
+      setForm({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
     },
   })
 
@@ -116,10 +122,12 @@ export default function Agents() {
       name:         agent.name,
       phoneNumber:  agent.phoneNumber,
       departmentId: agent.departmentId ?? '',
-      // Use agent's override if set, otherwise fill with env default so user sees actual value
-      breakEvery:   String(agent.breakEvery  ?? config?.defaultBreakEvery  ?? 30),
+      dailySendCap: String(agent.dailySendCap   ?? config?.defaultDailySendCap ?? 150),
+      breakEvery:   String(agent.breakEvery      ?? config?.defaultBreakEvery   ?? 30),
       breakMinMs:   String(Math.round((agent.breakMinMs ?? (config ? config.defaultBreakMinSec * 1000 : 180000)) / 1000)),
       breakMaxMs:   String(Math.round((agent.breakMaxMs ?? (config ? config.defaultBreakMaxSec * 1000 : 480000)) / 1000)),
+      typeDelayMin: String(agent.typeDelayMinMs  ?? config?.defaultTypeDelayMin ?? 80),
+      typeDelayMax: String(agent.typeDelayMaxMs  ?? config?.defaultTypeDelayMax ?? 180),
     })
   }
 
@@ -128,12 +136,15 @@ export default function Agents() {
     updateMutation.mutate({
       id: editing.id,
       data: {
-        name:         editForm.name,
-        phoneNumber:  editForm.phoneNumber,
-        departmentId: editForm.departmentId || null,
-        breakEvery:   editForm.breakEvery   ? parseInt(editForm.breakEvery)              : null,
-        breakMinMs:   editForm.breakMinMs   ? parseInt(editForm.breakMinMs)   * 1000     : null,
-        breakMaxMs:   editForm.breakMaxMs   ? parseInt(editForm.breakMaxMs)   * 1000     : null,
+        name:           editForm.name,
+        phoneNumber:    editForm.phoneNumber,
+        departmentId:   editForm.departmentId || null,
+        dailySendCap:   editForm.dailySendCap  ? parseInt(editForm.dailySendCap)          : null,
+        breakEvery:     editForm.breakEvery    ? parseInt(editForm.breakEvery)             : null,
+        breakMinMs:     editForm.breakMinMs    ? parseInt(editForm.breakMinMs) * 1000      : null,
+        breakMaxMs:     editForm.breakMaxMs    ? parseInt(editForm.breakMaxMs) * 1000      : null,
+        typeDelayMinMs: editForm.typeDelayMin  ? parseInt(editForm.typeDelayMin)            : null,
+        typeDelayMaxMs: editForm.typeDelayMax  ? parseInt(editForm.typeDelayMax)            : null,
       },
     })
   }
@@ -143,10 +154,13 @@ export default function Agents() {
     createMutation.mutate({
       name:        form.name,
       phoneNumber: form.phoneNumber,
-      ...(form.departmentId && { departmentId: form.departmentId }),
-      ...(form.breakEvery   && { breakEvery:   parseInt(form.breakEvery) }),
-      ...(form.breakMinMs   && { breakMinMs:   parseInt(form.breakMinMs) * 1000 }),
-      ...(form.breakMaxMs   && { breakMaxMs:   parseInt(form.breakMaxMs) * 1000 }),
+      ...(form.departmentId && { departmentId:   form.departmentId }),
+      ...(form.dailySendCap && { dailySendCap:   parseInt(form.dailySendCap) }),
+      ...(form.breakEvery   && { breakEvery:     parseInt(form.breakEvery) }),
+      ...(form.breakMinMs   && { breakMinMs:     parseInt(form.breakMinMs) * 1000 }),
+      ...(form.breakMaxMs   && { breakMaxMs:     parseInt(form.breakMaxMs) * 1000 }),
+      ...(form.typeDelayMin && { typeDelayMinMs: parseInt(form.typeDelayMin) }),
+      ...(form.typeDelayMax && { typeDelayMaxMs: parseInt(form.typeDelayMax) }),
     })
   }
 
@@ -173,20 +187,37 @@ export default function Agents() {
             </select>
           </div>
         </div>
+        <div className="space-y-1">
+          <label htmlFor="edit-daily-cap" className="text-xs font-medium text-muted-foreground">Daily send cap (messages/day)</label>
+          <input id="edit-daily-cap" type="number" min={1} value={editForm.dailySendCap} onChange={(e) => setEditForm((f) => ({ ...f, dailySendCap: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+        </div>
         <div>
-          <p className="text-xs font-medium text-muted-foreground mb-2">Break settings (blank = use .env default)</p>
+          <p className="text-xs font-medium text-muted-foreground mb-2">Break settings</p>
           <div className="grid grid-cols-3 gap-3">
             <div className="space-y-1">
               <label htmlFor="edit-break-every" className="text-xs text-muted-foreground">Break every (msgs)</label>
-              <input id="edit-break-every" type="number" min={1} value={editForm.breakEvery} onChange={(e) => setEditForm((f) => ({ ...f, breakEvery: e.target.value }))} placeholder={`${editing.breakEvery ?? 30}`} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+              <input id="edit-break-every" type="number" min={1} value={editForm.breakEvery} onChange={(e) => setEditForm((f) => ({ ...f, breakEvery: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
             </div>
             <div className="space-y-1">
               <label htmlFor="edit-break-min" className="text-xs text-muted-foreground">Min break (sec)</label>
-              <input id="edit-break-min" type="number" min={1} value={editForm.breakMinMs} onChange={(e) => setEditForm((f) => ({ ...f, breakMinMs: e.target.value }))} placeholder={`${Math.round((editing.breakMinMs ?? 180000) / 1000)}`} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+              <input id="edit-break-min" type="number" min={1} value={editForm.breakMinMs} onChange={(e) => setEditForm((f) => ({ ...f, breakMinMs: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
             </div>
             <div className="space-y-1">
               <label htmlFor="edit-break-max" className="text-xs text-muted-foreground">Max break (sec)</label>
-              <input id="edit-break-max" type="number" min={1} value={editForm.breakMaxMs} onChange={(e) => setEditForm((f) => ({ ...f, breakMaxMs: e.target.value }))} placeholder={`${Math.round((editing.breakMaxMs ?? 480000) / 1000)}`} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+              <input id="edit-break-max" type="number" min={1} value={editForm.breakMaxMs} onChange={(e) => setEditForm((f) => ({ ...f, breakMaxMs: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+            </div>
+          </div>
+        </div>
+        <div>
+          <p className="text-xs font-medium text-muted-foreground mb-2">Typing speed (ms per keystroke)</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label htmlFor="edit-type-min" className="text-xs text-muted-foreground">Min delay (ms)</label>
+              <input id="edit-type-min" type="number" min={1} value={editForm.typeDelayMin} onChange={(e) => setEditForm((f) => ({ ...f, typeDelayMin: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label htmlFor="edit-type-max" className="text-xs text-muted-foreground">Max delay (ms)</label>
+              <input id="edit-type-max" type="number" min={1} value={editForm.typeDelayMax} onChange={(e) => setEditForm((f) => ({ ...f, typeDelayMax: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
             </div>
           </div>
         </div>
@@ -262,9 +293,14 @@ export default function Agents() {
               </select>
             </div>
           </div>
+          {/* Daily send cap */}
+          <div className="space-y-1">
+            <label htmlFor="add-daily-cap" className="text-xs font-medium text-muted-foreground">Daily send cap (messages/day)</label>
+            <input id="add-daily-cap" type="number" min={1} value={form.dailySendCap} onChange={(e) => setForm((f) => ({ ...f, dailySendCap: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+          </div>
           {/* Break settings */}
           <div>
-            <p className="text-xs font-medium text-muted-foreground mb-2">Break settings (leave blank to use .env defaults)</p>
+            <p className="text-xs font-medium text-muted-foreground mb-2">Break settings</p>
             <div className="grid grid-cols-3 gap-3">
               <div className="space-y-1">
                 <label htmlFor="add-break-every" className="text-xs text-muted-foreground">Break every (messages)</label>
@@ -277,6 +313,20 @@ export default function Agents() {
               <div className="space-y-1">
                 <label htmlFor="add-break-max" className="text-xs text-muted-foreground">Max break (seconds)</label>
                 <input id="add-break-max" type="number" min={1} value={form.breakMaxMs} onChange={(e) => setForm((f) => ({ ...f, breakMaxMs: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+              </div>
+            </div>
+          </div>
+          {/* Typing speed */}
+          <div>
+            <p className="text-xs font-medium text-muted-foreground mb-2">Typing speed (ms per keystroke)</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label htmlFor="add-type-min" className="text-xs text-muted-foreground">Min delay (ms)</label>
+                <input id="add-type-min" type="number" min={1} value={form.typeDelayMin} onChange={(e) => setForm((f) => ({ ...f, typeDelayMin: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
+              </div>
+              <div className="space-y-1">
+                <label htmlFor="add-type-max" className="text-xs text-muted-foreground">Max delay (ms)</label>
+                <input id="add-type-max" type="number" min={1} value={form.typeDelayMax} onChange={(e) => setForm((f) => ({ ...f, typeDelayMax: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
               </div>
             </div>
           </div>
@@ -336,11 +386,19 @@ export default function Agents() {
                   <div>Profile: <span className="font-mono">{agent.profilePath}</span></div>
                   <div>Department: {agent.departmentName ?? 'Shared pool'}</div>
                   <div>
+                    Daily cap:{' '}
+                    <span className="text-foreground font-medium">{agent.dailySendCap ?? config?.defaultDailySendCap ?? 150}</span> msgs/day
+                  </div>
+                  <div>
                     Break: every{' '}
-                    <span className="text-foreground font-medium">{agent.breakEvery ?? '30'}</span> msgs,{' '}
-                    <span className="text-foreground font-medium">{Math.round((agent.breakMinMs ?? 180000) / 1000)}</span>–
-                    <span className="text-foreground font-medium">{Math.round((agent.breakMaxMs ?? 480000) / 1000)}</span>s
-                    {(agent.breakEvery == null && agent.breakMinMs == null) && <span className="ml-1 text-muted-foreground">(from .env)</span>}
+                    <span className="text-foreground font-medium">{agent.breakEvery ?? config?.defaultBreakEvery ?? 30}</span> msgs,{' '}
+                    <span className="text-foreground font-medium">{Math.round((agent.breakMinMs ?? (config ? config.defaultBreakMinSec * 1000 : 180000)) / 1000)}</span>–
+                    <span className="text-foreground font-medium">{Math.round((agent.breakMaxMs ?? (config ? config.defaultBreakMaxSec * 1000 : 480000)) / 1000)}</span>s
+                  </div>
+                  <div>
+                    Typing:{' '}
+                    <span className="text-foreground font-medium">{agent.typeDelayMinMs ?? config?.defaultTypeDelayMin ?? 80}</span>–
+                    <span className="text-foreground font-medium">{agent.typeDelayMaxMs ?? config?.defaultTypeDelayMax ?? 180}</span>ms/key
                   </div>
                 </div>
                 {agent.status === 'QR' && (

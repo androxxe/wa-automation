@@ -26,7 +26,7 @@ export class AgentManager {
     }
 
     for (const row of dbAgents) {
-      this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
+      this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
     }
 
     // Use psubscribe so NEW agents created via the UI after startup are also handled.
@@ -48,7 +48,7 @@ export class AgentManager {
             console.error(`[agent-manager] agent ${agentId} not found in DB, ignoring command`)
             return
           }
-          this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
+          this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
         }
 
         if (cmd === 'start') this.startAgent(agentId).catch(console.error)
@@ -64,15 +64,18 @@ export class AgentManager {
   // ─── Register ─────────────────────────────────────────────────────────────
 
   private _register(
-    agentId:    number,
-    profilePath: string,
-    breakEvery?: number | null,
-    breakMinMs?: number | null,
-    breakMaxMs?: number | null,
+    agentId:         number,
+    profilePath:     string,
+    dailySendCap?:   number | null,
+    breakEvery?:     number | null,
+    breakMinMs?:     number | null,
+    breakMaxMs?:     number | null,
+    typeDelayMinMs?: number | null,
+    typeDelayMaxMs?: number | null,
   ): BrowserAgent {
-    const agent = new BrowserAgent(agentId, profilePath, breakEvery, breakMinMs, breakMaxMs)
+    const agent = new BrowserAgent(agentId, profilePath, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs)
     this.agents.set(agentId, agent)
-    console.log(`[agent-manager] registered agent ${agentId} (breakEvery=${agent.breakEvery}, break=${agent.breakMinMs/1000}–${agent.breakMaxMs/1000}s)`)
+    console.log(`[agent-manager] registered agent ${agentId} (cap=${agent.dailySendCap}/day, break every ${agent.breakEvery} msgs, ${agent.breakMinMs/1000}–${agent.breakMaxMs/1000}s | type ${agent.typeDelayMinMs}–${agent.typeDelayMaxMs}ms/key)`)
     return agent
   }
 
@@ -85,7 +88,7 @@ export class AgentManager {
     if (!agent) {
       const row = await db.agent.findUnique({ where: { id: agentId } })
       if (!row) throw new Error(`Agent ${agentId} not found in DB`)
-      agent = this._register(row.id, row.profilePath, row.breakEvery, row.breakMinMs, row.breakMaxMs)
+      agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
     }
 
     console.log(`[agent:${agentId}] starting…`)

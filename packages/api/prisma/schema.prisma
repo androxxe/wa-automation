@@ -15,9 +15,12 @@ model Agent {
   profilePath  String         @db.VarChar(500)
   status       String         @default("OFFLINE") // OFFLINE|STARTING|ONLINE|QR|ERROR
   phoneNumber  String         // WhatsApp number — required at creation
-  breakEvery   Int?           // pause after every N messages (null = use MID_SESSION_BREAK_EVERY env)
-  breakMinMs   Int?           // min break duration ms (null = use MID_SESSION_BREAK_MIN_MS env)
-  breakMaxMs   Int?           // max break duration ms (null = use MID_SESSION_BREAK_MAX_MS env)
+  dailySendCap   Int?  // max messages per day           (null = DAILY_SEND_CAP env, default 150)
+  breakEvery     Int?  // pause after every N messages   (null = MID_SESSION_BREAK_EVERY env)
+  breakMinMs     Int?  // min break duration ms          (null = MID_SESSION_BREAK_MIN_MS env)
+  breakMaxMs     Int?  // max break duration ms          (null = MID_SESSION_BREAK_MAX_MS env)
+  typeDelayMinMs Int?  // min keystroke delay ms         (null = TYPE_DELAY_MIN_MS env, default 80)
+  typeDelayMaxMs Int?  // max keystroke delay ms         (null = TYPE_DELAY_MAX_MS env, default 180)
   departmentId String?
   department   Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   messages     Message[]

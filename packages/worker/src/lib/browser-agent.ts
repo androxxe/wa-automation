@@ -25,10 +25,13 @@ const STEALTH_SCRIPT = `
 export class BrowserAgent {
   readonly agentId:    number
   readonly profilePath: string
-  // Break settings — resolved at construction from DB row, fallback to env
-  readonly breakEvery:  number
-  readonly breakMinMs:  number
-  readonly breakMaxMs:  number
+  // Per-agent caps and timings — resolved at construction from DB row, fallback to env
+  readonly dailySendCap:   number
+  readonly breakEvery:     number
+  readonly breakMinMs:     number
+  readonly breakMaxMs:     number
+  readonly typeDelayMinMs: number
+  readonly typeDelayMaxMs: number
 
   private context:       BrowserContext | null = null
   private page:          Page | null           = null
@@ -40,18 +43,23 @@ export class BrowserAgent {
   activeJobCount = 0
 
   constructor(
-    agentId:    number,
-    profilePath: string,
-    breakEvery?: number | null,
-    breakMinMs?: number | null,
-    breakMaxMs?: number | null,
+    agentId:         number,
+    profilePath:     string,
+    dailySendCap?:   number | null,
+    breakEvery?:     number | null,
+    breakMinMs?:     number | null,
+    breakMaxMs?:     number | null,
+    typeDelayMinMs?: number | null,
+    typeDelayMaxMs?: number | null,
   ) {
-    this.agentId     = agentId
-    this.profilePath = profilePath
-    // Fall back to env vars when not set on the agent
-    this.breakEvery  = breakEvery ?? parseInt(process.env.MID_SESSION_BREAK_EVERY ?? '30',  10)
-    this.breakMinMs  = breakMinMs ?? parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10)
-    this.breakMaxMs  = breakMaxMs ?? parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10)
+    this.agentId        = agentId
+    this.profilePath    = profilePath
+    this.dailySendCap   = dailySendCap   ?? parseInt(process.env.DAILY_SEND_CAP           ?? '150',    10)
+    this.breakEvery     = breakEvery     ?? parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10)
+    this.breakMinMs     = breakMinMs     ?? parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10)
+    this.breakMaxMs     = breakMaxMs     ?? parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10)
+    this.typeDelayMinMs = typeDelayMinMs ?? parseInt(process.env.TYPE_DELAY_MIN_MS        ?? '80',     10)
+    this.typeDelayMaxMs = typeDelayMaxMs ?? parseInt(process.env.TYPE_DELAY_MAX_MS        ?? '180',    10)
   }
 
   // ─── Lock ─────────────────────────────────────────────────────────────────
@@ -229,7 +237,9 @@ export class BrowserAgent {
       const lines = body.split('\n')
       for (let i = 0; i < lines.length; i++) {
         for (const char of lines[i]) {
-          await page.keyboard.type(char, { delay: 80 + Math.random() * 100 })
+          await page.keyboard.type(char, {
+            delay: this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs),
+          })
         }
         if (i < lines.length - 1) {
           await page.keyboard.press('Shift+Enter')

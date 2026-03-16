@@ -16,10 +16,9 @@ import { varyMessage } from './lib/claude'
 
 const QUEUE_NAME             = 'whatsapp-messages'
 const PHONE_CHECK_QUEUE_NAME = 'phone-check'
-const DAILY_SEND_CAP         = parseInt(process.env.DAILY_SEND_CAP        ?? '150',   10)
 const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
-// Break settings are now per-agent (BrowserAgent.breakEvery/Min/Max).
-// These env vars remain as the fallback default when an agent has no override.
+// dailySendCap, breakEvery, typeDelay are now per-agent (BrowserAgent fields).
+// Env vars remain as fallback defaults when an agent has no override.
 
 // Per-agent session send counters (in-memory; reset on worker restart)
 const sessionSendCount = new Map<number, number>()
@@ -83,11 +82,11 @@ const worker = new Worker<MessageJob>(
     try {
       log(`picked up msg:${messageId} → ${phone}`)
 
-      // 1. Daily cap
+      // 1. Daily cap — use this agent's cap (falls back to DAILY_SEND_CAP env)
       const sentToday = await todaySendCount()
-      if (sentToday >= DAILY_SEND_CAP) {
+      if (sentToday >= agent.dailySendCap) {
         const delay = msUntilNextOpen()
-        log(`daily cap reached (${sentToday}/${DAILY_SEND_CAP}), sleeping ${Math.round(delay / 60000)}m`)
+        log(`daily cap reached (${sentToday}/${agent.dailySendCap}), sleeping ${Math.round(delay / 60000)}m`)
         await sleep(delay)
       }
 

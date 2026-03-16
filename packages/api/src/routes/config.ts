@@ -24,10 +24,13 @@ router.get('/', async (_req, res) => {
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),
-        // Agent break defaults — read-only, sourced from env vars
-        defaultBreakEvery:  parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
-        defaultBreakMinSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
-        defaultBreakMaxSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
+        // Agent defaults — read-only, sourced from env vars
+        defaultDailySendCap:  parseInt(process.env.DAILY_SEND_CAP ?? '150', 10),
+        defaultBreakEvery:    parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
+        defaultBreakMinSec:   Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
+        defaultBreakMaxSec:   Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
+        defaultTypeDelayMin:  parseInt(process.env.TYPE_DELAY_MIN_MS ?? '80',  10),
+        defaultTypeDelayMax:  parseInt(process.env.TYPE_DELAY_MAX_MS ?? '180', 10),
       },
     })
   } catch (err) {
@@ -65,9 +68,12 @@ router.patch('/', async (req, res) => {
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),
-        defaultBreakEvery:  parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
-        defaultBreakMinSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
-        defaultBreakMaxSec: Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
+        defaultDailySendCap:  parseInt(process.env.DAILY_SEND_CAP ?? '150', 10),
+        defaultBreakEvery:    parseInt(process.env.MID_SESSION_BREAK_EVERY  ?? '30',     10),
+        defaultBreakMinSec:   Math.round(parseInt(process.env.MID_SESSION_BREAK_MIN_MS ?? '180000', 10) / 1000),
+        defaultBreakMaxSec:   Math.round(parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10) / 1000),
+        defaultTypeDelayMin:  parseInt(process.env.TYPE_DELAY_MIN_MS ?? '80',  10),
+        defaultTypeDelayMax:  parseInt(process.env.TYPE_DELAY_MAX_MS ?? '180', 10),
       },
     })
   } catch (err) {
