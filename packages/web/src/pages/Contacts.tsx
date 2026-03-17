@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 
@@ -25,6 +25,14 @@ interface ContactsPage {
   limit: number
 }
 
+interface Area {
+  id: string
+  name: string
+  contactType: string
+}
+
+// ─── WA Status Badge ──────────────────────────────────────────────────────────
+
 function WaStatusBadge({
   phoneValid,
   waChecked,
@@ -48,21 +56,131 @@ function WaStatusBadge({
   return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Belum dicek</span>
 }
 
+// ─── Area Combobox ────────────────────────────────────────────────────────────
+
+function AreaPicker({
+  value,
+  onChange,
+  areas,
+}: {
+  value:    string
+  onChange: (id: string) => void
+  areas:    Area[]
+}) {
+  const [search, setSearch] = useState('')
+  const [open,   setOpen]   = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  const selected = areas.find((a) => a.id === value)
+  const filtered = areas.filter((a) =>
+    a.name.toLowerCase().includes(search.toLowerCase())
+  )
+
+  useEffect(() => {
+    function onOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', onOutside)
+    return () => document.removeEventListener('mousedown', onOutside)
+  }, [])
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-sm rounded-md border bg-background px-3 py-1.5 text-left flex items-center gap-2 min-w-[160px]"
+      >
+        <span className={selected ? 'truncate' : 'text-muted-foreground truncate'}>
+          {selected ? selected.name : 'Semua Area'}
+        </span>
+        <span className="text-xs opacity-60 shrink-0 ml-auto">▾</span>
+      </button>
+
+      {open && (
+        <div className="absolute z-30 left-0 top-full mt-1 w-full min-w-[200px] rounded-lg border bg-popover shadow-md">
+          <div className="p-2 border-b">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cari area…"
+              ref={(el) => { if (el) el.focus() }}
+              className="w-full text-sm rounded border bg-background px-2 py-1 outline-none"
+            />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {value && (
+              <button
+                type="button"
+                className="w-full text-left text-sm px-3 py-2 hover:bg-accent text-muted-foreground"
+                onClick={() => { onChange(''); setOpen(false); setSearch('') }}
+              >
+                — Semua Area —
+              </button>
+            )}
+            {filtered.length === 0 && (
+              <p className="text-sm text-muted-foreground px-3 py-4 text-center">Tidak ditemukan</p>
+            )}
+            {filtered.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                className={`w-full text-left text-sm px-3 py-2 hover:bg-accent ${a.id === value ? 'bg-accent/60 font-medium' : ''}`}
+                onClick={() => { onChange(a.id); setOpen(false); setSearch('') }}
+              >
+                {a.name}
+                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                  a.contactType === 'STIK' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                }`}>
+                  {a.contactType}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Main Page ────────────────────────────────────────────────────────────────
+
 export default function Contacts() {
   const queryClient = useQueryClient()
-  const [page, setPage]               = useState(1)
+  const [page, setPage]                 = useState(1)
   const [statusFilter, setStatusFilter] = useState('')
-  const [typeFilter, setTypeFilter]   = useState('')
-  const [validateMsg, setValidateMsg] = useState<string | null>(null)
+  const [typeFilter, setTypeFilter]     = useState('')
+  const [areaFilter, setAreaFilter]     = useState('')
+  const [validateMsg, setValidateMsg]   = useState<string | null>(null)
+
+  const { data: allAreas = [] } = useQuery<Area[]>({
+    queryKey: ['areas'],
+    queryFn:  () => apiFetch<Area[]>('/api/contacts/areas'),
+  })
+
+  // When type filter is active, only show areas of that type in the picker
+  const pickerAreas = typeFilter
+    ? allAreas.filter((a) => a.contactType === typeFilter)
+    : allAreas
+
+  // If a specific area is selected but type filter no longer includes it, clear area
+  const effectiveAreaFilter = (typeFilter && areaFilter)
+    ? (pickerAreas.some((a) => a.id === areaFilter) ? areaFilter : '')
+    : areaFilter
 
   const params = new URLSearchParams({ page: String(page), limit: '50' })
   if (statusFilter === 'invalid')   params.set('phoneValid', 'false')
   if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
   if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
   if (typeFilter)                   params.set('contactType', typeFilter)
+  if (effectiveAreaFilter)          params.set('areaId', effectiveAreaFilter)
 
   const { data, isLoading } = useQuery<ContactsPage>({
-    queryKey: ['contacts', page, statusFilter, typeFilter],
+    queryKey: ['contacts', page, statusFilter, typeFilter, effectiveAreaFilter],
     queryFn:  () => apiFetch<ContactsPage>(`/api/contacts?${params}`),
   })
 
@@ -79,7 +197,6 @@ export default function Contacts() {
         setValidateMsg(
           `${result.queued} nomor diantrekan untuk dicek${recheck ? ' (ulang)' : ''}. Status akan diperbarui otomatis.`
         )
-        // Refetch immediately to show "Pending Checking" badges, then again after 3s
         queryClient.invalidateQueries({ queryKey: ['contacts'] })
         setTimeout(() => queryClient.invalidateQueries({ queryKey: ['contacts'] }), 3000)
       }
@@ -98,15 +215,25 @@ export default function Contacts() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {/* Tipe filter */}
           <select
             value={typeFilter}
-            onChange={(e) => { setTypeFilter(e.target.value); setPage(1) }}
+            onChange={(e) => { setTypeFilter(e.target.value); setAreaFilter(''); setPage(1) }}
             className="text-sm border rounded-md px-3 py-1.5 bg-background"
           >
             <option value="">Semua Tipe</option>
             <option value="STIK">STIK</option>
             <option value="KARDUS">KARDUS</option>
           </select>
+
+          {/* Area searchable combobox */}
+          <AreaPicker
+            value={effectiveAreaFilter}
+            onChange={(id) => { setAreaFilter(id); setPage(1) }}
+            areas={pickerAreas}
+          />
+
+          {/* Status filter */}
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
@@ -117,6 +244,7 @@ export default function Contacts() {
             <option value="valid">Terdaftar</option>
             <option value="invalid">Tidak valid</option>
           </select>
+
           <button
             type="button"
             onClick={() => validateMutation.mutate(false)}

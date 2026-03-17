@@ -7,6 +7,19 @@ const WA_CHECKING_TTL = 600 // 10 minutes — safety expiry if worker crashes
 
 const router: import('express').Router = Router()
 
+// GET /api/areas  — returns all areas for filter dropdown
+router.get('/areas', async (_req, res) => {
+  try {
+    const areas = await db.area.findMany({
+      select: { id: true, name: true, contactType: true },
+      orderBy: { name: 'asc' },
+    })
+    res.json({ ok: true, data: areas })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // GET /api/contacts
 router.get('/', async (req, res) => {
   const { departmentId, areaId, contactType, phoneValid, waChecked, page = '1', limit = '50' } =
