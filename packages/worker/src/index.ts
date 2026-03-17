@@ -17,6 +17,7 @@ import {
 const QUEUE_NAME             = 'whatsapp-messages'
 const PHONE_CHECK_QUEUE_NAME = 'phone-check'
 const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
+const REPLY_WINDOW_DAYS      = parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS ?? '3', 10)
 // dailySendCap, breakEvery, typeDelay are now per-agent (BrowserAgent fields).
 // Env vars remain as fallback defaults when an agent has no override.
 
@@ -259,11 +260,17 @@ phoneCheckWorker.on('failed', (job, err) => {
 
 // Returns Map<phone, sentAt> so pollReplies can anchor to when each message was sent.
 async function getUnrepliedPhones(): Promise<Map<string, Date>> {
+  const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const messages = await db.message.findMany({
     where:  {
       status:   { in: ['SENT', 'DELIVERED', 'READ'] },
       reply:    null,
-      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      campaign: {
+        OR: [
+          { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+          { status: 'COMPLETED', completedAt: { gte: replyWindowCutoff } },
+        ],
+      },
     },
     select: { phone: true, sentAt: true },
   })
@@ -288,13 +295,20 @@ async function handleReply(params: {
   const { phone, text, screenshotPath } = params
 
   // Fan-out: ALL unreplied messages for this phone in ACTIVE campaigns (covers STIK + KARDUS).
-  // Excludes COMPLETED/CANCELLED campaigns so a reply during Bulan 2 never leaks back into Bulan 1.
+  // Also includes COMPLETED campaigns within the reply window so late replies are still captured.
+  // Excludes COMPLETED campaigns older than REPLY_WINDOW_DAYS and all CANCELLED campaigns.
+  const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const messages = await db.message.findMany({
     where: {
       phone,
       status:   { in: ['SENT', 'DELIVERED', 'READ'] },
       reply:    null,
-      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      campaign: {
+        OR: [
+          { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+          { status: 'COMPLETED', completedAt: { gte: replyWindowCutoff } },
+        ],
+      },
     },
     include: {
       campaign: true,
@@ -415,12 +429,18 @@ async function handleReply(params: {
 // WhatsApp's chat DOM (stale anchor). The message was marked SENT in the DB but was
 // never actually delivered. Mark it FAILED so the user can see and retry it.
 async function handleStaleMessage(phone: string): Promise<void> {
+  const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const staleMessages = await db.message.findMany({
     where: {
       phone,
       status:   { in: ['SENT', 'DELIVERED', 'READ'] },
       reply:    null,
-      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+      campaign: {
+        OR: [
+          { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+          { status: 'COMPLETED', completedAt: { gte: replyWindowCutoff } },
+        ],
+      },
     },
     select: { id: true, campaignId: true, sentAt: true },
     orderBy: { sentAt: 'desc' },

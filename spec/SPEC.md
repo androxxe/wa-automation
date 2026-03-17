@@ -102,6 +102,7 @@ TYPE_DELAY_MAX_MS=180                       # slowest keystroke delay (ms)
 
 # Reply polling
 REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s (per agent)
+CAMPAIGN_REPLY_WINDOW_DAYS=3               # accept late replies for N days after campaign completes (default: 3)
 
 # Phone check parallelism — set to match your number of agents (default 3)
 PHONE_CHECK_CONCURRENCY=3                  # how many phone-check jobs run in parallel
@@ -706,6 +707,8 @@ A background loop runs per agent every `REPLY_POLL_INTERVAL_MS` (60s):
 
 ```
 1. Query DB: find all phones with SENT/DELIVERED/READ messages and no Reply record yet
+   → includes RUNNING/PAUSED campaigns + COMPLETED campaigns within CAMPAIGN_REPLY_WINDOW_DAYS
+   → COMPLETED campaigns older than the window and all CANCELLED campaigns are excluded
    → returns Map<phone, sentAt>   (earliest sentAt per phone)
 
 2. For each phone in the map:
