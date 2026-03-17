@@ -81,8 +81,13 @@ const worker = new Worker<MessageJob>(
         continue
       }
 
-      // Sort by activity; bump preferred agent to front if specified
-      online.sort((a, b) => a.agent.activeJobCount - b.agent.activeJobCount)
+      // Sort by activity with random tiebreaker so load is spread across all agents.
+      // Without the tiebreaker, a stable sort always puts the lower-ID agent first
+      // when both are idle (activeJobCount === 0), causing only one agent to ever work.
+      online.sort((a, b) => {
+        const diff = a.agent.activeJobCount - b.agent.activeJobCount
+        return diff !== 0 ? diff : Math.random() - 0.5
+      })
       if (preferredAgentId) {
         const idx = online.findIndex(({ agentId }) => agentId === preferredAgentId)
         if (idx > 0) online.unshift(...online.splice(idx, 1))
