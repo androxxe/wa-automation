@@ -14,13 +14,19 @@ const parseId = (id: string) => parseInt(id, 10)
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+function todayWIB(): string {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }) // "YYYY-MM-DD"
+}
+
 async function agentWithLiveStatus(agentId: number) {
   const agent       = await db.agent.findUnique({ where: { id: agentId }, include: { department: true } })
   if (!agent) return null
   const status      = (await redis.get(`agent:${agentId}:status`)) ?? 'OFFLINE'
   const screenshot  = await redis.get(`agent:${agentId}:screenshot`)
   const activeJobs  = parseInt((await redis.get(`agent:${agentId}:active_jobs`)) ?? '0', 10)
-  return { ...agent, status, screenshot, activeJobCount: activeJobs }
+  const log         = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId, date: todayWIB() } } })
+  const sentToday   = log?.count ?? 0
+  return { ...agent, status, screenshot, activeJobCount: activeJobs, sentToday }
 }
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
@@ -32,12 +38,15 @@ router.get('/', async (_req, res) => {
       include: { department: true },
       orderBy: { createdAt: 'asc' },
     })
+    const today = todayWIB()
     const withStatus = await Promise.all(
       agents.map(async (a) => {
         const status     = (await redis.get(`agent:${a.id}:status`)) ?? 'OFFLINE'
         const screenshot = await redis.get(`agent:${a.id}:screenshot`)
         const activeJobs = parseInt((await redis.get(`agent:${a.id}:active_jobs`)) ?? '0', 10)
-        return { ...a, status, screenshot, activeJobCount: activeJobs }
+        const log        = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId: a.id, date: today } } })
+        const sentToday  = log?.count ?? 0
+        return { ...a, status, screenshot, activeJobCount: activeJobs, sentToday }
       }),
     )
     res.json({ ok: true, data: withStatus })

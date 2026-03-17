@@ -18,6 +18,7 @@ interface Agent {
   departmentId:   string | null
   departmentName: string | null
   activeJobCount: number
+  sentToday:      number
   screenshot:     string | null
 }
 
@@ -388,6 +389,14 @@ export default function Agents() {
                   <div>
                     Daily cap:{' '}
                     <span className="text-foreground font-medium">{agent.dailySendCap ?? config?.defaultDailySendCap ?? 150}</span> msgs/day
+                    {' · '}
+                    <span className={
+                      Math.max(0, (agent.dailySendCap ?? config?.defaultDailySendCap ?? 150) - agent.sentToday) === 0
+                        ? 'text-red-600 font-medium'
+                        : 'text-green-700 font-medium'
+                    }>
+                      {Math.max(0, (agent.dailySendCap ?? config?.defaultDailySendCap ?? 150) - agent.sentToday)} remaining today
+                    </span>
                   </div>
                   <div>
                     Break: every{' '}
