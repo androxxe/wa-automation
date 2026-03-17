@@ -1,4 +1,3 @@
-import 'dotenv/config'
 import { Worker, type Job } from 'bullmq'
 import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'

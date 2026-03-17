@@ -6,19 +6,26 @@
   "scripts": {
     "dev": "pnpm --parallel --filter './packages/*' dev",
     "dev:api": "pnpm --filter @aice/api dev",
-    "dev:worker": "pnpm --filter @aice/worker exec tsx src/index.ts",
+    "dev:worker": "pnpm --filter @aice/worker dev",
     "dev:web": "pnpm --filter @aice/web dev",
     "caffeinate": "caffeinate -i",
     "dev:caffeinate": "caffeinate -i sh -c 'pnpm redis:start && pnpm dev'",
-    "build": "pnpm --filter @aice/shared build && pnpm --parallel --filter '@aice/api @aice/worker @aice/web' build",
+    "build": "pnpm --filter @aice/shared build && pnpm --parallel --filter @aice/api --filter @aice/worker --filter @aice/web build",
+    "start": "pnpm --parallel --filter @aice/api --filter @aice/worker --filter @aice/web start",
     "db:generate": "pnpm --filter @aice/api db:generate",
     "db:push": "pnpm --filter @aice/api db:push",
+    "db:push:prod": "pnpm --filter @aice/api db:push:prod",
     "db:studio": "pnpm --filter @aice/api db:studio",
+    "db:studio:prod": "pnpm --filter @aice/api db:studio:prod",
     "db:migrate": "pnpm --filter @aice/api db:migrate",
+    "db:migrate:prod": "pnpm --filter @aice/api db:migrate:prod",
     "db:fresh": "pnpm --filter @aice/api db:fresh",
     "redis:start": "redis-server redis/redis.conf --daemonize yes",
     "redis:stop": "redis-cli -p 6380 shutdown",
     "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
     "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"
+  },
+  "devDependencies": {
+    "dotenv-cli": "^11.0.0"
   }
 }
