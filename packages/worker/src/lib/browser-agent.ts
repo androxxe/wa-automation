@@ -334,15 +334,17 @@ export class BrowserAgent {
   // ─── pollReplies ─────────────────────────────────────────────────────────
 
   async pollReplies(
-    onReply: (params: { phone: string; text: string; screenshotPath: string | null }) => Promise<void>,
+    onReply:  (params: { phone: string; text: string; screenshotPath: string | null }) => Promise<void>,
     sentPhones: Map<string, Date>,
+    onStale?: (phone: string) => Promise<void>,
   ): Promise<void> {
     return this._withBrowserLock(async () => {
       const page = this.page!
 
-      for (const [phone] of sentPhones) {
-        const number = phone.replace('+', '')
-        const url    = `https://web.whatsapp.com/send?phone=${number}`
+      for (const [phone, sentAt] of sentPhones) {
+        const number    = phone.replace('+', '')
+        const url       = `https://web.whatsapp.com/send?phone=${number}`
+        const sentAtMs  = sentAt.getTime()
 
         await page.goto(url, { waitUntil: 'domcontentloaded' })
 
@@ -377,7 +379,12 @@ export class BrowserAgent {
         //   [old msg] Contact: "Halo..."   ← ignored (before our last .message-out)
         //   [campaign] You: "Apakah benar..."  ← anchor (last .message-out)
         //   [reply] Contact: "Iya sudah"   ← ✓ captured
-        const lastIncoming = await page.evaluate((): string | null => {
+        //
+        // Staleness guard: if the anchor's date is >2 days before the expected sentAt,
+        // our latest Bulan-2 message never appeared in WhatsApp (silent delivery failure).
+        // In that case we must NOT fire handleReply — doing so would attribute the old
+        // Bulan-1 reply (R1, which sits after M1 in the DOM) to the Bulan-2 message (M2).
+        const lastIncoming = await page.evaluate((expectedSentAtMs: number): string | null | '__STALE__' => {
           // Collect all top-level message rows in DOM order
           const rows = Array.from(document.querySelectorAll(
             '[data-id], .message-in, .message-out',
@@ -394,6 +401,42 @@ export class BrowserAgent {
           // No outgoing message in view — our message may not have loaded yet, skip
           if (anchorIdx === -1) return null
 
+          // ── Staleness guard ──────────────────────────────────────────────────
+          // Read the anchor's timestamp from data-pre-plain-text (e.g. "[14.30, 01/02/2026] ").
+          // If the anchor message is from >2 days before expectedSentAt it means our
+          // latest message (M2) never appeared in the DOM — we are anchored to an older
+          // message (M1 from Bulan 1). Skip to prevent R1 being attributed to M2.
+          const anchorEl = rows[anchorIdx]
+          const outEl    = anchorEl.classList.contains('message-out')
+            ? anchorEl
+            : anchorEl.querySelector('.message-out') ?? anchorEl
+          const preText  = outEl.querySelector?.('.copyable-text[data-pre-plain-text]')
+            ?.getAttribute('data-pre-plain-text') ?? null
+
+          if (preText) {
+            // Format (id-ID locale): "[H.MM, DD/MM/YYYY] "
+            const dm = preText.match(/,\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+            if (dm) {
+              const day    = parseInt(dm[1], 10)
+              const month  = parseInt(dm[2], 10)
+              const year   = parseInt(dm[3], 10)
+              const anchorDayMs  = Date.UTC(year, month - 1, day)
+              const expectedDay  = new Date(expectedSentAtMs)
+              const expectedDayMs = Date.UTC(
+                expectedDay.getUTCFullYear(),
+                expectedDay.getUTCMonth(),
+                expectedDay.getUTCDate(),
+              )
+              const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000
+              if (expectedDayMs - anchorDayMs > TWO_DAYS_MS) {
+                // Anchor is from a previous campaign — our latest message (M2) is missing
+                // from WhatsApp. Signal the caller so it can mark M2 as FAILED for retry.
+                return '__STALE__'
+              }
+            }
+          }
+          // ────────────────────────────────────────────────────────────────────
+
           // Collect incoming messages strictly after the anchor
           const incomingAfter = rows
             .slice(anchorIdx + 1)
@@ -409,7 +452,13 @@ export class BrowserAgent {
             lastEl.querySelector('.copyable-text')?.textContent?.trim() ??
             null
           )
-        })
+        }, sentAtMs)
+
+        if (lastIncoming === '__STALE__') {
+          console.warn(`[agent:${this.agentId}] stale anchor for ${phone} — latest message absent from WhatsApp chat, marking FAILED for retry`)
+          await onStale?.(phone)
+          continue
+        }
 
         if (!lastIncoming) {
           console.log(`[agent:${this.agentId}] no reply after sent message for ${phone}`)

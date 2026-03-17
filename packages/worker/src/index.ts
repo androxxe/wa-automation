@@ -255,15 +255,22 @@ phoneCheckWorker.on('failed', (job, err) => {
 // Returns Map<phone, sentAt> so pollReplies can anchor to when each message was sent.
 async function getUnrepliedPhones(): Promise<Map<string, Date>> {
   const messages = await db.message.findMany({
-    where:  { status: { in: ['SENT', 'DELIVERED', 'READ'] }, reply: null },
+    where:  {
+      status:   { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:    null,
+      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+    },
     select: { phone: true, sentAt: true },
   })
   const map = new Map<string, Date>()
   for (const m of messages) {
-    // Keep the EARLIEST sentAt per phone so the anchor covers all sent messages
+    // Keep the MOST RECENT sentAt per phone — passed to pollReplies as the expected
+    // anchor time. If the last outgoing message visible in WhatsApp is significantly
+    // older than this value, our latest message never appeared (silent delivery failure)
+    // and we must skip to avoid attributing an old Bulan-1 reply to a Bulan-2 message.
     const existing = map.get(m.phone)
     const ts = m.sentAt ?? new Date(0)
-    if (!existing || ts < existing) map.set(m.phone, ts)
+    if (!existing || ts > existing) map.set(m.phone, ts)
   }
   return map
 }
@@ -275,12 +282,14 @@ async function handleReply(params: {
 }) {
   const { phone, text, screenshotPath } = params
 
-  // Fan-out: ALL unreplied messages for this phone (covers STIK + KARDUS)
+  // Fan-out: ALL unreplied messages for this phone in ACTIVE campaigns (covers STIK + KARDUS).
+  // Excludes COMPLETED/CANCELLED campaigns so a reply during Bulan 2 never leaks back into Bulan 1.
   const messages = await db.message.findMany({
     where: {
       phone,
-      status: { in: ['SENT', 'DELIVERED', 'READ'] },
-      reply:  null,
+      status:   { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:    null,
+      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
     },
     include: {
       campaign: true,
@@ -397,6 +406,42 @@ async function handleReply(params: {
   console.log(`[worker] reply from ${phone} fanned out to ${messages.length} message(s)`)
 }
 
+// Called when pollReplies detects that the expected outgoing message is absent from
+// WhatsApp's chat DOM (stale anchor). The message was marked SENT in the DB but was
+// never actually delivered. Mark it FAILED so the user can see and retry it.
+async function handleStaleMessage(phone: string): Promise<void> {
+  const staleMessages = await db.message.findMany({
+    where: {
+      phone,
+      status:   { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:    null,
+      campaign: { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+    },
+    select: { id: true, campaignId: true, sentAt: true },
+    orderBy: { sentAt: 'desc' },
+  })
+
+  if (staleMessages.length === 0) return
+
+  for (const msg of staleMessages) {
+    await db.message.update({
+      where: { id: msg.id },
+      data: {
+        status:     'FAILED',
+        failedAt:   new Date(),
+        failReason: 'WhatsApp delivery not confirmed — message absent from chat during reply poll. Retry to resend.',
+      },
+    }).catch((e) => console.warn(`[worker] handleStaleMessage update failed for msg ${msg.id}:`, e))
+
+    await db.campaign.update({
+      where: { id: msg.campaignId },
+      data:  { failedCount: { increment: 1 } },
+    }).catch(() => {})
+
+    console.warn(`[worker] marked msg:${msg.id} (phone:${phone}) as FAILED — stale delivery`)
+  }
+}
+
 function startReplyPolling() {
   console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s`)
 
@@ -417,7 +462,7 @@ function startReplyPolling() {
       const unrepliedPhones = await getUnrepliedPhones()
       if (unrepliedPhones.size === 0) return
       console.log(`[agent:${online.agentId}][poll] checking ${unrepliedPhones.size} unreplied phone(s)`)
-      await online.agent.pollReplies(handleReply, unrepliedPhones as Map<string, Date>)
+      await online.agent.pollReplies(handleReply, unrepliedPhones as Map<string, Date>, handleStaleMessage)
       console.log(`[agent:${online.agentId}][poll] done`)
     } catch (err) {
       console.error('[worker] reply poll error:', err)

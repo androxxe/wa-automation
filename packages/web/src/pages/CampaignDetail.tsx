@@ -26,11 +26,12 @@ function FailReasonModal({ reason, onClose }: { reason: string; onClose: () => v
 // ─── Enqueue modal (two tabs: Preview + Select Contacts) ─────────────────────
 
 interface PickerContact {
-  id:            string
-  storeName:     string
-  phoneNorm:     string
-  seqNo:         string | null
-  alreadyReplied: boolean
+  id:                   string
+  storeName:            string
+  phoneNorm:            string
+  seqNo:                string | null
+  alreadyReplied:       boolean
+  previousCampaignName: string | null
 }
 
 interface PickerArea {
@@ -251,6 +252,14 @@ function EnqueueModal({
                               <span className="text-xs text-muted-foreground font-mono">{c.phoneNorm}</span>
                               {c.alreadyReplied && (
                                 <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full">Replied</span>
+                              )}
+                              {!c.alreadyReplied && c.previousCampaignName && (
+                                <span
+                                  className="text-xs bg-blue-50 text-blue-600 border border-blue-200 px-1.5 py-0.5 rounded-full shrink-0"
+                                  title={`Previously sent in: ${c.previousCampaignName}`}
+                                >
+                                  {c.previousCampaignName}
+                                </span>
                               )}
                             </div>
                           ))}

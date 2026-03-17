@@ -456,19 +456,50 @@ router.get('/:id/contacts', async (req, res) => {
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
 
-    // Find all contacts who already replied in any campaign with same bulan + campaignType
+    // Find contacts who already replied in any ACTIVE campaign with same bulan + campaignType.
+    // Excludes COMPLETED/CANCELLED campaigns so contacts from finished periods are not blocked
+    // from being re-sent in a new campaign (even one with the same bulan value).
     const repliedContacts = await db.contact.findMany({
       where: {
         messages: {
           some: {
             reply:    { isNot: null },
-            campaign: { bulan: campaign.bulan, campaignType: campaign.campaignType },
+            campaign: {
+              bulan:        campaign.bulan,
+              campaignType: campaign.campaignType,
+              status:       { notIn: ['COMPLETED', 'CANCELLED'] },
+            },
           },
         },
       },
       select: { id: true },
     })
     const repliedSet = new Set(repliedContacts.map((c) => c.id))
+
+    // Find the most recent COMPLETED/CANCELLED campaign (same campaignType, different id) that
+    // sent to each contact — used to show an informational "previously sent" badge in the picker.
+    const prevSentRows = await db.message.findMany({
+      where: {
+        campaign: {
+          campaignType: campaign.campaignType,
+          status:       { in: ['COMPLETED', 'CANCELLED'] },
+          id:           { not: campaign.id },
+        },
+        status: { in: ['SENT', 'DELIVERED', 'READ'] },
+      },
+      select: {
+        contactId: true,
+        campaign:  { select: { name: true, bulan: true, completedAt: true } },
+      },
+      orderBy: { sentAt: 'desc' },
+    })
+    // Keep only the most recent previous campaign per contact
+    const prevCampaignMap = new Map<string, string>()
+    for (const row of prevSentRows) {
+      if (!prevCampaignMap.has(row.contactId)) {
+        prevCampaignMap.set(row.contactId, `${row.campaign.name} (${row.campaign.bulan})`)
+      }
+    }
 
     const grouped = await Promise.all(
       campaign.areas.map(async (ca) => {
@@ -494,7 +525,8 @@ router.get('/:id/contacts', async (req, res) => {
           areaName: ca.area.name,
           contacts: contacts.map((c) => ({
             ...c,
-            alreadyReplied: repliedSet.has(c.id),
+            alreadyReplied:     repliedSet.has(c.id),
+            previousCampaignName: prevCampaignMap.get(c.id) ?? null,
           })),
         }
       }),
