@@ -70,11 +70,12 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       { key: 'kategori',    width: 14 },
       { key: 'dikirimPada', width: 20 },
       { key: 'dibalasPada', width: 20 },
+      { key: 'rawResponse', width: 40 },
       { key: 'screenshot',  width: 32 },
     ]
 
     // Header row
-    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Dikirim pada', 'Dibalas pada', 'Screenshot']
+    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Dikirim pada', 'Dibalas pada', 'Raw Response', 'Screenshot']
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
@@ -103,13 +104,15 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       const dikirimPada = fmtDate(message?.sentAt)
       const dibalasPada = fmtDate(reply?.receivedAt)
 
+      const rawResponse = reply?.body ?? ''
+
       const absPath = reply?.screenshotPath && OUTPUT_FOLDER
         ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
         : null
       const hasImg  = absPath !== null && fs.existsSync(absPath)
 
-      // col 11 = column K (0-indexed: 10) for screenshot image
-      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, dikirimPada, dibalasPada, ''])
+      // col 12 = column L (0-indexed: 11) for screenshot image
+      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, dikirimPada, dibalasPada, rawResponse, ''])
       dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
       dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
@@ -150,6 +153,8 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       dataRow.getCell(9).font       = { color: { argb: 'FF6B7280' } }
       dataRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'center' }
       dataRow.getCell(10).font      = { color: { argb: 'FF6B7280' } }
+      dataRow.getCell(11).alignment = { vertical: 'middle', wrapText: true }
+      dataRow.getCell(11).font      = { color: { argb: 'FF374151' } }
 
       if (rowNo % 2 === 0) {
         for (let c = 1; c <= 6; c++) {
@@ -166,16 +171,16 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
           const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-          // col 10 = column K (0-indexed), row = excelRowIdx - 1 (0-indexed)
+          // col 11 = column L (0-indexed), row = excelRowIdx - 1 (0-indexed)
           sheet.addImage(imageId, {
-            tl:     { col: 10, row: excelRowIdx - 1 },
+            tl:     { col: 11, row: excelRowIdx - 1 },
             ext:    { width: IMG_W, height: IMG_H },
             editAs: 'oneCell',
           })
         } catch {
-          dataRow.getCell(11).value     = absPath
-          dataRow.getCell(11).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-          dataRow.getCell(11).alignment = { vertical: 'middle', wrapText: true }
+          dataRow.getCell(12).value     = absPath
+          dataRow.getCell(12).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+          dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
         }
       }
 
