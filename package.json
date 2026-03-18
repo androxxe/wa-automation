@@ -20,7 +20,7 @@
     "db:migrate": "pnpm --filter @aice/api db:migrate",
     "db:migrate:prod": "pnpm --filter @aice/api db:migrate:prod",
     "db:fresh": "pnpm --filter @aice/api db:fresh",
-    "redis:start": "redis-server redis/redis.conf --daemonize yes",
+    "redis:start": "redis-server redis/redis.conf",
     "redis:stop": "redis-cli -p 6380 shutdown",
     "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
     "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"

@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && dotenv -e ../../.env.prod -- vite build",
     "preview": "vite preview",
-    "start": "vite preview"
+    "start": "dotenv -e ../../.env.prod -- vite preview"
   },
   "dependencies": {
     "@aice/shared": "workspace:*",

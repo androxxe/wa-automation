@@ -66,6 +66,7 @@ const CreateAgent = z.object({
   typeDelayMinMs: z.number().int().min(1).optional(),
   typeDelayMaxMs: z.number().int().min(1).optional(),
   departmentId:   z.string().optional(),
+  validationOnly: z.boolean().optional(),
 })
 
 router.post('/', async (req, res) => {
@@ -104,26 +105,32 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
-  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, warmMode } = req.body as {
+  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, warmMode, validationOnly } = req.body as {
     name?: string; departmentId?: string | null; phoneNumber?: string
     dailySendCap?: number | null
     breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null
     typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null
     warmMode?: boolean
+    validationOnly?: boolean
   }
   try {
+    // validationOnly and warmMode are mutually exclusive: enabling one clears the other.
+    const resolvedWarmMode       = validationOnly === true  ? false : warmMode
+    const resolvedValidationOnly = warmMode       === true  ? false : validationOnly
+
     const updated = await db.agent.update({
       where: { id: parseId(req.params.id) },
       data: {
-        ...(name           !== undefined ? { name }           : {}),
-        ...(phoneNumber    !== undefined ? { phoneNumber }    : {}),
-        ...(dailySendCap   !== undefined ? { dailySendCap }   : {}),
-        ...(breakEvery     !== undefined ? { breakEvery }     : {}),
-        ...(breakMinMs     !== undefined ? { breakMinMs }     : {}),
-        ...(breakMaxMs     !== undefined ? { breakMaxMs }     : {}),
-        ...(typeDelayMinMs !== undefined ? { typeDelayMinMs } : {}),
-        ...(typeDelayMaxMs !== undefined ? { typeDelayMaxMs } : {}),
-        ...(warmMode       !== undefined ? { warmMode }       : {}),
+        ...(name                  !== undefined ? { name }                  : {}),
+        ...(phoneNumber           !== undefined ? { phoneNumber }           : {}),
+        ...(dailySendCap          !== undefined ? { dailySendCap }          : {}),
+        ...(breakEvery            !== undefined ? { breakEvery }            : {}),
+        ...(breakMinMs            !== undefined ? { breakMinMs }            : {}),
+        ...(breakMaxMs            !== undefined ? { breakMaxMs }            : {}),
+        ...(typeDelayMinMs        !== undefined ? { typeDelayMinMs }        : {}),
+        ...(typeDelayMaxMs        !== undefined ? { typeDelayMaxMs }        : {}),
+        ...(resolvedWarmMode      !== undefined ? { warmMode: resolvedWarmMode }           : {}),
+        ...(resolvedValidationOnly !== undefined ? { validationOnly: resolvedValidationOnly } : {}),
         ...(departmentId !== undefined ? { department: departmentId ? { connect: { id: departmentId } } : { disconnect: true } } : {}),
       },
     })

@@ -26,7 +26,8 @@ export class AgentManager {
     }
 
     for (const row of dbAgents) {
-      this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
     }
 
     // Use psubscribe so NEW agents created via the UI after startup are also handled.
@@ -48,7 +49,8 @@ export class AgentManager {
             console.error(`[agent-manager] agent ${agentId} not found in DB, ignoring command`)
             return
           }
-          this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
         }
 
         if (cmd === 'start') this.startAgent(agentId).catch(console.error)
@@ -64,18 +66,20 @@ export class AgentManager {
   // ─── Register ─────────────────────────────────────────────────────────────
 
   private _register(
-    agentId:         number,
-    profilePath:     string,
-    dailySendCap?:   number | null,
-    breakEvery?:     number | null,
-    breakMinMs?:     number | null,
-    breakMaxMs?:     number | null,
-    typeDelayMinMs?: number | null,
-    typeDelayMaxMs?: number | null,
+    agentId:          number,
+    profilePath:      string,
+    dailySendCap?:    number | null,
+    breakEvery?:      number | null,
+    breakMinMs?:      number | null,
+    breakMaxMs?:      number | null,
+    typeDelayMinMs?:  number | null,
+    typeDelayMaxMs?:  number | null,
+    validationOnly?:  boolean | null,
   ): BrowserAgent {
-    const agent = new BrowserAgent(agentId, profilePath, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs)
+    const agent = new BrowserAgent(agentId, profilePath, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, validationOnly)
     this.agents.set(agentId, agent)
-    console.log(`[agent-manager] registered agent ${agentId} (cap=${agent.dailySendCap}/day, break every ${agent.breakEvery} msgs, ${agent.breakMinMs/1000}–${agent.breakMaxMs/1000}s | type ${agent.typeDelayMinMs}–${agent.typeDelayMaxMs}ms/key)`)
+    const label = agent.validationOnly ? ' [VALIDATION ONLY]' : ''
+    console.log(`[agent-manager] registered agent ${agentId}${label} (cap=${agent.dailySendCap}/day, break every ${agent.breakEvery} msgs, ${agent.breakMinMs/1000}–${agent.breakMaxMs/1000}s | type ${agent.typeDelayMinMs}–${agent.typeDelayMaxMs}ms/key)`)
     return agent
   }
 
@@ -88,7 +92,8 @@ export class AgentManager {
     if (!agent) {
       const row = await db.agent.findUnique({ where: { id: agentId } })
       if (!row) throw new Error(`Agent ${agentId} not found in DB`)
-      agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
     }
 
     // If the agent has a dead/stale context (e.g. browser was closed externally
@@ -126,20 +131,40 @@ export class AgentManager {
 
   // ─── Agent selection ─────────────────────────────────────────────────────
 
+  /**
+   * Returns the least-busy connected agent that is NOT validation-only.
+   * Used for campaign message sends.
+   */
   async getLeastBusyAgent(preferredAgentId?: number): Promise<BrowserAgent> {
     if (preferredAgentId) {
       const preferred = this.agents.get(preferredAgentId)
-      if (preferred && preferred.status === 'connected') return preferred
+      if (preferred && preferred.status === 'connected' && !preferred.validationOnly) return preferred
     }
 
     const online = Array.from(this.agents.entries())
-      .filter(([, a]) => a.status === 'connected')
+      .filter(([, a]) => a.status === 'connected' && !a.validationOnly)
       .map(([id, a]) => ({ id, agent: a, active: a.activeJobCount }))
 
     if (online.length === 0) return Promise.reject(new Error('No agents online'))
 
     online.sort((a, b) => a.active - b.active)
     return online[0].agent
+  }
+
+  /**
+   * Returns the least-busy connected agent that IS validation-only.
+   * Falls back to null if no validation-only agent is online.
+   * Used by the phone-check worker (falls back to getLeastBusyAgent if null).
+   */
+  getValidationAgent(): BrowserAgent | null {
+    const online = Array.from(this.agents.entries())
+      .filter(([, a]) => a.status === 'connected' && a.validationOnly)
+      .map(([, a]) => a)
+
+    if (online.length === 0) return null
+
+    online.sort((a, b) => a.activeJobCount - b.activeJobCount)
+    return online[0]
   }
 
   // ─── Accessors ────────────────────────────────────────────────────────────

@@ -61,13 +61,28 @@ router.get('/', async (req, res) => {
   }
 })
 
+// GET /api/contacts/validate-wa/count
+// Returns how many contacts are unchecked (phoneValid=true, waChecked=false).
+// Used by the frontend modal to show context before queuing validation jobs.
+router.get('/validate-wa/count', async (_req, res) => {
+  try {
+    const unchecked = await db.contact.count({
+      where: { phoneValid: true, waChecked: false },
+    })
+    res.json({ ok: true, data: { unchecked } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // POST /api/contacts/validate-wa
 // Deduplicates by phoneNorm before enqueuing — one check per unique phone number.
 // The worker writes results to ALL contacts sharing that phoneNorm (STIK + KARDUS).
+// Optional `limit` param: only queue the first N unchecked contacts (ordered by id asc).
 router.post('/validate-wa', async (req, res) => {
   try {
-    const { areaId, contactType, recheck = false } =
-      req.body as { areaId?: string; contactType?: string; recheck?: boolean }
+    const { areaId, contactType, recheck = false, limit } =
+      req.body as { areaId?: string; contactType?: string; recheck?: boolean; limit?: number }
 
     const contacts = await db.contact.findMany({
       where: {
@@ -77,6 +92,9 @@ router.post('/validate-wa', async (req, res) => {
         waChecked:  recheck ? undefined : false,
       },
       select: { id: true, phoneNorm: true },
+      orderBy: { id: 'asc' },
+      // Apply limit only when not doing a full recheck, limit is provided, and > 0
+      ...((!recheck && limit && limit > 0) ? { take: limit } : {}),
     })
 
     if (contacts.length === 0) {

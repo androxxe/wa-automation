@@ -73,18 +73,19 @@ const worker = new Worker<MessageJob>(
         throw new Error('No agent online after 10 minutes — scan the QR code in the Agents page')
       }
 
-      // Filter: exclude agents in warm mode OR actively in a RUNNING warm session.
-      // warmMode is stored in DB (not in-memory BrowserAgent), so we query it each cycle.
+      // Filter: exclude agents in warm mode, validation-only mode, OR actively in a RUNNING warm session.
+      // warmMode and validationOnly are stored in DB (not in-memory BrowserAgent), so we query each cycle.
       // Agents that flip warmMode=false mid-session are still blocked via the session check.
-      const [warmModeAgents, runningSessionAgents] = await Promise.all([
-        db.agent.findMany({ where: { warmMode: true }, select: { id: true } }),
+      const [excludedModeAgents, runningSessionAgents] = await Promise.all([
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        db.agent.findMany({ where: { OR: [{ warmMode: true }, { validationOnly: true } as any] }, select: { id: true } }),
         db.warmSessionAgent.findMany({
           where: { session: { status: 'RUNNING' } },
           select: { agentId: true },
         }),
       ])
       const excludedAgentIds = new Set([
-        ...warmModeAgents.map((a) => a.id),
+        ...excludedModeAgents.map((a) => a.id),
         ...runningSessionAgents.map((a) => a.agentId),
       ])
 
@@ -240,11 +241,12 @@ const phoneCheckWorker = new Worker<PhoneCheckJob>(
     const { phone } = job.data
 
     const start = Date.now()
-    let agent   = await agentManager.getLeastBusyAgent().catch(() => null)
+    // Prefer a validation-only agent; fall back to any campaign agent if none available.
+    let agent   = agentManager.getValidationAgent() ?? await agentManager.getLeastBusyAgent().catch(() => null)
     while (!agent) {
       if (Date.now() - start > 5 * 60 * 1000) throw new Error('No agent online — cannot check phone')
       await sleep(5000)
-      agent = await agentManager.getLeastBusyAgent().catch(() => null)
+      agent = agentManager.getValidationAgent() ?? await agentManager.getLeastBusyAgent().catch(() => null)
     }
 
     agent.activeJobCount++

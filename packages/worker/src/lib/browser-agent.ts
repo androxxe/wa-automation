@@ -32,6 +32,8 @@ export class BrowserAgent {
   readonly breakMaxMs:     number
   readonly typeDelayMinMs: number
   readonly typeDelayMaxMs: number
+  /** If true, this agent is reserved exclusively for phone-check (validation) jobs. */
+  readonly validationOnly: boolean
 
   private context:       BrowserContext | null = null
   private page:          Page | null           = null
@@ -43,14 +45,15 @@ export class BrowserAgent {
   activeJobCount = 0
 
   constructor(
-    agentId:         number,
-    profilePath:     string,
-    dailySendCap?:   number | null,
-    breakEvery?:     number | null,
-    breakMinMs?:     number | null,
-    breakMaxMs?:     number | null,
-    typeDelayMinMs?: number | null,
-    typeDelayMaxMs?: number | null,
+    agentId:          number,
+    profilePath:      string,
+    dailySendCap?:    number | null,
+    breakEvery?:      number | null,
+    breakMinMs?:      number | null,
+    breakMaxMs?:      number | null,
+    typeDelayMinMs?:  number | null,
+    typeDelayMaxMs?:  number | null,
+    validationOnly?:  boolean | null,
   ) {
     this.agentId        = agentId
     this.profilePath    = profilePath
@@ -60,6 +63,7 @@ export class BrowserAgent {
     this.breakMaxMs     = breakMaxMs     ?? parseInt(process.env.MID_SESSION_BREAK_MAX_MS ?? '480000', 10)
     this.typeDelayMinMs = typeDelayMinMs ?? parseInt(process.env.TYPE_DELAY_MIN_MS        ?? '80',     10)
     this.typeDelayMaxMs = typeDelayMaxMs ?? parseInt(process.env.TYPE_DELAY_MAX_MS        ?? '180',    10)
+    this.validationOnly = validationOnly ?? false
   }
 
   // ─── Lock ─────────────────────────────────────────────────────────────────

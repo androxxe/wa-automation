@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
+import ValidasiModal from '@/components/ValidasiModal'
 
 interface Contact {
   id: string
@@ -151,11 +152,12 @@ function AreaPicker({
 
 export default function Contacts() {
   const queryClient = useQueryClient()
-  const [page, setPage]                 = useState(1)
-  const [statusFilter, setStatusFilter] = useState('')
-  const [typeFilter, setTypeFilter]     = useState('')
-  const [areaFilter, setAreaFilter]     = useState('')
-  const [validateMsg, setValidateMsg]   = useState<string | null>(null)
+  const [page, setPage]                       = useState(1)
+  const [statusFilter, setStatusFilter]       = useState('')
+  const [typeFilter, setTypeFilter]           = useState('')
+  const [areaFilter, setAreaFilter]           = useState('')
+  const [validateMsg, setValidateMsg]         = useState<string | null>(null)
+  const [validasiModalOpen, setValidasiModal] = useState(false)
 
   const { data: allAreas = [] } = useQuery<Area[]>({
     queryKey: ['areas'],
@@ -185,12 +187,12 @@ export default function Contacts() {
   })
 
   const validateMutation = useMutation({
-    mutationFn: (recheck: boolean) =>
+    mutationFn: ({ recheck, limit }: { recheck: boolean; limit?: number | null }) =>
       apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
         method: 'POST',
-        body: JSON.stringify({ recheck }),
+        body: JSON.stringify({ recheck, ...(limit != null ? { limit } : {}) }),
       }),
-    onSuccess: (result, recheck) => {
+    onSuccess: (result, { recheck }) => {
       if (result.queued === 0) {
         setValidateMsg('Tidak ada nomor yang perlu dicek.')
       } else {
@@ -247,7 +249,7 @@ export default function Contacts() {
 
           <button
             type="button"
-            onClick={() => validateMutation.mutate(false)}
+            onClick={() => setValidasiModal(true)}
             disabled={validateMutation.isPending}
             title="Cek nomor yang belum pernah divalidasi"
             className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
@@ -256,7 +258,7 @@ export default function Contacts() {
           </button>
           <button
             type="button"
-            onClick={() => validateMutation.mutate(true)}
+            onClick={() => validateMutation.mutate({ recheck: true })}
             disabled={validateMutation.isPending}
             title="Cek ulang semua nomor termasuk yang sudah divalidasi"
             className="text-sm border rounded-md px-3 py-1.5 bg-background disabled:opacity-50 hover:bg-accent transition-colors"
@@ -331,6 +333,15 @@ export default function Contacts() {
           Next
         </button>
       </div>
+
+      <ValidasiModal
+        open={validasiModalOpen}
+        onClose={() => setValidasiModal(false)}
+        onConfirm={(limit) => {
+          setValidasiModal(false)
+          validateMutation.mutate({ recheck: false, limit })
+        }}
+      />
     </div>
   )
 }

@@ -23,6 +23,7 @@ interface Agent {
   warmMode:       boolean
   isWarmed:       boolean
   warmedAt:       string | null
+  validationOnly: boolean
 }
 
 interface Department {
@@ -43,7 +44,7 @@ export default function Agents() {
   const [showAdd, setShowAdd]   = useState(false)
   const [form, setForm]         = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
   const [editing, setEditing]   = useState<Agent | null>(null)
-  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '', warmMode: false })
+  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '', warmMode: false, validationOnly: false })
 
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
@@ -93,7 +94,7 @@ export default function Agents() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; dailySendCap?: number | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null; typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null; warmMode?: boolean } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; dailySendCap?: number | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null; typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null; warmMode?: boolean; validationOnly?: boolean } }) =>
       apiFetch(`/api/agents/${id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -123,16 +124,17 @@ export default function Agents() {
   function handleEdit(agent: Agent) {
     setEditing(agent)
     setEditForm({
-      name:         agent.name,
-      phoneNumber:  agent.phoneNumber,
-      departmentId: agent.departmentId ?? '',
-      dailySendCap: String(agent.dailySendCap   ?? config?.defaultDailySendCap ?? 150),
-      breakEvery:   String(agent.breakEvery      ?? config?.defaultBreakEvery   ?? 30),
-      breakMinMs:   String(Math.round((agent.breakMinMs ?? (config ? config.defaultBreakMinSec * 1000 : 180000)) / 1000)),
-      breakMaxMs:   String(Math.round((agent.breakMaxMs ?? (config ? config.defaultBreakMaxSec * 1000 : 480000)) / 1000)),
-      typeDelayMin: String(agent.typeDelayMinMs  ?? config?.defaultTypeDelayMin ?? 80),
-      typeDelayMax: String(agent.typeDelayMaxMs  ?? config?.defaultTypeDelayMax ?? 180),
-      warmMode:     agent.warmMode,
+      name:           agent.name,
+      phoneNumber:    agent.phoneNumber,
+      departmentId:   agent.departmentId ?? '',
+      dailySendCap:   String(agent.dailySendCap   ?? config?.defaultDailySendCap ?? 150),
+      breakEvery:     String(agent.breakEvery      ?? config?.defaultBreakEvery   ?? 30),
+      breakMinMs:     String(Math.round((agent.breakMinMs ?? (config ? config.defaultBreakMinSec * 1000 : 180000)) / 1000)),
+      breakMaxMs:     String(Math.round((agent.breakMaxMs ?? (config ? config.defaultBreakMaxSec * 1000 : 480000)) / 1000)),
+      typeDelayMin:   String(agent.typeDelayMinMs  ?? config?.defaultTypeDelayMin ?? 80),
+      typeDelayMax:   String(agent.typeDelayMaxMs  ?? config?.defaultTypeDelayMax ?? 180),
+      warmMode:       agent.warmMode,
+      validationOnly: agent.validationOnly,
     })
   }
 
@@ -151,6 +153,7 @@ export default function Agents() {
         typeDelayMinMs: editForm.typeDelayMin  ? parseInt(editForm.typeDelayMin)            : null,
         typeDelayMaxMs: editForm.typeDelayMax  ? parseInt(editForm.typeDelayMax)            : null,
         warmMode:       editForm.warmMode,
+        validationOnly: editForm.validationOnly,
       },
     })
   }
@@ -233,12 +236,37 @@ export default function Agents() {
               id="edit-warm-mode"
               type="checkbox"
               checked={editForm.warmMode}
+              disabled={editForm.validationOnly}
               onChange={(e) => setEditForm((f) => ({ ...f, warmMode: e.target.checked }))}
-              className="rounded"
+              className="rounded disabled:opacity-40"
             />
             <div>
-              <p className="text-sm font-medium">Warm Mode</p>
-              <p className="text-xs text-muted-foreground">Enable warm mode — agent will be excluded from campaigns and available for warming sessions</p>
+              <p className={`text-sm font-medium ${editForm.validationOnly ? 'text-muted-foreground' : ''}`}>Warm Mode</p>
+              <p className="text-xs text-muted-foreground">
+                {editForm.validationOnly
+                  ? 'Disabled — incompatible with Validation Only mode'
+                  : 'Enable warm mode — agent will be excluded from campaigns and available for warming sessions'}
+              </p>
+            </div>
+          </label>
+        </div>
+        <div className="space-y-1 pt-1">
+          <label htmlFor="edit-validation-only" className="flex items-center gap-3 cursor-pointer">
+            <input
+              id="edit-validation-only"
+              type="checkbox"
+              checked={editForm.validationOnly}
+              disabled={editForm.warmMode}
+              onChange={(e) => setEditForm((f) => ({ ...f, validationOnly: e.target.checked }))}
+              className="rounded disabled:opacity-40"
+            />
+            <div>
+              <p className={`text-sm font-medium ${editForm.warmMode ? 'text-muted-foreground' : ''}`}>Hanya untuk Validasi</p>
+              <p className="text-xs text-muted-foreground">
+                {editForm.warmMode
+                  ? 'Disabled — incompatible with Warm Mode'
+                  : 'Agent hanya digunakan untuk phone-check (Validasi WA), tidak pernah dipakai untuk kirim kampanye'}
+              </p>
             </div>
           </label>
         </div>
@@ -410,6 +438,11 @@ export default function Agents() {
                   {agent.isWarmed && (
                     <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">
                       Warmed
+                    </span>
+                  )}
+                  {agent.validationOnly && (
+                    <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">
+                      Validation
                     </span>
                   )}
                 </div>

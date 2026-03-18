@@ -21,8 +21,9 @@ model Agent {
   breakMaxMs     Int?  // max break duration ms          (null = MID_SESSION_BREAK_MAX_MS env)
   typeDelayMinMs Int?  // min keystroke delay ms         (null = TYPE_DELAY_MIN_MS env, default 80)
   typeDelayMaxMs Int?  // max keystroke delay ms         (null = TYPE_DELAY_MAX_MS env, default 180)
-  warmMode     Boolean        @default(false)  // user toggles manually — blocks campaign sends
-  isWarmed     Boolean        @default(false)  // auto-set true when a warm session completes
+  warmMode       Boolean        @default(false)  // user toggles manually — blocks campaign sends
+  isWarmed       Boolean        @default(false)  // auto-set true when a warm session completes
+  validationOnly Boolean        @default(false)  // if true: only used for phone-check jobs, never campaign sends
   warmedAt     DateTime?                       // timestamp when isWarmed was set
   departmentId String?
   department   Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
