@@ -9,6 +9,9 @@ build/
 .next/
 out/
 
+# Compiled Vite config (source of truth is vite.config.ts)
+packages/web/vite.config.js
+
 # Environment variables
 .env
 .env.dev
@@ -23,6 +26,7 @@ packages/api/prisma/*.db-journal
 
 # Browser automation
 browser-profile/
+browser-profile-dev/
 
 # Playwright
 /test-results/

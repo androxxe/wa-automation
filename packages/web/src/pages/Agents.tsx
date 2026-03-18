@@ -20,6 +20,9 @@ interface Agent {
   activeJobCount: number
   sentToday:      number
   screenshot:     string | null
+  warmMode:       boolean
+  isWarmed:       boolean
+  warmedAt:       string | null
 }
 
 interface Department {
@@ -40,7 +43,7 @@ export default function Agents() {
   const [showAdd, setShowAdd]   = useState(false)
   const [form, setForm]         = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
   const [editing, setEditing]   = useState<Agent | null>(null)
-  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
+  const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '', warmMode: false })
 
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
@@ -90,7 +93,7 @@ export default function Agents() {
   })
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; dailySendCap?: number | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null; typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null } }) =>
+    mutationFn: ({ id, data }: { id: number; data: { name?: string; phoneNumber?: string; departmentId?: string | null; dailySendCap?: number | null; breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null; typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null; warmMode?: boolean } }) =>
       apiFetch(`/api/agents/${id}`, {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -129,6 +132,7 @@ export default function Agents() {
       breakMaxMs:   String(Math.round((agent.breakMaxMs ?? (config ? config.defaultBreakMaxSec * 1000 : 480000)) / 1000)),
       typeDelayMin: String(agent.typeDelayMinMs  ?? config?.defaultTypeDelayMin ?? 80),
       typeDelayMax: String(agent.typeDelayMaxMs  ?? config?.defaultTypeDelayMax ?? 180),
+      warmMode:     agent.warmMode,
     })
   }
 
@@ -146,6 +150,7 @@ export default function Agents() {
         breakMaxMs:     editForm.breakMaxMs    ? parseInt(editForm.breakMaxMs) * 1000      : null,
         typeDelayMinMs: editForm.typeDelayMin  ? parseInt(editForm.typeDelayMin)            : null,
         typeDelayMaxMs: editForm.typeDelayMax  ? parseInt(editForm.typeDelayMax)            : null,
+        warmMode:       editForm.warmMode,
       },
     })
   }
@@ -221,6 +226,21 @@ export default function Agents() {
               <input id="edit-type-max" type="number" min={1} value={editForm.typeDelayMax} onChange={(e) => setEditForm((f) => ({ ...f, typeDelayMax: e.target.value }))} className="w-full text-sm rounded-md border px-3 py-1.5 bg-background" />
             </div>
           </div>
+        </div>
+        <div className="space-y-1 pt-1">
+          <label htmlFor="edit-warm-mode" className="flex items-center gap-3 cursor-pointer">
+            <input
+              id="edit-warm-mode"
+              type="checkbox"
+              checked={editForm.warmMode}
+              onChange={(e) => setEditForm((f) => ({ ...f, warmMode: e.target.checked }))}
+              className="rounded"
+            />
+            <div>
+              <p className="text-sm font-medium">Warm Mode</p>
+              <p className="text-xs text-muted-foreground">Enable warm mode — agent will be excluded from campaigns and available for warming sessions</p>
+            </div>
+          </label>
         </div>
         <div className="flex justify-end gap-2 pt-2">
           <button type="button" onClick={() => setEditing(null)} className="border text-sm px-4 py-2 rounded-md">Cancel</button>
@@ -380,6 +400,16 @@ export default function Agents() {
                   {agent.activeJobCount > 0 && (
                     <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded-full">
                       {agent.activeJobCount} active
+                    </span>
+                  )}
+                  {agent.warmMode && (
+                    <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded-full font-medium">
+                      Warm Mode
+                    </span>
+                  )}
+                  {agent.isWarmed && (
+                    <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-medium">
+                      Warmed
                     </span>
                   )}
                 </div>

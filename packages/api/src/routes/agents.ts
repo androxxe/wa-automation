@@ -104,11 +104,12 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
-  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs } = req.body as {
+  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, warmMode } = req.body as {
     name?: string; departmentId?: string | null; phoneNumber?: string
     dailySendCap?: number | null
     breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null
     typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null
+    warmMode?: boolean
   }
   try {
     const updated = await db.agent.update({
@@ -122,6 +123,7 @@ router.patch('/:id', async (req, res) => {
         ...(breakMaxMs     !== undefined ? { breakMaxMs }     : {}),
         ...(typeDelayMinMs !== undefined ? { typeDelayMinMs } : {}),
         ...(typeDelayMaxMs !== undefined ? { typeDelayMaxMs } : {}),
+        ...(warmMode       !== undefined ? { warmMode }       : {}),
         ...(departmentId !== undefined ? { department: departmentId ? { connect: { id: departmentId } } : { disconnect: true } } : {}),
       },
     })

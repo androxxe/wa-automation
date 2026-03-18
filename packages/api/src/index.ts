@@ -11,6 +11,7 @@ import campaignsRouter from './routes/campaigns'
 import analyzeRouter  from './routes/analyze'
 import exportRouter   from './routes/export'
 import repliesRouter  from './routes/replies'
+import warmerRouter   from './routes/warmer'
 
 async function main() {
   await validateStartup()
@@ -30,6 +31,7 @@ async function main() {
   app.use('/api/analyze',   analyzeRouter)
   app.use('/api/export',    exportRouter)
   app.use('/api/replies',   repliesRouter)
+  app.use('/api/warmer',    warmerRouter)
 
   app.get('/api/health', (_req, res) =>
     res.json({ ok: true, timestamp: new Date().toISOString() }),

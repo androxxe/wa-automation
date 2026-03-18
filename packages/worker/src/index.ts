@@ -11,6 +11,7 @@ import {
   randomBreakDuration,
   sleep,
 } from './lib/scheduler'
+import { warmWorker, startWarmSession, resumeWarmSession } from './lib/warm-worker'
 
 
 const QUEUE_NAME             = 'whatsapp-messages'
@@ -72,8 +73,25 @@ const worker = new Worker<MessageJob>(
         throw new Error('No agent online after 10 minutes — scan the QR code in the Agents page')
       }
 
+      // Filter: exclude agents in warm mode OR actively in a RUNNING warm session.
+      // warmMode is stored in DB (not in-memory BrowserAgent), so we query it each cycle.
+      // Agents that flip warmMode=false mid-session are still blocked via the session check.
+      const [warmModeAgents, runningSessionAgents] = await Promise.all([
+        db.agent.findMany({ where: { warmMode: true }, select: { id: true } }),
+        db.warmSessionAgent.findMany({
+          where: { session: { status: 'RUNNING' } },
+          select: { agentId: true },
+        }),
+      ])
+      const excludedAgentIds = new Set([
+        ...warmModeAgents.map((a) => a.id),
+        ...runningSessionAgents.map((a) => a.agentId),
+      ])
+
       const online = agentManager.getAllAgents()
-        .filter(({ agent: a }) => a.status === 'connected')
+        .filter(({ agent: a, agentId }) =>
+          a.status === 'connected' && !excludedAgentIds.has(agentId),
+        )
 
       if (online.length === 0) {
         console.log('[worker] no agent online, waiting 10s…')
@@ -512,6 +530,28 @@ function startReplyPolling() {
 
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
+async function startWarmCommandListener(): Promise<void> {
+  const sub = redis.duplicate()
+  await sub.subscribe('warm:command')
+  sub.on('message', (_channel, message) => {
+    try {
+      const { cmd, sessionId } = JSON.parse(message) as { cmd: string; sessionId: string }
+      if (cmd === 'start') {
+        startWarmSession(sessionId).catch((err) =>
+          console.error(`[warm-worker] startWarmSession failed for ${sessionId}:`, err),
+        )
+      } else if (cmd === 'resume') {
+        resumeWarmSession(sessionId).catch((err) =>
+          console.error(`[warm-worker] resumeWarmSession failed for ${sessionId}:`, err),
+        )
+      }
+    } catch (err) {
+      console.error('[warm-worker] command parse error:', err)
+    }
+  })
+  console.log('[worker] listening on warm:command channel')
+}
+
 async function main() {
   await validateStartup()
   await agentManager.init(redis)
@@ -525,8 +565,9 @@ async function main() {
     )
   }
 
-  console.log(`[worker] listening on queues: ${QUEUE_NAME}, ${PHONE_CHECK_QUEUE_NAME}`)
+  console.log(`[worker] listening on queues: ${QUEUE_NAME}, ${PHONE_CHECK_QUEUE_NAME}, warm-queue`)
   startReplyPolling()
+  await startWarmCommandListener()
 }
 
 main().catch((err) => {
@@ -538,7 +579,7 @@ main().catch((err) => {
 
 async function shutdown() {
   console.log('[worker] shutting down...')
-  await Promise.all([worker.close(), phoneCheckWorker.close()])
+  await Promise.all([worker.close(), phoneCheckWorker.close(), warmWorker.close()])
   await db.$disconnect()
   redis.disconnect()
   await agentManager.closeAll()

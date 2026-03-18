@@ -37,6 +37,9 @@ export interface AgentInfo {
   activeJobCount: number
   sentToday: number
   screenshot: string | null  // base64 jpeg, null when offline
+  warmMode: boolean
+  isWarmed: boolean
+  warmedAt: string | null
 }
 
 // ─── Queue job payloads ───────────────────────────────────────────────────────
@@ -191,6 +194,50 @@ export interface AreaEnqueuePreview {
   willSend:     number  // min(sendLimit, available)
   target:       number  // targetRepliesPerArea
   warning?:     string  // human-readable explanation of any limiting factor
+}
+
+// ─── Warmer ───────────────────────────────────────────────────────────────────
+
+export interface WarmJob {
+  warmSessionId:    string
+  exchangeId:       string
+  senderAgentId:    number
+  recipientAgentId: number
+  senderPhone:      string
+  recipientPhone:   string
+  message:          string
+  replyMessage:     string
+  isReply:          boolean
+}
+
+export type WarmSessionStatus  = 'IDLE' | 'RUNNING' | 'PAUSED' | 'COMPLETED' | 'CANCELLED'
+export type WarmExchangeStatus = 'PENDING' | 'SENT' | 'REPLIED' | 'FAILED'
+
+export interface WarmSessionInfo {
+  id:             string
+  name:           string
+  status:         WarmSessionStatus
+  totalExchanges: number
+  doneExchanges:  number
+  partialFailure: boolean
+  createdAt:      string
+  startedAt:      string | null
+  completedAt:    string | null
+  agents:         Array<{ agentId: number; agentName: string; phoneNumber: string }>
+}
+
+export interface WarmExchangeInfo {
+  id:               string
+  warmSessionId:    string
+  senderAgentId:    number
+  recipientAgentId: number
+  message:          string
+  replyMessage:     string
+  status:           WarmExchangeStatus
+  sentAt:           string | null
+  repliedAt:        string | null
+  failReason:       string | null
+  createdAt:        string
 }
 
 // ─── AppConfig ────────────────────────────────────────────────────────────────

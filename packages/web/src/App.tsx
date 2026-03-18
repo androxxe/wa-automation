@@ -7,6 +7,7 @@ import Campaigns from '@/pages/Campaigns'
 import NewCampaign from '@/pages/NewCampaign'
 import CampaignDetail from '@/pages/CampaignDetail'
 import Agents from '@/pages/Agents'
+import Warmer from '@/pages/Warmer'
 import Responses from '@/pages/Responses'
 import Settings from '@/pages/Settings'
 
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="campaigns/new" element={<NewCampaign />} />
         <Route path="campaigns/:id" element={<CampaignDetail />} />
         <Route path="agents"    element={<Agents />} />
+        <Route path="warmer"    element={<Warmer />} />
         <Route path="responses" element={<Responses />} />
         <Route path="settings" element={<Settings />} />
         <Route path="*" element={<Navigate to="/" replace />} />
