@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import type { BrowserStatus } from '@aice/shared'
+import { uploadBuffer } from './minio'
 
 const HEADLESS = process.env.BROWSER_HEADLESS === 'true'
 
@@ -477,27 +478,22 @@ export class BrowserAgent {
   }
 
   private async _saveReplyScreenshot(phone: string): Promise<string | null> {
-    const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER
-    if (!OUTPUT_FOLDER || !this.page) return null
+    if (!this.page) return null
 
     try {
-      const dir       = path.join(OUTPUT_FOLDER, 'screenshots')
-      fs.mkdirSync(dir, { recursive: true })
-
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
       const filename  = `${phone.replace('+', '')}_${timestamp}.jpg`
-      const fullPath  = path.join(dir, filename)
+      const key       = `screenshots/${filename}`
 
       // Screenshot only the chat panel (#main); fall back to full page
       const chatPanel  = this.page.locator('#main').first()
       const isVisible  = await chatPanel.isVisible().catch(() => false)
-      if (isVisible) {
-        await chatPanel.screenshot({ path: fullPath, type: 'jpeg', quality: 80 })
-      } else {
-        await this.page.screenshot({ path: fullPath, type: 'jpeg', quality: 80 })
-      }
+      const buf = isVisible
+        ? await chatPanel.screenshot({ type: 'jpeg', quality: 80 })
+        : await this.page.screenshot({ type: 'jpeg', quality: 80 })
 
-      return `screenshots/${filename}`
+      await uploadBuffer(key, buf, 'image/jpeg')
+      return key
     } catch (err) {
       console.warn(`[agent:${this.agentId}] screenshot failed:`, err)
       return null

@@ -294,12 +294,12 @@ function ExportDropdown({ campaignId, campaigns }: { campaignId: string; campaig
             className="w-full text-left text-sm px-3 py-2 rounded hover:bg-accent"
             onClick={() => {
               apiFetch('/api/export/write', { method: 'POST' })
-                .then(() => alert('Files written to OUTPUT_FOLDER'))
+                .then(() => alert('Files uploaded to MinIO'))
                 .catch(console.error)
               setOpen(false)
             }}
           >
-            Write to Output Folder
+            Upload to MinIO
           </button>
           <div className="border-t my-1" />
           {/* Per-campaign report */}

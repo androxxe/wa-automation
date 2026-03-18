@@ -1,9 +1,6 @@
-import fs from 'fs'
-import path from 'path'
 import * as XLSX from 'xlsx'
 import { db } from './db'
-
-const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
+import { uploadBuffer } from './minio'
 
 interface ResponseRow {
   No: string
@@ -71,17 +68,12 @@ export async function buildResponseWorkbook(filters: {
 }
 
 /**
- * Write per-department/area xlsx files to OUTPUT_FOLDER.
+ * Write per-department/area xlsx files to MinIO.
  */
 export async function writeOutputFiles(): Promise<void> {
-  if (!OUTPUT_FOLDER) throw new Error('OUTPUT_FOLDER is not set')
-
-  const today = new Date().toISOString().slice(0, 10)
-  const dailyPath = path.join(OUTPUT_FOLDER, `responses_${today}.xlsx`)
-
+  const today  = new Date().toISOString().slice(0, 10)
+  const key    = `reports/xlsx/responses_${today}.xlsx`
   const buffer = await buildResponseWorkbook({})
-  fs.mkdirSync(OUTPUT_FOLDER, { recursive: true })
-  fs.writeFileSync(dailyPath, buffer)
-
-  // TODO: also write per-department files
+  await uploadBuffer(key, buffer, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  console.log(`[exporter] uploaded → minio:${key}`)
 }

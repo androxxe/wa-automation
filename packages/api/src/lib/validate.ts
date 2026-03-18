@@ -1,6 +1,7 @@
 import fs from 'fs'
 import { db } from './db'
 import { redis } from './queue'
+import { minioClient, MINIO_BUCKET, ensureBucket } from './minio'
 
 // ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
@@ -31,8 +32,8 @@ function checkAnthropicKey(): { pass: boolean; reason?: string } {
 
 function checkDatabaseUrl(): { pass: boolean; reason?: string } {
   const val = process.env.DATABASE_URL ?? ''
-  if (!val.startsWith('mysql://'))
-    return { pass: false, reason: 'must start with mysql://' }
+  if (!val.startsWith('postgresql://') && !val.startsWith('postgres://'))
+    return { pass: false, reason: 'must start with postgresql:// or postgres://' }
   return { pass: true }
 }
 
@@ -56,6 +57,16 @@ async function checkDatabase(): Promise<{ pass: boolean; reason?: string }> {
 async function checkRedis(): Promise<{ pass: boolean; reason?: string }> {
   try {
     await redis.ping()
+    return { pass: true }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return { pass: false, reason: msg }
+  }
+}
+
+async function checkMinio(): Promise<{ pass: boolean; reason?: string }> {
+  try {
+    await ensureBucket()
     return { pass: true }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -95,7 +106,9 @@ export async function validateStartup(): Promise<void> {
     { label: 'REDIS_URL',                   result: checkEnvVar('REDIS_URL') },
     { label: 'DATA_FOLDER',                 result: checkEnvVar('DATA_FOLDER') },
     { label: 'DATA_FOLDER (exists)',        result: checkDataFolder() },
-    { label: 'OUTPUT_FOLDER',              result: checkEnvVar('OUTPUT_FOLDER') },
+    { label: 'MINIO_ENDPOINT',             result: checkEnvVar('MINIO_ENDPOINT') },
+    { label: 'MINIO_ACCESS_KEY',           result: checkEnvVar('MINIO_ACCESS_KEY') },
+    { label: 'MINIO_SECRET_KEY',           result: checkEnvVar('MINIO_SECRET_KEY') },
   ]
 
   const envFailures = printResults(envChecks)
@@ -112,8 +125,9 @@ export async function validateStartup(): Promise<void> {
   console.log(dim('  connections'))
 
   const connChecks: Check[] = [
-    { label: 'MySQL database', result: await checkDatabase() },
+    { label: 'PostgreSQL database', result: await checkDatabase() },
     { label: 'Redis',          result: await checkRedis() },
+    { label: `MinIO (bucket: ${MINIO_BUCKET})`, result: await checkMinio() },
   ]
 
   const connFailures = printResults(connChecks)

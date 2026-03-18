@@ -1,9 +1,6 @@
-import path from 'path'
-import fs   from 'fs'
 import { Router } from 'express'
 import { db } from '../lib/db'
-
-const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
+import { presignedUrl, objectExists } from '../lib/minio'
 
 const router: import('express').Router = Router()
 
@@ -124,31 +121,34 @@ router.get('/', async (req, res) => {
   }
 })
 
-// ─── GET /api/replies/screenshot — serve a reply screenshot file ──────────────
-// Query param: ?p=relative/path/to/screenshot.jpg
-// The path must be relative and inside OUTPUT_FOLDER (no directory traversal).
+// ─── GET /api/replies/screenshot — redirect to MinIO presigned URL ────────────
+// Query param: ?p=screenshots/filename.jpg (MinIO object key)
 
-router.get('/screenshot', (req, res) => {
-  const rel = req.query.p as string | undefined
-  if (!rel || !OUTPUT_FOLDER) {
+router.get('/screenshot', async (req, res) => {
+  const key = req.query.p as string | undefined
+  if (!key) {
     res.status(404).json({ ok: false, error: 'Not found' })
     return
   }
 
-  // Prevent directory traversal
-  const abs      = path.resolve(OUTPUT_FOLDER, rel)
-  const baseAbs  = path.resolve(OUTPUT_FOLDER)
-  if (!abs.startsWith(baseAbs + path.sep) && abs !== baseAbs) {
+  // Prevent path traversal
+  if (key.includes('..') || key.startsWith('/')) {
     res.status(403).json({ ok: false, error: 'Forbidden' })
     return
   }
 
-  if (!fs.existsSync(abs)) {
-    res.status(404).json({ ok: false, error: 'Screenshot not found' })
-    return
-  }
+  try {
+    const exists = await objectExists(key)
+    if (!exists) {
+      res.status(404).json({ ok: false, error: 'Screenshot not found' })
+      return
+    }
 
-  res.sendFile(abs)
+    const url = await presignedUrl(key, 3600) // 1 hour expiry
+    res.redirect(url)
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
 })
 
 export default router

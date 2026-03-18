@@ -404,15 +404,15 @@ export default function Agents() {
         {agents.map((agent) => (
           <div key={agent.id} className="rounded-lg border bg-card p-5">
             <div className="flex items-start gap-4">
-              <div className="shrink-0 w-40 h-28 rounded-md overflow-hidden border bg-muted flex items-center justify-center">
+              <div className={`shrink-0 rounded-md overflow-hidden border bg-muted flex items-center justify-center ${agent.status === 'QR' ? 'w-72 h-72' : 'w-40 h-28'}`}>
                 {agent.screenshot ? (
                   <img
                     src={`data:image/jpeg;base64,${agent.screenshot}`}
                     alt={`${agent.name} preview`}
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full ${agent.status === 'QR' ? 'object-contain' : 'object-cover'}`}
                   />
                 ) : (
-                  <span className="text-xs text-muted-foreground">No preview</span>
+                  <span className="text-xs text-muted-foreground">{agent.status === 'QR' ? 'Waiting for QR screenshot...' : 'No preview'}</span>
                 )}
               </div>
 

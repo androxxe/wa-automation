@@ -1,9 +1,7 @@
 import ExcelJS from 'exceljs'
-import fs from 'fs'
 import path from 'path'
 import { db } from './db'
-
-const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
+import { getBuffer, objectExists } from './minio'
 
 const IMG_W          = 240
 const IMG_H          = 180
@@ -106,10 +104,18 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
 
       const rawResponse = reply?.body ?? ''
 
-      const absPath = reply?.screenshotPath && OUTPUT_FOLDER
-        ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
-        : null
-      const hasImg  = absPath !== null && fs.existsSync(absPath)
+      // Fetch screenshot from MinIO
+      const screenshotKey = reply?.screenshotPath ?? null
+      let imgBuffer: Buffer | null = null
+      if (screenshotKey) {
+        try {
+          const exists = await objectExists(screenshotKey)
+          if (exists) imgBuffer = await getBuffer(screenshotKey)
+        } catch {
+          // Screenshot not available — skip embedding
+        }
+      }
+      const hasImg = imgBuffer !== null
 
       // col 12 = column L (0-indexed: 11) for screenshot image
       const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, dikirimPada, dibalasPada, rawResponse, ''])
@@ -167,10 +173,10 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
 
       if (hasImg) {
         try {
-          const ext       = path.extname(absPath).toLowerCase().replace('.', '')
+          const ext       = path.extname(screenshotKey!).toLowerCase().replace('.', '')
           const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+          const imageId   = workbook.addImage({ buffer: imgBuffer as any, extension })
           // col 11 = column L (0-indexed), row = excelRowIdx - 1 (0-indexed)
           sheet.addImage(imageId, {
             tl:     { col: 11, row: excelRowIdx - 1 },
@@ -178,7 +184,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
             editAs: 'oneCell',
           })
         } catch {
-          dataRow.getCell(12).value     = absPath
+          dataRow.getCell(12).value     = screenshotKey
           dataRow.getCell(12).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
           dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
         }

@@ -1,8 +1,5 @@
-import fs from 'fs'
-import path from 'path'
 import { db } from './db'
-
-const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
+import { uploadBuffer } from './minio'
 
 function csvEscape(value: string): string {
   if (/[,"\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`
@@ -10,9 +7,9 @@ function csvEscape(value: string): string {
 }
 
 /**
- * Regenerate the CSV report for one (area × bulan × campaignType) combination.
+ * Regenerate the CSV report for one (area x bulan x campaignType) combination.
  *
- * Output: OUTPUT_FOLDER/{Type}/{Department}/{Area}_{Bulan}_{YYYY-MM-DD}.csv
+ * Output: MinIO key: reports/csv/{Type}/{Department}/{Area}_{Bulan}_{YYYY-MM-DD}.csv
  *
  * Columns: Nama Toko, Nomor HP Toko, Department, Area, Agent Phone, Jawaban, Screenshot
  *
@@ -25,11 +22,6 @@ export async function generateAreaReport(
   bulan:        string,
   campaignType: string,
 ): Promise<string | null> {
-  if (!OUTPUT_FOLDER) {
-    console.warn('[report] OUTPUT_FOLDER not set, skipping CSV generation')
-    return null
-  }
-
   const contacts = await db.contact.findMany({
     where: { areaId, phoneValid: true },
     include: {
@@ -64,9 +56,7 @@ export async function generateAreaReport(
     // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
     const jawaban   = reply != null ? String(reply.jawaban ?? 0) : ''
     const kategori  = reply?.claudeCategory ?? ''
-    const screenshot = reply?.screenshotPath
-      ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
-      : ''
+    const screenshot = reply?.screenshotPath ?? ''
 
     return {
       namaToko:    contact.storeName,
@@ -81,10 +71,7 @@ export async function generateAreaReport(
   })
 
   const today   = new Date().toISOString().slice(0, 10)
-  const dir     = path.join(OUTPUT_FOLDER, campaignType, dept.name)
-  fs.mkdirSync(dir, { recursive: true })
-
-  const csvPath = path.join(dir, `${area.name}_${bulan}_${today}.csv`)
+  const key     = `reports/csv/${campaignType}/${dept.name}/${area.name}_${bulan}_${today}.csv`
   const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Kategori,Screenshot'
   const lines   = rows.map((r) =>
     [
@@ -99,13 +86,14 @@ export async function generateAreaReport(
     ].join(','),
   )
 
-  fs.writeFileSync(csvPath, [header, ...lines].join('\n'), 'utf-8')
-  console.log(`[report] ${rows.length} row(s) → ${csvPath}`)
-  return csvPath
+  const csvContent = [header, ...lines].join('\n')
+  await uploadBuffer(key, Buffer.from(csvContent, 'utf-8'), 'text/csv')
+  console.log(`[report] ${rows.length} row(s) → minio:${key}`)
+  return key
 }
 
 /**
- * Regenerate CSV reports for all (area × bulan × campaignType) combos
+ * Regenerate CSV reports for all (area x bulan x campaignType) combos
  * that have at least one sent message.
  */
 export async function generateAllReports(): Promise<string[]> {

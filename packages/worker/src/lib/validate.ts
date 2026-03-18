@@ -30,8 +30,8 @@ function checkAnthropicKey(): { pass: boolean; reason?: string } {
 
 function checkDatabaseUrl(): { pass: boolean; reason?: string } {
   const val = process.env.DATABASE_URL ?? ''
-  if (!val.startsWith('mysql://'))
-    return { pass: false, reason: 'must start with mysql://' }
+  if (!val.startsWith('postgresql://') && !val.startsWith('postgres://'))
+    return { pass: false, reason: 'must start with postgresql:// or postgres://' }
   return { pass: true }
 }
 
@@ -100,7 +100,7 @@ export async function validateStartup(): Promise<void> {
   console.log(dim('  connections'))
 
   const connChecks: Check[] = [
-    { label: 'MySQL database', result: await checkDatabase() },
+    { label: 'PostgreSQL database', result: await checkDatabase() },
     { label: 'Redis',          result: await checkRedis() },
   ]
 

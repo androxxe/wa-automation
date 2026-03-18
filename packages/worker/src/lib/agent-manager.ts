@@ -187,8 +187,8 @@ export class AgentManager {
         const status = this._mapBrowserStatus(agent.status)
         await this._setStatus(agentId, status)
 
-        // Publish screenshot for ONLINE agents
-        if (agent.status === 'connected') {
+        // Publish screenshot for ONLINE and QR agents
+        if (agent.status === 'connected' || agent.status === 'qr') {
           const screenshot = await agent.screenshot()
           if (screenshot) await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 30)
           else            await this.redis.del(`agent:${agentId}:screenshot`)

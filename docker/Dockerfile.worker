@@ -1,0 +1,72 @@
+# ─── Build stage ──────────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/playwright:v1.49.0-noble AS builder
+
+RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
+
+WORKDIR /app
+
+# Copy workspace config + lockfile first (layer caching)
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/worker/package.json packages/worker/package.json
+COPY packages/api/package.json    packages/api/package.json
+
+# Install all workspace deps
+RUN pnpm install --frozen-lockfile
+
+# Copy source
+COPY tsconfig.base.json ./
+COPY packages/shared/ packages/shared/
+COPY packages/worker/ packages/worker/
+COPY packages/api/prisma/ packages/api/prisma/
+
+# Generate Prisma client BEFORE tsc (tsc needs @prisma/client types)
+RUN pnpm --filter @aice/api exec prisma generate --schema=prisma/schema.prisma
+
+# Build shared → worker
+RUN pnpm --filter @aice/shared build && \
+    pnpm --filter @aice/worker build
+
+# Install Chromium for Playwright
+RUN npx playwright install chromium
+
+# ─── Production stage ────────────────────────────────────────────────────────
+FROM mcr.microsoft.com/playwright:v1.49.0-noble
+
+# Install Xvfb and x11vnc for headless display + remote QR scanning
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends xvfb x11vnc && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN corepack enable && corepack prepare pnpm@10.13.1 --activate
+
+WORKDIR /app
+
+# Copy workspace config
+COPY pnpm-workspace.yaml pnpm-lock.yaml package.json .npmrc ./
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/worker/package.json packages/worker/package.json
+COPY packages/api/package.json    packages/api/package.json
+
+# Install production deps
+RUN pnpm install --frozen-lockfile --prod
+
+# Copy Prisma schema and generate client in production stage
+COPY packages/api/prisma/ packages/api/prisma/
+RUN pnpm --filter @aice/api exec prisma generate --schema=prisma/schema.prisma
+
+# Copy built artifacts from builder
+COPY --from=builder /app/packages/shared/dist/ packages/shared/dist/
+COPY --from=builder /app/packages/worker/dist/ packages/worker/dist/
+
+# Copy Playwright browsers from builder
+COPY --from=builder /root/.cache/ms-playwright/ /root/.cache/ms-playwright/
+
+# Copy entrypoint script
+COPY docker/worker-entrypoint.sh /app/worker-entrypoint.sh
+RUN chmod +x /app/worker-entrypoint.sh
+
+# VNC port for remote QR scanning
+EXPOSE 5900
+
+ENTRYPOINT ["/app/worker-entrypoint.sh"]

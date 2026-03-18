@@ -23,7 +23,17 @@
     "redis:start": "redis-server redis/redis.conf",
     "redis:stop": "redis-cli -p 6380 shutdown",
     "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
-    "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"
+    "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts",
+    "docker:dev": "ENV_FILE=.env.dev docker compose up --build",
+    "docker:prod": "docker compose up --build -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "docker:logs:api": "docker compose logs -f api",
+    "docker:logs:worker": "docker compose logs -f worker",
+    "docker:ps": "docker compose ps",
+    "docker:restart": "docker compose restart",
+    "docker:rebuild": "docker compose up --build -d --force-recreate",
+    "docker:db:push": "docker compose exec api npx prisma db push --schema=packages/api/prisma/schema.prisma"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0"

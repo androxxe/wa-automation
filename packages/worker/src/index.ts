@@ -4,6 +4,7 @@ import { db } from './lib/db'
 import { redis } from './lib/redis'
 import { agentManager } from './lib/agent-manager'
 import { validateStartup } from './lib/validate'
+import { ensureBucket } from './lib/minio'
 import {
   isWorkingHours,
   msUntilNextOpen,
@@ -556,6 +557,7 @@ async function startWarmCommandListener(): Promise<void> {
 
 async function main() {
   await validateStartup()
+  await ensureBucket()
   await agentManager.init(redis)
   await agentManager.startPollingStatus()
 

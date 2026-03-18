@@ -1,0 +1,38 @@
+# Dependencies (will be installed inside the container)
+node_modules/
+packages/*/node_modules/
+
+# Build artifacts (will be built inside the container)
+packages/*/dist/
+
+# Environment files (passed via env_file in docker-compose)
+.env
+.env.*
+!.env.example
+
+# Git
+.git/
+.gitignore
+
+# Data and output directories
+data/
+data-output/
+dump.rdb
+
+# Browser profiles (managed via Docker volume)
+browser-profile/
+packages/worker/browser-profile/
+
+# Redis local data
+redis/data/
+
+# IDE / OS
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Specs and docs (not needed in container)
+spec/
+README.md

@@ -1,0 +1,75 @@
+# ─── Usage ────────────────────────────────────────────────────────────────────
+# Production:  docker compose --env-file .env.prod up --build -d
+# Development: docker compose --env-file .env.dev  up --build -d
+#
+# The --env-file flag sets both:
+#   1. Variables for docker-compose.yml interpolation (${VAR})
+#   2. The file passed to each service's env_file directive
+#
+# You can also override individual vars:
+#   docker compose --env-file .env.dev up --build -d -e PORT=4000
+# ──────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ─── Redis ──────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ─── API ────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.api
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.prod}
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ${DATA_FOLDER:-./data}:/app/data
+
+  # ─── Worker ─────────────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.worker
+    restart: unless-stopped
+    env_file: ${ENV_FILE:-.env.prod}
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - BROWSER_PROFILE_PATH=/app/browser-profiles
+      - BROWSER_HEADLESS=false
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "5900:5900"   # VNC for QR scanning
+    shm_size: 2gb      # Required by Chromium
+    volumes:
+      - browser_profiles:/app/browser-profiles
+
+  # ─── Web (Nginx) ────────────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-80}:80"
+
+volumes:
+  redis_data:
+  browser_profiles:
