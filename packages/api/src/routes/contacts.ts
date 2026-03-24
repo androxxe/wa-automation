@@ -62,14 +62,37 @@ router.get('/', async (req, res) => {
 })
 
 // GET /api/contacts/validate-wa/count
-// Returns how many contacts are unchecked (phoneValid=true, waChecked=false).
+// Returns how many contacts are unchecked (phoneValid=true, waChecked=false)
+// plus the number of distinct areas that have unchecked contacts.
 // Used by the frontend modal to show context before queuing validation jobs.
 router.get('/validate-wa/count', async (_req, res) => {
   try {
-    const unchecked = await db.contact.count({
-      where: { phoneValid: true, waChecked: false },
-    })
-    res.json({ ok: true, data: { unchecked } })
+    const where = { phoneValid: true, waChecked: false as const }
+    const [unchecked, areaGroups] = await Promise.all([
+      db.contact.count({ where }),
+      db.contact.groupBy({ by: ['areaId'], where, _count: true }),
+    ])
+
+    // Fetch area details for each group so the modal can render checkboxes
+    const areaIds = areaGroups.map((g) => g.areaId)
+    const areaDetails = areaIds.length > 0
+      ? await db.area.findMany({
+          where: { id: { in: areaIds } },
+          select: { id: true, name: true, contactType: true },
+        })
+      : []
+
+    const areaMap = new Map(areaDetails.map((a) => [a.id, a]))
+    const areas = areaGroups
+      .map((g) => {
+        const area = areaMap.get(g.areaId)
+        if (!area) return null
+        return { areaId: g.areaId, name: area.name, contactType: area.contactType, unchecked: g._count }
+      })
+      .filter(Boolean)
+      .sort((a, b) => a!.name.localeCompare(b!.name))
+
+    res.json({ ok: true, data: { unchecked, areaCount: areaGroups.length, areas } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -78,24 +101,60 @@ router.get('/validate-wa/count', async (_req, res) => {
 // POST /api/contacts/validate-wa
 // Deduplicates by phoneNorm before enqueuing — one check per unique phone number.
 // The worker writes results to ALL contacts sharing that phoneNorm (STIK + KARDUS).
-// Optional `limit` param: only queue the first N unchecked contacts (ordered by id asc).
+// Optional params:
+//   - `areaIds`      : array of area IDs — only queue contacts from these areas
+//   - `areaId`       : single area ID (legacy, use areaIds instead)
+//   - `limit`        : global cap — only queue the first N unchecked contacts total
+//   - `limitPerArea` : per-area cap — take at most N unchecked contacts from each area
+// When `limitPerArea` is provided, it takes priority over `limit`.
 router.post('/validate-wa', async (req, res) => {
   try {
-    const { areaId, contactType, recheck = false, limit } =
-      req.body as { areaId?: string; contactType?: string; recheck?: boolean; limit?: number }
+    const { areaId, areaIds, contactType, recheck = false, limit, limitPerArea } =
+      req.body as { areaId?: string; areaIds?: string[]; contactType?: string; recheck?: boolean; limit?: number; limitPerArea?: number }
 
-    const contacts = await db.contact.findMany({
-      where: {
-        ...(areaId      && { areaId }),
-        ...(contactType && { contactType }),
-        phoneValid: recheck ? undefined : true,
-        waChecked:  recheck ? undefined : false,
-      },
-      select: { id: true, phoneNorm: true },
-      orderBy: { id: 'asc' },
-      // Apply limit only when not doing a full recheck, limit is provided, and > 0
-      ...((!recheck && limit && limit > 0) ? { take: limit } : {}),
-    })
+    // Support both areaIds (array) and legacy areaId (single string)
+    const effectiveAreaFilter = areaIds && areaIds.length > 0
+      ? { areaId: { in: areaIds } }
+      : areaId
+        ? { areaId }
+        : {}
+
+    const baseWhere = {
+      ...effectiveAreaFilter,
+      ...(contactType && { contactType }),
+      phoneValid: recheck ? undefined : true,
+      waChecked:  recheck ? undefined : false,
+    }
+
+    let contacts: { id: string; phoneNorm: string; areaId: string }[]
+
+    if (!recheck && limitPerArea && limitPerArea > 0) {
+      // Per-area limiting: fetch all unchecked contacts with areaId, then slice per area
+      const allContacts = await db.contact.findMany({
+        where: baseWhere,
+        select: { id: true, phoneNorm: true, areaId: true },
+        orderBy: { id: 'asc' },
+      })
+
+      // Group by areaId and take at most `limitPerArea` from each
+      const byArea = new Map<string, typeof allContacts>()
+      for (const c of allContacts) {
+        const group = byArea.get(c.areaId) ?? []
+        if (group.length < limitPerArea) {
+          group.push(c)
+          byArea.set(c.areaId, group)
+        }
+      }
+      contacts = Array.from(byArea.values()).flat()
+    } else {
+      // Global limit (or no limit)
+      contacts = await db.contact.findMany({
+        where: baseWhere,
+        select: { id: true, phoneNorm: true, areaId: true },
+        orderBy: { id: 'asc' },
+        ...((!recheck && limit && limit > 0) ? { take: limit } : {}),
+      })
+    }
 
     if (contacts.length === 0) {
       res.json({ ok: true, data: { queued: 0 } })
@@ -125,7 +184,8 @@ router.post('/validate-wa', async (req, res) => {
     }
     await pipeline.exec()
 
-    console.log(`[api] validate-wa — ${jobs.length} unique phones queued (${contacts.length} contacts)`)
+    const areaLabel = areaIds?.length ? `, ${areaIds.length} areas selected` : areaId ? ', 1 area selected' : ''
+    console.log(`[api] validate-wa — ${jobs.length} unique phones queued (${contacts.length} contacts${limitPerArea ? `, limit ${limitPerArea}/area` : ''}${areaLabel})`)
 
     res.json({ ok: true, data: { queued: jobs.length } })
   } catch (err) {
@@ -147,6 +207,38 @@ router.get('/validate-wa/status', async (_req, res) => {
         total:     (counts.waiting ?? 0) + (counts.active ?? 0),
       },
     })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// POST /api/contacts/validate-wa/cancel
+// Drains the phone-check queue (removes all waiting jobs) and clears
+// the wa:checking:* Redis keys so "Pending Checking" badges disappear.
+// Active jobs (currently being processed by an agent) finish naturally.
+router.post('/validate-wa/cancel', async (_req, res) => {
+  try {
+    // Get all waiting jobs so we can clear their Redis checking keys
+    const waitingJobs = await phoneCheckQueue.getJobs(['waiting', 'delayed', 'prioritized'])
+    const phones = waitingJobs
+      .map((j) => j.data?.phone)
+      .filter(Boolean) as string[]
+
+    // Drain the queue — removes all waiting/delayed jobs
+    await phoneCheckQueue.drain()
+
+    // Clear wa:checking:* keys for the cancelled phones
+    if (phones.length > 0) {
+      const pipeline = redis.pipeline()
+      for (const phone of phones) {
+        pipeline.del(WA_CHECKING_KEY(phone))
+      }
+      await pipeline.exec()
+    }
+
+    console.log(`[api] validate-wa/cancel — drained ${phones.length} waiting jobs`)
+
+    res.json({ ok: true, data: { cancelled: phones.length } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

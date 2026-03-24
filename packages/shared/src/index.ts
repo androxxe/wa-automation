@@ -254,4 +254,18 @@ export interface AppConfigData {
   // Agent typing speed defaults — read-only from env vars
   defaultTypeDelayMin: number  // ms per keystroke
   defaultTypeDelayMax: number  // ms per keystroke
+  // Working hours — read-only from env vars
+  workingHoursStart:     string    // e.g. "08:00"
+  workingHoursEnd:       string    // e.g. "20:00"
+  workingDays:           number[]  // e.g. [1,2,3,4,5,6,7]
+  timezone:              string    // e.g. "Asia/Jakarta"
+  // Rate limiting — read-only from env vars
+  rateLimitMeanMs:       number
+  rateLimitStddevMs:     number
+  rateLimitMinMs:        number
+  rateLimitMaxMs:        number
+  // Polling & concurrency — read-only from env vars
+  replyPollIntervalMs:      number
+  campaignReplyWindowDays:  number
+  phoneCheckConcurrency:    number
 }

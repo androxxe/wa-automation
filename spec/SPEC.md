@@ -554,7 +554,8 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 |---|---|---|
 | `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked) |
 | `GET` | `/api/contacts/:id` | Single contact detail |
-| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaId?, recheck? }`. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
+| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaIds?[], areaId?, limitPerArea?, limit?, recheck? }`. Supports **multi-area selection** via `areaIds` array. `limitPerArea` caps contacts queued per area. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
+| `GET` | `/api/contacts/validate-wa/count` | Unchecked count + **per-area breakdown**: `{ unchecked, areaCount, areas: [{ areaId, name, contactType, unchecked }] }` — used by the multi-area modal. |
 | `GET` | `/api/contacts/validate-wa/status` | Live phone-check queue counts: `{ waiting, active, completed, failed, total }` |
 
 ### Campaigns
@@ -874,18 +875,20 @@ interface PhoneCheckJob {
 ```
 
 **Worker logic (per job):**
-1. Call `agentManager.getLeastBusyAgent()` (poll every 5s, max 5 min)
-2. Increment `agent:{agentId}:active_jobs`
-3. Call `agent.checkPhoneRegistered(phone)` — agent-locked
+1. Call `agentManager.getValidationAgent()` — prefers validation-only agents; falls back to `getLeastBusyAgent()` if none online. Polls every 5s, max 5 min.
+2. Increment `agent.activeJobCount`
+3. Call `agent.checkPhoneRegistered(phone)` — agent-locked via `_withBrowserLock()`
 4. Update **all contacts** sharing that `phoneNorm` — one result propagates to both STIK and KARDUS records:
    ```ts
    db.contact.updateMany({ where: { phoneNorm: phone }, data: { phoneValid: registered, waChecked: true } })
    ```
-5. Decrement `agent:{agentId}:active_jobs`
+5. Decrement `agent.activeJobCount`
+
+**Concurrency:** `PHONE_CHECK_CONCURRENCY` (default 3) — multiple agents validate in parallel, each behind its own browser lock.
 
 **No retries** (attempts: 1) — a failed check is simply not recorded; all contacts with that phone stay `waChecked: false` and can be re-queued.
 
-**Queued by:** `POST /api/contacts/validate-wa` — deduplicates by `phoneNorm` before enqueuing, so the same phone number is never checked twice even if it appears in both STIK and KARDUS imports.
+**Queued by:** `POST /api/contacts/validate-wa` — accepts `areaIds[]` for multi-area selection with `limitPerArea` cap per area. Deduplicates by `phoneNorm` before enqueuing, so the same phone number is never checked twice even if it appears in both STIK and KARDUS imports.
 
 ---
 
@@ -1189,8 +1192,14 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 
 ### `/contacts` — Contact Browser
 - Filter by status: **Semua / Belum dicek / Terdaftar / Tidak valid**
-- **"Validasi WA"** button — queues unchecked contacts for WA registration check
-- **"Cek Ulang Semua"** button — re-queues all contacts regardless of current status
+- **"Validasi WA"** button — opens a multi-area selection modal:
+  - Areas grouped by type (STIK / KARDUS) with per-area unchecked counts
+  - Checkboxes for each area; all areas with unchecked contacts selected by default
+  - "Pilih Semua / Hapus Semua" toggle per group
+  - Search box to filter areas by name
+  - "Limit per area" input (default: 60) with "Tanpa limit" option
+  - Summary: total contacts to be queued across selected areas
+- **"Cek Ulang Semua"** button — re-queues all contacts regardless of current status (bypasses modal)
 - Columns: No, Store Name, Department, Area, Phone (raw), Phone (normalized), **Status WA**, Exchange
 - Status WA badge: Gray "Belum dicek" / Green "Terdaftar" / Red "Tidak valid"
 

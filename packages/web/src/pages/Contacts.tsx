@@ -186,11 +186,27 @@ export default function Contacts() {
     queryFn:  () => apiFetch<ContactsPage>(`/api/contacts?${params}`),
   })
 
+  // Poll validation queue status — shows progress + enables cancel button
+  const { data: queueStatus } = useQuery<{ waiting: number; active: number; total: number }>({
+    queryKey: ['validate-wa-status'],
+    queryFn:  () => apiFetch<{ waiting: number; active: number; total: number }>('/api/contacts/validate-wa/status'),
+    refetchInterval: (query) => {
+      const d = query.state.data
+      return (d && d.total > 0) ? 2000 : 10000 // poll faster when jobs are running
+    },
+  })
+
+  const queueActive = (queueStatus?.total ?? 0) > 0
+
   const validateMutation = useMutation({
-    mutationFn: ({ recheck, limit }: { recheck: boolean; limit?: number | null }) =>
+    mutationFn: ({ recheck, limitPerArea, areaIds }: { recheck: boolean; limitPerArea?: number | null; areaIds?: string[] }) =>
       apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
         method: 'POST',
-        body: JSON.stringify({ recheck, ...(limit != null ? { limit } : {}) }),
+        body: JSON.stringify({
+          recheck,
+          ...(limitPerArea != null ? { limitPerArea } : {}),
+          ...(areaIds && areaIds.length > 0 ? { areaIds } : {}),
+        }),
       }),
     onSuccess: (result, { recheck }) => {
       if (result.queued === 0) {
@@ -200,8 +216,19 @@ export default function Contacts() {
           `${result.queued} nomor diantrekan untuk dicek${recheck ? ' (ulang)' : ''}. Status akan diperbarui otomatis.`
         )
         queryClient.invalidateQueries({ queryKey: ['contacts'] })
+        queryClient.invalidateQueries({ queryKey: ['validate-wa-status'] })
         setTimeout(() => queryClient.invalidateQueries({ queryKey: ['contacts'] }), 3000)
       }
+    },
+  })
+
+  const cancelMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<{ cancelled: number }>('/api/contacts/validate-wa/cancel', { method: 'POST' }),
+    onSuccess: (result) => {
+      setValidateMsg(`Validasi dibatalkan. ${result.cancelled} job dihapus dari antrian.`)
+      queryClient.invalidateQueries({ queryKey: ['contacts'] })
+      queryClient.invalidateQueries({ queryKey: ['validate-wa-status'] })
     },
   })
 
@@ -265,6 +292,17 @@ export default function Contacts() {
           >
             Cek Ulang Semua
           </button>
+          {queueActive && (
+            <button
+              type="button"
+              onClick={() => cancelMutation.mutate()}
+              disabled={cancelMutation.isPending}
+              title="Batalkan semua validasi yang menunggu dalam antrian"
+              className="text-sm border border-red-200 rounded-md px-3 py-1.5 bg-red-50 text-red-600 disabled:opacity-50 hover:bg-red-100 transition-colors"
+            >
+              {cancelMutation.isPending ? 'Membatalkan...' : `Batalkan (${queueStatus?.waiting ?? 0} antrian)`}
+            </button>
+          )}
         </div>
       </div>
 
@@ -337,9 +375,9 @@ export default function Contacts() {
       <ValidasiModal
         open={validasiModalOpen}
         onClose={() => setValidasiModal(false)}
-        onConfirm={(limit) => {
+        onConfirm={(areaIds, limitPerArea) => {
           setValidasiModal(false)
-          validateMutation.mutate({ recheck: false, limit })
+          validateMutation.mutate({ recheck: false, limitPerArea, areaIds })
         }}
       />
     </div>

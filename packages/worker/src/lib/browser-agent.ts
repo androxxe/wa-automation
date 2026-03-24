@@ -220,36 +220,49 @@ export class BrowserAgent {
 
       await page.goto(url, { waitUntil: 'load' })
 
-      await page
-        .waitForSelector('[data-testid="startup"], [data-animate-modal-popup="true"]', {
-          state:   'hidden',
-          timeout: 10000,
-        })
-        .catch(() => {})
-
-      const invalidAlert = await page.evaluate(
-        (keywords: string[]): boolean => {
-          const modal = document.querySelector('[data-animate-modal-popup="true"]')
-          if (!modal) return false
-          const text = (modal.textContent ?? '').toLowerCase()
-          return keywords.some((kw) => text.includes(kw))
-        },
-        ['tidak terdaftar', 'not registered'],
-      )
-      if (invalidAlert) {
-        await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
-        await page.waitForTimeout(500)
-        throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
-      }
-
-      const inputSelector = [
+      // Race: detect invalid-number popup vs compose box appearing.
+      // Whichever signal fires first wins — no more waiting 30s for a
+      // compose box that will never come on an invalid number.
+      const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
+      const INPUT_SELECTORS  = [
         '[data-testid="conversation-compose-box-input"]',
         'div[contenteditable="true"][data-tab="10"]',
         'div[contenteditable="true"][aria-label="Type a message"]',
         'footer div[contenteditable="true"]',
       ].join(', ')
 
-      await page.waitForSelector(inputSelector, { timeout: 30000 })
+      const handle = await page
+        .waitForFunction(
+          ({ keywords, inputSel }: { keywords: string[]; inputSel: string }): string | false => {
+            // Check for "not registered" modal
+            const modal = document.querySelector('[data-animate-modal-popup="true"]')
+            if (modal) {
+              const text = (modal.textContent ?? '').toLowerCase()
+              if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+            }
+            // Check for compose input box
+            const compose = document.querySelector(inputSel)
+            if (compose) return 'ready'
+            return false
+          },
+          { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS },
+          { timeout: 30000, polling: 100 },
+        )
+        .catch(() => null)
+
+      const signal = handle ? ((await handle.jsonValue()) as string) : null
+
+      if (signal === 'invalid') {
+        await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
+        await page.waitForTimeout(500)
+        throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
+      }
+
+      if (!signal) {
+        throw new Error(`Timeout waiting for WhatsApp chat to load for ${phone}`)
+      }
+
+      const inputSelector = INPUT_SELECTORS
       await page.click(inputSelector)
       await page.waitForTimeout(500)
 
@@ -287,7 +300,7 @@ export class BrowserAgent {
       await page.goto(url, { waitUntil: 'domcontentloaded' })
 
       const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
-      const STABILISE_MS     = 2000
+      const STABILISE_MS     = 1500
       const runId            = Date.now().toString()
 
       const handle = await page
@@ -321,7 +334,7 @@ export class BrowserAgent {
             return false
           },
           { keywords: INVALID_KEYWORDS, stabiliseMs: STABILISE_MS, id: runId },
-          { timeout: 25000, polling: 100 },
+          { timeout: 15000, polling: 100 },
         )
         .catch(() => null)
 
