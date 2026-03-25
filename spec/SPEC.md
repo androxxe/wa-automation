@@ -554,8 +554,8 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 |---|---|---|
 | `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked) |
 | `GET` | `/api/contacts/:id` | Single contact detail |
-| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaIds?[], areaId?, limitPerArea?, limit?, recheck? }`. Supports **multi-area selection** via `areaIds` array. `limitPerArea` caps contacts queued per area. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
-| `GET` | `/api/contacts/validate-wa/count` | Unchecked count + **per-area breakdown**: `{ unchecked, areaCount, areas: [{ areaId, name, contactType, unchecked }] }` — used by the multi-area modal. |
+| `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaIds?[], recheckAreaIds?[], areaId?, limitPerArea?, limit?, recheck? }`. Supports **multi-area selection** via `areaIds` array. `recheckAreaIds` is for already-validated areas that the user wants to re-check (all phones). `limitPerArea` caps contacts queued per area. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
+| `GET` | `/api/contacts/validate-wa/count` | Returns **all areas** with per-area counts: `{ unchecked, areaCount, areas: [{ areaId, name, contactType, unchecked, validated, registered, invalid, total }] }`. Includes fully-validated areas (unchecked=0) so the modal can show them as re-checkable. `registered` = confirmed on WA, `invalid` = bad format or not on WA. |
 | `GET` | `/api/contacts/validate-wa/status` | Live phone-check queue counts: `{ waiting, active, completed, failed, total }` |
 
 ### Campaigns
@@ -888,7 +888,7 @@ interface PhoneCheckJob {
 
 **No retries** (attempts: 1) — a failed check is simply not recorded; all contacts with that phone stay `waChecked: false` and can be re-queued.
 
-**Queued by:** `POST /api/contacts/validate-wa` — accepts `areaIds[]` for multi-area selection with `limitPerArea` cap per area. Deduplicates by `phoneNorm` before enqueuing, so the same phone number is never checked twice even if it appears in both STIK and KARDUS imports.
+**Queued by:** `POST /api/contacts/validate-wa` — accepts `areaIds[]` for normal unchecked areas and `recheckAreaIds[]` for already-validated areas to re-check. Both support `limitPerArea` cap per area. Contacts from both sets are combined, deduplicated by `phoneNorm` before enqueuing, so the same phone number is never checked twice even if it appears in both STIK and KARDUS imports.
 
 ---
 
@@ -1193,12 +1193,14 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 ### `/contacts` — Contact Browser
 - Filter by status: **Semua / Belum dicek / Terdaftar / Tidak valid**
 - **"Validasi WA"** button — opens a multi-area selection modal:
-  - Areas grouped by type (STIK / KARDUS) with per-area unchecked counts
-  - Checkboxes for each area; all areas with unchecked contacts selected by default
-  - "Pilih Semua / Hapus Semua" toggle per group
+  - Shows **all areas** grouped by type (STIK / KARDUS)
+  - **Never-validated areas** (`validated = 0`): checked by default, showing unchecked count
+  - **Areas with any validated phones** (`validated > 0`, partial or full): **unchecked by default**, muted style + green checkmark. Shows "N dicek" for fully validated, or "N dicek · M belum" for partially validated. Below that, shows registered/invalid breakdown (e.g. "85 terdaftar / 16 tidak valid"). Can be selected to validate remaining or re-check all.
+  - "Pilih Semua / Hapus Semua" toggle per group (includes validated areas)
   - Search box to filter areas by name
   - "Limit per area" input (default: 60) with "Tanpa limit" option
-  - Summary: total contacts to be queued across selected areas
+  - Summary: total contacts to be queued across selected areas (includes re-check areas)
+  - On confirm: splits selected areas into `areaIds` (unchecked > 0) and `recheckAreaIds` (fully validated)
 - **"Cek Ulang Semua"** button — re-queues all contacts regardless of current status (bypasses modal)
 - Columns: No, Store Name, Department, Area, Phone (raw), Phone (normalized), **Status WA**, Exchange
 - Status WA badge: Gray "Belum dicek" / Green "Terdaftar" / Red "Tidak valid"

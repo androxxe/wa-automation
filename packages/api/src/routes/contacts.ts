@@ -62,37 +62,71 @@ router.get('/', async (req, res) => {
 })
 
 // GET /api/contacts/validate-wa/count
-// Returns how many contacts are unchecked (phoneValid=true, waChecked=false)
-// plus the number of distinct areas that have unchecked contacts.
-// Used by the frontend modal to show context before queuing validation jobs.
+// Returns all areas with per-area breakdown: unchecked, validated, and total counts.
+// Areas that are already fully validated (unchecked=0) are included so the modal
+// can show them as re-checkable (unchecked by default, muted style).
 router.get('/validate-wa/count', async (_req, res) => {
   try {
-    const where = { phoneValid: true, waChecked: false as const }
-    const [unchecked, areaGroups] = await Promise.all([
-      db.contact.count({ where }),
-      db.contact.groupBy({ by: ['areaId'], where, _count: true }),
+    // Fetch all areas and counts in parallel
+    const [allAreas, uncheckedGroups, validatedGroups, registeredGroups, invalidGroups, totalGroups, globalUnchecked] = await Promise.all([
+      db.area.findMany({
+        select: { id: true, name: true, contactType: true },
+        orderBy: { name: 'asc' },
+      }),
+      db.contact.groupBy({
+        by: ['areaId'],
+        where: { phoneValid: true, waChecked: false },
+        _count: true,
+      }),
+      db.contact.groupBy({
+        by: ['areaId'],
+        where: { waChecked: true },
+        _count: true,
+      }),
+      db.contact.groupBy({
+        by: ['areaId'],
+        where: { waChecked: true, phoneValid: true },
+        _count: true,
+      }),
+      db.contact.groupBy({
+        by: ['areaId'],
+        where: { phoneValid: false },
+        _count: true,
+      }),
+      db.contact.groupBy({
+        by: ['areaId'],
+        _count: true,
+      }),
+      db.contact.count({ where: { phoneValid: true, waChecked: false } }),
     ])
 
-    // Fetch area details for each group so the modal can render checkboxes
-    const areaIds = areaGroups.map((g) => g.areaId)
-    const areaDetails = areaIds.length > 0
-      ? await db.area.findMany({
-          where: { id: { in: areaIds } },
-          select: { id: true, name: true, contactType: true },
-        })
-      : []
+    const uncheckedMap   = new Map(uncheckedGroups.map((g) => [g.areaId, g._count]))
+    const validatedMap   = new Map(validatedGroups.map((g) => [g.areaId, g._count]))
+    const registeredMap  = new Map(registeredGroups.map((g) => [g.areaId, g._count]))
+    const invalidMap     = new Map(invalidGroups.map((g) => [g.areaId, g._count]))
+    const totalMap       = new Map(totalGroups.map((g) => [g.areaId, g._count]))
 
-    const areaMap = new Map(areaDetails.map((a) => [a.id, a]))
-    const areas = areaGroups
-      .map((g) => {
-        const area = areaMap.get(g.areaId)
-        if (!area) return null
-        return { areaId: g.areaId, name: area.name, contactType: area.contactType, unchecked: g._count }
+    const areas = allAreas
+      .map((a) => {
+        const total     = totalMap.get(a.id) ?? 0
+        if (total === 0) return null // skip areas with no contacts
+        return {
+          areaId:      a.id,
+          name:        a.name,
+          contactType: a.contactType,
+          unchecked:   uncheckedMap.get(a.id) ?? 0,
+          validated:   validatedMap.get(a.id) ?? 0,
+          registered:  registeredMap.get(a.id) ?? 0,
+          invalid:     invalidMap.get(a.id) ?? 0,
+          total,
+        }
       })
       .filter(Boolean)
       .sort((a, b) => a!.name.localeCompare(b!.name))
 
-    res.json({ ok: true, data: { unchecked, areaCount: areaGroups.length, areas } })
+    const areaCount = areas.filter((a) => a!.unchecked > 0).length
+
+    res.json({ ok: true, data: { unchecked: globalUnchecked, areaCount, areas } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -102,59 +136,96 @@ router.get('/validate-wa/count', async (_req, res) => {
 // Deduplicates by phoneNorm before enqueuing — one check per unique phone number.
 // The worker writes results to ALL contacts sharing that phoneNorm (STIK + KARDUS).
 // Optional params:
-//   - `areaIds`      : array of area IDs — only queue contacts from these areas
-//   - `areaId`       : single area ID (legacy, use areaIds instead)
-//   - `limit`        : global cap — only queue the first N unchecked contacts total
-//   - `limitPerArea` : per-area cap — take at most N unchecked contacts from each area
+//   - `areaIds`         : array of area IDs with unchecked contacts to validate
+//   - `recheckAreaIds`  : array of area IDs that are already validated — re-check all phones
+//   - `areaId`          : single area ID (legacy, use areaIds instead)
+//   - `limit`           : global cap — only queue the first N unchecked contacts total
+//   - `limitPerArea`    : per-area cap — take at most N contacts from each area
 // When `limitPerArea` is provided, it takes priority over `limit`.
 router.post('/validate-wa', async (req, res) => {
   try {
-    const { areaId, areaIds, contactType, recheck = false, limit, limitPerArea } =
-      req.body as { areaId?: string; areaIds?: string[]; contactType?: string; recheck?: boolean; limit?: number; limitPerArea?: number }
+    const { areaId, areaIds, recheckAreaIds, contactType, recheck = false, limit, limitPerArea } =
+      req.body as { areaId?: string; areaIds?: string[]; recheckAreaIds?: string[]; contactType?: string; recheck?: boolean; limit?: number; limitPerArea?: number }
 
     // Support both areaIds (array) and legacy areaId (single string)
-    const effectiveAreaFilter = areaIds && areaIds.length > 0
-      ? { areaId: { in: areaIds } }
+    const effectiveAreaIds = areaIds && areaIds.length > 0
+      ? areaIds
       : areaId
-        ? { areaId }
-        : {}
+        ? [areaId]
+        : []
 
-    const baseWhere = {
-      ...effectiveAreaFilter,
-      ...(contactType && { contactType }),
-      phoneValid: recheck ? undefined : true,
-      waChecked:  recheck ? undefined : false,
-    }
+    const hasNormalAreas  = effectiveAreaIds.length > 0
+    const hasRecheckAreas = recheckAreaIds && recheckAreaIds.length > 0
 
-    let contacts: { id: string; phoneNorm: string; areaId: string }[]
-
-    if (!recheck && limitPerArea && limitPerArea > 0) {
-      // Per-area limiting: fetch all unchecked contacts with areaId, then slice per area
-      const allContacts = await db.contact.findMany({
-        where: baseWhere,
-        select: { id: true, phoneNorm: true, areaId: true },
-        orderBy: { id: 'asc' },
-      })
-
-      // Group by areaId and take at most `limitPerArea` from each
-      const byArea = new Map<string, typeof allContacts>()
-      for (const c of allContacts) {
-        const group = byArea.get(c.areaId) ?? []
-        if (group.length < limitPerArea) {
-          group.push(c)
-          byArea.set(c.areaId, group)
-        }
+    // --- Fetch normal unchecked contacts ---
+    let normalContacts: { id: string; phoneNorm: string; areaId: string }[] = []
+    if (hasNormalAreas || (!hasRecheckAreas && !recheck)) {
+      const normalWhere = {
+        ...(hasNormalAreas ? { areaId: { in: effectiveAreaIds } } : {}),
+        ...(contactType && { contactType }),
+        phoneValid: recheck ? undefined : true,
+        waChecked:  recheck ? undefined : false,
       }
-      contacts = Array.from(byArea.values()).flat()
-    } else {
-      // Global limit (or no limit)
-      contacts = await db.contact.findMany({
-        where: baseWhere,
-        select: { id: true, phoneNorm: true, areaId: true },
-        orderBy: { id: 'asc' },
-        ...((!recheck && limit && limit > 0) ? { take: limit } : {}),
-      })
+
+      if (!recheck && limitPerArea && limitPerArea > 0) {
+        const allContacts = await db.contact.findMany({
+          where: normalWhere,
+          select: { id: true, phoneNorm: true, areaId: true },
+          orderBy: { id: 'asc' },
+        })
+        const byArea = new Map<string, typeof allContacts>()
+        for (const c of allContacts) {
+          const group = byArea.get(c.areaId) ?? []
+          if (group.length < limitPerArea) {
+            group.push(c)
+            byArea.set(c.areaId, group)
+          }
+        }
+        normalContacts = Array.from(byArea.values()).flat()
+      } else {
+        normalContacts = await db.contact.findMany({
+          where: normalWhere,
+          select: { id: true, phoneNorm: true, areaId: true },
+          orderBy: { id: 'asc' },
+          ...((!recheck && limit && limit > 0) ? { take: limit } : {}),
+        })
+      }
     }
+
+    // --- Fetch re-check contacts (already validated areas) ---
+    let recheckContacts: { id: string; phoneNorm: string; areaId: string }[] = []
+    if (hasRecheckAreas) {
+      const recheckWhere = {
+        areaId: { in: recheckAreaIds },
+        ...(contactType && { contactType }),
+      }
+
+      if (limitPerArea && limitPerArea > 0) {
+        const allRecheck = await db.contact.findMany({
+          where: recheckWhere,
+          select: { id: true, phoneNorm: true, areaId: true },
+          orderBy: { id: 'asc' },
+        })
+        const byArea = new Map<string, typeof allRecheck>()
+        for (const c of allRecheck) {
+          const group = byArea.get(c.areaId) ?? []
+          if (group.length < limitPerArea) {
+            group.push(c)
+            byArea.set(c.areaId, group)
+          }
+        }
+        recheckContacts = Array.from(byArea.values()).flat()
+      } else {
+        recheckContacts = await db.contact.findMany({
+          where: recheckWhere,
+          select: { id: true, phoneNorm: true, areaId: true },
+          orderBy: { id: 'asc' },
+        })
+      }
+    }
+
+    // Combine both sets
+    const contacts = [...normalContacts, ...recheckContacts]
 
     if (contacts.length === 0) {
       res.json({ ok: true, data: { queued: 0 } })
@@ -184,8 +255,9 @@ router.post('/validate-wa', async (req, res) => {
     }
     await pipeline.exec()
 
-    const areaLabel = areaIds?.length ? `, ${areaIds.length} areas selected` : areaId ? ', 1 area selected' : ''
-    console.log(`[api] validate-wa — ${jobs.length} unique phones queued (${contacts.length} contacts${limitPerArea ? `, limit ${limitPerArea}/area` : ''}${areaLabel})`)
+    const normalLabel  = hasNormalAreas ? `${effectiveAreaIds.length} areas` : 'all areas'
+    const recheckLabel = hasRecheckAreas ? `, ${recheckAreaIds!.length} recheck areas` : ''
+    console.log(`[api] validate-wa — ${jobs.length} unique phones queued (${contacts.length} contacts, ${normalLabel}${recheckLabel}${limitPerArea ? `, limit ${limitPerArea}/area` : ''})`)
 
     res.json({ ok: true, data: { queued: jobs.length } })
   } catch (err) {

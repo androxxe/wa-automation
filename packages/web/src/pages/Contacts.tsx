@@ -199,13 +199,14 @@ export default function Contacts() {
   const queueActive = (queueStatus?.total ?? 0) > 0
 
   const validateMutation = useMutation({
-    mutationFn: ({ recheck, limitPerArea, areaIds }: { recheck: boolean; limitPerArea?: number | null; areaIds?: string[] }) =>
+    mutationFn: ({ recheck, limitPerArea, areaIds, recheckAreaIds }: { recheck: boolean; limitPerArea?: number | null; areaIds?: string[]; recheckAreaIds?: string[] }) =>
       apiFetch<{ queued: number }>('/api/contacts/validate-wa', {
         method: 'POST',
         body: JSON.stringify({
           recheck,
           ...(limitPerArea != null ? { limitPerArea } : {}),
           ...(areaIds && areaIds.length > 0 ? { areaIds } : {}),
+          ...(recheckAreaIds && recheckAreaIds.length > 0 ? { recheckAreaIds } : {}),
         }),
       }),
     onSuccess: (result, { recheck }) => {
@@ -375,9 +376,9 @@ export default function Contacts() {
       <ValidasiModal
         open={validasiModalOpen}
         onClose={() => setValidasiModal(false)}
-        onConfirm={(areaIds, limitPerArea) => {
+        onConfirm={(areaIds, recheckAreaIds, limitPerArea) => {
           setValidasiModal(false)
-          validateMutation.mutate({ recheck: false, limitPerArea, areaIds })
+          validateMutation.mutate({ recheck: false, limitPerArea, areaIds, recheckAreaIds })
         }}
       />
     </div>

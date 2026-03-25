@@ -7,6 +7,10 @@ interface AreaInfo {
   name:        string
   contactType: string
   unchecked:   number
+  validated:   number
+  registered:  number
+  invalid:     number
+  total:       number
 }
 
 interface CountData {
@@ -18,8 +22,8 @@ interface CountData {
 interface ValidasiModalProps {
   open:      boolean
   onClose:   () => void
-  /** Called with selected areaIds and limitPerArea (null = no per-area cap) */
-  onConfirm: (areaIds: string[], limitPerArea: number | null) => void
+  /** Called with normal areaIds, recheckAreaIds (fully validated areas), and limitPerArea */
+  onConfirm: (areaIds: string[], recheckAreaIds: string[], limitPerArea: number | null) => void
 }
 
 export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModalProps) {
@@ -62,11 +66,13 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
     }
   }, [open])
 
-  // Auto-select all areas with unchecked contacts when data loads
+  // Auto-select only areas that have NEVER been validated (validated === 0).
+  // Areas that have any validated phones (even partially) start unchecked —
+  // the user can opt-in to validate remaining or re-check them.
   const selectedCount = selectedIds.size
   useEffect(() => {
     if (data?.areas && data.areas.length > 0 && selectedCount === 0) {
-      setSelectedIds(new Set(data.areas.filter((a) => a.unchecked > 0).map((a) => a.areaId)))
+      setSelectedIds(new Set(data.areas.filter((a) => a.validated === 0 && a.unchecked > 0).map((a) => a.areaId)))
     }
   }, [data, selectedCount])
 
@@ -78,9 +84,14 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const isValid    = limitValid && hasSelection
 
   // Compute total contacts that will be queued
+  // For areas with unchecked > 0: queue min(unchecked, limitPerArea)
+  // For areas with unchecked === 0 (recheck): queue min(total, limitPerArea)
   const totalToQueue = areas
     .filter((a) => selectedIds.has(a.areaId))
-    .reduce((sum, a) => sum + (noLimit ? a.unchecked : Math.min(a.unchecked, parsed || 0)), 0)
+    .reduce((sum, a) => {
+      const count = a.unchecked > 0 ? a.unchecked : a.total
+      return sum + (noLimit ? count : Math.min(count, parsed || 0))
+    }, 0)
 
   function toggleArea(areaId: string) {
     setSelectedIds((prev) => {
@@ -92,11 +103,10 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   }
 
   function toggleGroup(groupAreas: AreaInfo[]) {
-    const withUnchecked = groupAreas.filter((a) => a.unchecked > 0)
     setSelectedIds((prev) => {
       const next = new Set(prev)
-      const allSelected = withUnchecked.every((a) => prev.has(a.areaId))
-      for (const a of withUnchecked) {
+      const allSelected = groupAreas.every((a) => prev.has(a.areaId))
+      for (const a of groupAreas) {
         if (allSelected) next.delete(a.areaId)
         else next.add(a.areaId)
       }
@@ -106,14 +116,21 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
 
   function handleConfirm() {
     if (!isValid) return
-    onConfirm(Array.from(selectedIds), noLimit ? null : parsed)
+    // Split selected areas into normal (unchecked > 0) and recheck (unchecked === 0)
+    const normalIds:  string[] = []
+    const recheckIds: string[] = []
+    for (const id of selectedIds) {
+      const area = areas.find((a) => a.areaId === id)
+      if (!area) continue
+      if (area.unchecked > 0) normalIds.push(id)
+      else recheckIds.push(id)
+    }
+    onConfirm(normalIds, recheckIds, noLimit ? null : parsed)
   }
 
   function renderGroup(label: string, groupAreas: AreaInfo[], filtered: AreaInfo[]) {
     if (groupAreas.length === 0) return null
-    const withUnchecked = groupAreas.filter((a) => a.unchecked > 0)
-    const allSelected   = withUnchecked.length > 0 && withUnchecked.every((a) => selectedIds.has(a.areaId))
-    const someSelected  = withUnchecked.some((a) => selectedIds.has(a.areaId))
+    const allSelected   = groupAreas.length > 0 && groupAreas.every((a) => selectedIds.has(a.areaId))
 
     return (
       <div className="space-y-1">
@@ -123,8 +140,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
           <button
             type="button"
             onClick={() => toggleGroup(groupAreas)}
-            disabled={withUnchecked.length === 0}
-            className="text-xs text-primary hover:underline disabled:opacity-50 disabled:no-underline"
+            className="text-xs text-primary hover:underline"
           >
             {allSelected ? 'Hapus Semua' : 'Pilih Semua'}
           </button>
@@ -132,23 +148,40 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
 
         {/* Area checkboxes */}
         {filtered.map((area) => {
-          const disabled = area.unchecked === 0
+          const hasValidated = area.validated > 0
           return (
             <label
               key={area.areaId}
-              className={`flex items-center gap-2 py-0.5 cursor-pointer select-none ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+              className={`flex items-center gap-2 py-0.5 cursor-pointer select-none ${hasValidated ? 'opacity-60' : ''}`}
             >
               <input
                 type="checkbox"
                 checked={selectedIds.has(area.areaId)}
                 onChange={() => toggleArea(area.areaId)}
-                disabled={disabled}
                 className="rounded border-gray-300 text-primary focus:ring-primary"
               />
               <span className="text-sm flex-1 truncate">{area.name}</span>
-              <span className="text-xs text-muted-foreground tabular-nums">
-                {area.unchecked.toLocaleString('id-ID')}
-              </span>
+              {hasValidated ? (
+                <span className="flex flex-col items-end text-xs tabular-nums leading-tight">
+                  <span className="flex items-center gap-1 text-green-600 whitespace-nowrap">
+                    <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" role="img">
+                      <title>Validated</title>
+                      <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                    </svg>
+                    {area.validated.toLocaleString('id-ID')} dicek
+                    {area.unchecked > 0 && (
+                      <span className="text-muted-foreground">&middot; {area.unchecked.toLocaleString('id-ID')} belum</span>
+                    )}
+                  </span>
+                  <span className="text-muted-foreground whitespace-nowrap">
+                    {area.registered.toLocaleString('id-ID')} terdaftar / {area.invalid.toLocaleString('id-ID')} tidak valid
+                  </span>
+                </span>
+              ) : (
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {area.unchecked.toLocaleString('id-ID')}
+                </span>
+              )}
             </label>
           )
         })}
@@ -160,6 +193,10 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
       </div>
     )
   }
+
+  // Count how many selected areas are recheck vs normal
+  const selectedNormalCount  = areas.filter((a) => selectedIds.has(a.areaId) && a.unchecked > 0).length
+  const selectedRecheckCount = areas.filter((a) => selectedIds.has(a.areaId) && a.unchecked === 0).length
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -186,7 +223,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
             min={1}
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            disabled={isLoading || unchecked === 0 || noLimit}
+            disabled={isLoading || noLimit}
             className="w-full text-sm rounded-md border px-3 py-2 bg-background disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-ring"
             onKeyDown={(e) => { if (e.key === 'Enter') handleConfirm() }}
           />
@@ -195,7 +232,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
               type="checkbox"
               checked={noLimit}
               onChange={(e) => setNoLimit(e.target.checked)}
-              disabled={isLoading || unchecked === 0}
+              disabled={isLoading}
               className="rounded border-gray-300 text-primary focus:ring-primary"
             />
             <span className="text-sm">Tanpa limit per area</span>
@@ -205,8 +242,8 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
         {/* Area selection */}
         {isLoading ? (
           <p className="text-sm text-muted-foreground">Memuat data area...</p>
-        ) : unchecked === 0 ? (
-          <p className="text-sm text-green-700 font-medium">Semua nomor sudah dicek</p>
+        ) : areas.length === 0 ? (
+          <p className="text-sm text-muted-foreground">Tidak ada area dengan kontak.</p>
         ) : (
           <>
             {/* Search */}
@@ -225,12 +262,19 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
             </div>
 
             {/* Summary */}
-            <div className="text-xs text-muted-foreground border-t pt-2">
+            <div className="text-xs text-muted-foreground border-t pt-2 space-y-0.5">
               {hasSelection ? (
-                <span>
-                  Total: <strong>{totalToQueue.toLocaleString('id-ID')}</strong> nomor dari{' '}
-                  <strong>{selectedIds.size}</strong> area
-                </span>
+                <>
+                  <span>
+                    Total: <strong>{totalToQueue.toLocaleString('id-ID')}</strong> nomor dari{' '}
+                    <strong>{selectedIds.size}</strong> area
+                  </span>
+                  {selectedRecheckCount > 0 && (
+                    <p className="text-green-600">
+                      {selectedRecheckCount} area akan dicek ulang
+                    </p>
+                  )}
+                </>
               ) : (
                 <span>Pilih minimal satu area untuk memulai validasi</span>
               )}
@@ -250,7 +294,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={!isValid || isLoading || unchecked === 0}
+            disabled={!isValid || isLoading}
             className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50 transition-colors"
           >
             Mulai Validasi

@@ -122,7 +122,7 @@ Additionally, users need to be able to select **specific areas** for validation
 rather than always validating all areas. This is important for staged rollouts
 or focusing validation on high-priority areas first.
 
-### 2.2 API Endpoint — Unchecked Count with Per-Area Breakdown
+### 2.2 API Endpoint — All Areas with Validation Counts
 
 File: `packages/api/src/routes/contacts.ts`
 
@@ -136,37 +136,54 @@ Response:
   "unchecked": 1240,
   "areaCount": 15,
   "areas": [
-    { "areaId": "clx...", "name": "Aceh Barat", "contactType": "STIK", "unchecked": 80 },
-    { "areaId": "clx...", "name": "Aceh Barat", "contactType": "KARDUS", "unchecked": 45 },
+    { "areaId": "clx...", "name": "Aceh Barat", "contactType": "STIK", "unchecked": 80, "validated": 120, "registered": 100, "invalid": 20, "total": 200 },
+    { "areaId": "clx...", "name": "Aceh Barat", "contactType": "KARDUS", "unchecked": 0, "validated": 45, "registered": 40, "invalid": 5, "total": 45 },
     ...
   ]
 }
 ```
 
-Query: Groups unchecked contacts by `areaId`, joins with area details for name
-and contactType, sorted alphabetically by area name.
+Returns **all areas** (not just those with unchecked contacts). Each area includes:
+- `unchecked` — contacts with `phoneValid: true, waChecked: false`
+- `validated` — contacts with `waChecked: true`
+- `registered` — contacts with `waChecked: true, phoneValid: true` (confirmed on WA)
+- `invalid` — contacts with `phoneValid: false` (bad format or not on WA)
+- `total` — total contacts in the area
+
+This allows the modal to show already-validated areas (with `unchecked: 0`) so the
+user can optionally re-validate them.
 
 ### 2.3 Updated Validate Endpoint
 
 File: `packages/api/src/routes/contacts.ts`
 
-`POST /api/contacts/validate-wa` — accepts multi-area selection and per-area
-limit.
+`POST /api/contacts/validate-wa` — accepts multi-area selection with per-area
+limit, plus separate re-check area IDs for already-validated areas.
 
 ```ts
 // Request body
 {
-  areaIds?: string[]      // array of area IDs to validate (new)
-  areaId?: string         // legacy: single area ID (kept for backward compat)
+  areaIds?: string[]         // areas with unchecked contacts to validate
+  recheckAreaIds?: string[]  // already-validated areas to re-check (all phones)
+  areaId?: string            // legacy: single area ID (kept for backward compat)
   recheck?: boolean
-  limit?: number          // global cap
-  limitPerArea?: number   // per-area cap — takes priority over limit
+  limit?: number             // global cap
+  limitPerArea?: number      // per-area cap — takes priority over limit
 }
 ```
 
 When `areaIds` is provided, the query filters contacts to
 `areaId: { in: areaIds }`. Falls back to `areaId` (single) if `areaIds` is
 absent. When neither is provided, all areas are included.
+
+**Re-check areas (`recheckAreaIds`):** When the user selects areas that are
+already fully validated (unchecked = 0), their IDs are passed separately in
+`recheckAreaIds`. For these areas, the API queries ALL contacts (ignoring
+`phoneValid` / `waChecked` filters) so every phone is re-validated. The
+`limitPerArea` cap still applies to re-check areas.
+
+Both sets (normal unchecked + re-check) are combined, deduplicated by `phoneNorm`,
+and enqueued together.
 
 The existing `limitPerArea` logic remains: groups contacts by area and takes at
 most `limitPerArea` from each selected area before enqueuing.
@@ -180,19 +197,34 @@ Props:
 interface ValidasiModalProps {
   open: boolean
   onClose: () => void
-  onConfirm: (areaIds: string[], limitPerArea: number | null) => void
+  onConfirm: (areaIds: string[], recheckAreaIds: string[], limitPerArea: number | null) => void
 }
 ```
 
 Behaviour:
 - On mount (when `open = true`): fetches `GET /api/contacts/validate-wa/count`.
-- Shows areas grouped by **contact type** (STIK section, KARDUS section).
-- Each area has a checkbox + unchecked count. Areas with 0 unchecked are disabled.
-- All areas with unchecked contacts are **selected by default**.
-- Each group (STIK/KARDUS) has a "Pilih Semua / Hapus Semua" toggle.
+- Shows **all areas** grouped by **contact type** (STIK section, KARDUS section).
+- Each area has a checkbox. All areas are interactive (never disabled).
+- **Default selection:** Only areas that have **never been validated**
+  (`validated === 0` and `unchecked > 0`) are **checked by default**. Areas
+  that have any validated phones — whether partially or fully validated — are
+  shown **unchecked by default**. The user can opt-in to validate remaining
+  unchecked phones or re-check already-validated phones.
+- **Visual distinction for validated areas:** Any area with `validated > 0`
+  (partial or full) is rendered with muted opacity (~60%) plus a green
+  checkmark icon. For partially validated areas, both counts are shown
+  (e.g. `✓ 60 dicek · 40 belum`). For fully validated areas, only the
+  validated count is shown (e.g. `✓ 60 dicek`). Below the checked count, a
+  second line shows the registered/invalid breakdown:
+  `40 terdaftar / 5 tidak valid`.
+- Each group (STIK/KARDUS) has a "Pilih Semua / Hapus Semua" toggle (selects
+  all areas in that group, including validated ones).
 - Search input filters areas by name across both groups.
 - "Limit per area" number input (default: 60) with "Tanpa limit per area" checkbox.
-- Bottom summary: total contacts to be queued across selected areas.
+- Bottom summary: total contacts to be queued across selected areas (includes
+  re-check areas using their `total` count).
+- On confirm: splits selected areas into `areaIds` (those with `unchecked > 0`)
+  and `recheckAreaIds` (those with `unchecked === 0`) before calling `onConfirm`.
 - Confirm button: "Mulai Validasi"
 - Cancel button closes without firing.
 
@@ -206,14 +238,20 @@ Behaviour:
 │  [🔍 Cari area...]                          │
 │                                             │
 │  ── STIK ─── [Pilih Semua] ──────────────── │
-│  ☑ Aceh Barat          80                   │
-│  ☑ Aceh Timur          45                   │
-│  ☐ Banda Aceh           0  (disabled)       │
+│  ☑ Aceh Barat          80  (never validated) │
+│  ☑ Aceh Timur          45  (never validated) │
+│  ☐ Tanjung Pinang   ✓60 dicek · 40 belum    │
+│                     50 terdaftar / 10 invalid │
+│  ☐ Banda Aceh       ✓ 50 dicek              │
+│                     40 terdaftar / 10 invalid │
 │  ...                                        │
 │                                             │
 │  ── KARDUS ── [Pilih Semua] ─────────────── │
-│  ☑ Aceh Barat          120                  │
-│  ☐ Medan                30                  │
+│  ☑ Aceh Barat          120 (never validated) │
+│  ☐ Medan            ✓20 dicek · 30 belum    │
+│                     18 terdaftar / 2 invalid  │
+│  ☐ Surabaya         ✓ 80 dicek              │
+│                     70 terdaftar / 10 invalid │
 │  ...                                        │
 │                                             │
 │  Total: 325 nomor dari 3 area               │
@@ -229,8 +267,8 @@ File: `packages/web/src/pages/Contacts.tsx`
 - "Validasi WA" button sets `validasiModalOpen = true` instead of calling
   `validateMutation.mutate(false)` directly.
 - `ValidasiModal` is rendered conditionally.
-- `onConfirm(areaIds, limitPerArea)` calls
-  `validateMutation.mutate({ recheck: false, limitPerArea, areaIds })`.
+- `onConfirm(areaIds, recheckAreaIds, limitPerArea)` calls
+  `validateMutation.mutate({ recheck: false, limitPerArea, areaIds, recheckAreaIds })`.
 - "Cek Ulang Semua" button is unchanged (no modal, re-checks everything).
 
 ---
@@ -260,14 +298,20 @@ File: `packages/web/src/pages/Contacts.tsx`
   in that area, all unchecked from that area are queued.
 - **No validation agent online:** Phone-check falls back to a regular campaign
   agent so validation is never blocked.
-- **Modal with 0 unchecked:** If unchecked count is 0, show a disabled state:
-  `"Semua nomor sudah dicek"` and disable the confirm button.
+- **Modal with 0 unchecked:** All areas are still shown (with validated counts).
+  If no area is selected, the confirm button is disabled. The user can select
+  already-validated areas to re-check them.
 - **"Cek Ulang Semua"** bypasses the modal entirely — it always re-checks
   everything regardless of this feature.
-- **Multi-area selection:** All areas with unchecked contacts are selected by
-  default when the modal opens. Areas with 0 unchecked are shown disabled.
-- **Empty areaIds:** If no areas are selected, the confirm button is disabled.
+- **Multi-area selection:** All areas are shown. Areas with unchecked contacts
+  are selected by default. Areas that are fully validated are shown unchecked
+  by default with a muted style + green checkmark indicator — the user can
+  opt-in to re-validate them.
+- **Empty selection:** If no areas are selected, the confirm button is disabled.
   The API treats an empty `areaIds` array the same as omitting it (all areas).
+- **Re-check areas:** When the user selects a fully-validated area, it is sent
+  in the `recheckAreaIds` array (separate from `areaIds`). The backend re-checks
+  all phones in those areas regardless of their current validation status.
 - **Backward compatibility:** The `areaId` (single string) parameter is still
   supported for backward compatibility; `areaIds` takes priority when both are
   present.

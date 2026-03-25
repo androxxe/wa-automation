@@ -35,6 +35,9 @@ function envConfig() {
     // Polling & concurrency
     replyPollIntervalMs:      parseInt(process.env.REPLY_POLL_INTERVAL_MS      ?? '60000', 10),
     campaignReplyWindowDays:  parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS  ?? '3',     10),
+    replyExpireDays:          parseInt(process.env.REPLY_EXPIRE_DAYS           ?? '3',     10),
+    replyBatchSize:           parseInt(process.env.REPLY_BATCH_SIZE            ?? '30',    10),
+    replyRepollCooldownMs:    parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS    ?? '600000', 10),
     phoneCheckConcurrency:    parseInt(process.env.PHONE_CHECK_CONCURRENCY     ?? '3',     10),
   }
 }

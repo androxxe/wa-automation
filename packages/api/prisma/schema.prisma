@@ -151,7 +151,7 @@ model Message {
   agent       Agent?    @relation(fields: [agentId], references: [id], onDelete: SetNull)
   phone       String
   body        String    @db.Text
-  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED|CANCELLED
+  status      String    @default("PENDING") // PENDING|QUEUED|SENT|DELIVERED|READ|FAILED|CANCELLED|EXPIRED
   sentAt      DateTime?
   deliveredAt DateTime?
   readAt      DateTime?

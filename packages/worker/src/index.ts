@@ -18,11 +18,17 @@ const QUEUE_NAME             = 'whatsapp-messages'
 const PHONE_CHECK_QUEUE_NAME = 'phone-check'
 const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
 const REPLY_WINDOW_DAYS      = parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS ?? '3', 10)
+const REPLY_EXPIRE_DAYS      = parseInt(process.env.REPLY_EXPIRE_DAYS ?? '3', 10)
+const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '30', 10)
+const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? '600000', 10)
 // dailySendCap, breakEvery, typeDelay are now per-agent (BrowserAgent fields).
 // Env vars remain as fallback defaults when an agent has no override.
 
 // Per-agent session send counters (in-memory; reset on worker restart)
 const sessionSendCount = new Map<number, number>()
+
+// In-memory tracker: when each phone was last polled for replies (epoch ms)
+const lastPolledAt = new Map<string, number>()
 
 // ─── Daily cap helpers ────────────────────────────────────────────────────────
 
@@ -277,7 +283,25 @@ phoneCheckWorker.on('failed', (job, err) => {
 
 // ─── Reply polling ────────────────────────────────────────────────────────────
 
-// Returns Map<phone, sentAt> so pollReplies can anchor to when each message was sent.
+// Permanently mark old unreplied messages as EXPIRED so they leave the polling pool.
+// Catches messages from long-running campaigns that CAMPAIGN_REPLY_WINDOW_DAYS cannot filter.
+async function expireOldMessages(): Promise<number> {
+  const expiryCutoff = new Date(Date.now() - REPLY_EXPIRE_DAYS * 24 * 60 * 60 * 1000)
+  const result = await db.message.updateMany({
+    where: {
+      status: { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:  null,
+      sentAt: { lt: expiryCutoff },
+    },
+    data: { status: 'EXPIRED' },
+  })
+  if (result.count > 0) {
+    console.log(`[poll] expired ${result.count} unreplied message(s) older than ${REPLY_EXPIRE_DAYS} days`)
+  }
+  return result.count
+}
+
+// Returns Map<phone, sentAt> — batched and prioritised so each poll cycle is bounded.
 async function getUnrepliedPhones(): Promise<Map<string, Date>> {
   const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const messages = await db.message.findMany({
@@ -293,17 +317,43 @@ async function getUnrepliedPhones(): Promise<Map<string, Date>> {
     },
     select: { phone: true, sentAt: true },
   })
+
+  // Deduplicate by phone, keeping the MOST RECENT sentAt per phone
   const map = new Map<string, Date>()
   for (const m of messages) {
-    // Keep the MOST RECENT sentAt per phone — passed to pollReplies as the expected
-    // anchor time. If the last outgoing message visible in WhatsApp is significantly
-    // older than this value, our latest message never appeared (silent delivery failure)
-    // and we must skip to avoid attributing an old Bulan-1 reply to a Bulan-2 message.
     const existing = map.get(m.phone)
     const ts = m.sentAt ?? new Date(0)
     if (!existing || ts > existing) map.set(m.phone, ts)
   }
-  return map
+
+  // Sort by priority: never-polled first, then oldest-polled, then most-recent sentAt.
+  // Phones polled within the cooldown window are deprioritised to the end.
+  const now = Date.now()
+  const entries = [...map.entries()].sort((a, b) => {
+    const aLastPoll = lastPolledAt.get(a[0]) ?? 0
+    const bLastPoll = lastPolledAt.get(b[0]) ?? 0
+    const aInCooldown = aLastPoll > 0 && (now - aLastPoll) < REPLY_REPOLL_COOLDOWN
+    const bInCooldown = bLastPoll > 0 && (now - bLastPoll) < REPLY_REPOLL_COOLDOWN
+
+    // Phones in cooldown go to the back
+    if (aInCooldown !== bInCooldown) return aInCooldown ? 1 : -1
+    // Among non-cooldown: never-polled first (lastPoll=0), then oldest-polled
+    if (aLastPoll !== bLastPoll) return aLastPoll - bLastPoll
+    // Tie-break: most recently sent first
+    return b[1].getTime() - a[1].getTime()
+  })
+
+  // Slice to batch size
+  const batched = new Map<string, Date>()
+  for (const [phone, sentAt] of entries.slice(0, REPLY_BATCH_SIZE)) {
+    batched.set(phone, sentAt)
+  }
+
+  if (map.size > REPLY_BATCH_SIZE) {
+    console.log(`[poll] ${map.size} total unreplied phones, batched to ${batched.size}`)
+  }
+
+  return batched
 }
 
 async function handleReply(params: {
@@ -503,10 +553,27 @@ function startReplyPolling() {
     }
     _isPolling = true
     try {
+      // 1. Expire old unreplied messages first (shrinks the pool permanently)
+      await expireOldMessages()
+
+      // 2. Get batched + prioritised unreplied phones
       const unrepliedPhones = await getUnrepliedPhones()
       if (unrepliedPhones.size === 0) return
       console.log(`[agent:${online.agentId}][poll] checking ${unrepliedPhones.size} unreplied phone(s)`)
       await online.agent.pollReplies(handleReply, unrepliedPhones as Map<string, Date>, handleStaleMessage)
+
+      // 3. Update lastPolledAt for all phones in this batch
+      const now = Date.now()
+      for (const phone of unrepliedPhones.keys()) {
+        lastPolledAt.set(phone, now)
+      }
+
+      // 4. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
+      const staleThreshold = now - REPLY_REPOLL_COOLDOWN * 2
+      for (const [phone, ts] of lastPolledAt) {
+        if (ts < staleThreshold) lastPolledAt.delete(phone)
+      }
+
       console.log(`[agent:${online.agentId}][poll] done`)
     } catch (err) {
       console.error('[worker] reply poll error:', err)
