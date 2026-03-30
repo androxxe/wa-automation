@@ -4,7 +4,7 @@
 
 A full-stack web application for managing bulk WhatsApp messaging campaigns targeting AICE ice cream distribution partners. Reads contact data from `.xlsx` files organized by department and market area, sends personalized WhatsApp messages via real visible Chromium browsers controlled by Playwright (mimicking genuine human interaction to minimize ban risk), captures replies via DOM polling, analyzes them with Claude AI, writes results back to output Excel files, and auto-generates per-area CSV reports with binary confirmation answers (1 = confirmed, 0 = denied).
 
-**Multi-agent:** The system supports N independent browser agents running in parallel. Each agent = one WhatsApp account + one Playwright Chromium window + one persistent browser profile. Agents share a single BullMQ message queue; the worker selects the least-busy online agent for each job. Agents can optionally be assigned to a specific department (agent-per-department mode) or float in a shared pool.
+**Multi-agent:** The system supports N independent browser agents running in parallel. Each agent = one WhatsApp account + one Playwright Chromium window + one persistent browser profile. Agents share a single BullMQ message queue; the worker assigns jobs to agents using **round-robin rotation** (strict sequential cycling) to distribute sends evenly and minimise per-account volume. Agents can optionally be assigned to a specific department (agent-per-department mode) or float in a shared pool.
 
 **Send targeting:** Each campaign has a configurable **target replies per area** and **expected reply rate**. At enqueue time the system calculates `sendLimit = ceil(targetReplies / replyRate)` per area and only queues that many contacts. Once an area's reply count hits the target, all remaining queued messages for that area are automatically cancelled — no wasted sends.
 
@@ -562,7 +562,7 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/campaigns` | List all campaigns |
+| `GET` | `/api/campaigns` | List all campaigns. Each campaign includes `alreadyRepliedCount` — unique contacts who replied in **any** campaign with the same `bulan` + `campaignType`, grouped by area and **capped at `targetRepliesPerArea` per area** (excess replies beyond target are ignored). |
 | `POST` | `/api/campaigns` | Create new campaign. Body includes `targetRepliesPerArea?`, `expectedReplyRate?` (null = use global defaults) |
 | `GET` | `/api/campaigns/:id` | Get campaign detail + stats + per-area breakdown (`CampaignArea` with sendLimit, sentCount, replyCount, targetReached) |
 | `PATCH` | `/api/campaigns/:id` | Update campaign (draft only) |
@@ -626,16 +626,22 @@ packages/worker/src/lib/browser-agent.ts
 
 The API reads per-agent status from Redis keys `agent:{agentId}:status`. Agent control commands travel from API → Redis pub/sub channel `browser:command:{agentId}` → AgentManager → BrowserAgent.
 
-### Agent Selection (cap-aware)
+### Agent Selection (round-robin, cap-aware)
 
 ```
-1. Collect all agents where status = "connected", sorted by activeJobCount ascending
-2. If MessageJob.agentId is set (department affinity), check that agent first
-3. For each candidate in order: query DailySendLog — skip if today's count >= agent.dailySendCap
-4. Use the first candidate still under its cap
+1. Fresh status check: call getStatus() on ALL agents in parallel (forces a live DOM check
+   so banned/disconnected agents are excluded immediately — not relying on the 15s poll cache)
+2. Collect all agents where status = "connected", sorted by agentId ascending (stable order)
+3. If MessageJob.agentId is set (department affinity), move that agent to front of list
+4. Starting from a persistent round-robin index, iterate candidates in sequence:
+   — query DailySendLog — skip if today's count >= agent.dailySendCap
+   — use the first candidate still under its cap
+   — advance round-robin index to the next position
 5. If no agents are ONLINE: poll every 10s, up to 10 min, then fail the job
 6. If all ONLINE agents are at their cap: reschedule job via job.moveToDelayed(msUntilNextOpen())
 ```
+
+The round-robin index persists across jobs (resets on worker restart). This ensures each agent takes turns in strict sequence — e.g. with agents A, B, C: job 1 → A, job 2 → B, job 3 → C, job 4 → A, etc. This distributes sends evenly and minimises per-account volume, reducing WhatsApp ban risk compared to random selection where one agent could be unlucky and get disproportionate load.
 
 `activeJobCount` is incremented when a job is assigned to an agent and decremented when the job finishes (success or failure).
 
@@ -838,10 +844,11 @@ interface MessageJob {
 
 **Worker logic (per job):**
 1. Verify message exists in DB AND `status != 'CANCELLED'` — skip silently if missing or cancelled
-2. Resolve agent (cap-aware selection):
-   - Collect all ONLINE agents sorted by `activeJobCount` (ascending); if `agentId` is set, check that agent first
+2. Resolve agent (round-robin, cap-aware):
+   - Collect all ONLINE agents sorted by `agentId` (stable order); if `agentId` is set, move that agent to front
+   - Starting from a persistent round-robin index, iterate candidates in sequence
    - For each candidate, query `DailySendLog` — skip agents where today's count >= `agent.dailySendCap`
-   - Use the first candidate that is still under its cap
+   - Use the first candidate still under its cap; advance round-robin index
    - If no agents are online: poll every 10s, up to 10 min, then fail the job
    - If all online agents have hit their cap: reschedule job via `job.moveToDelayed(msUntilNextOpen())` and return — **no sleeping inside the job**
 3. Increment `agent:{agentId}:active_jobs` in Redis
@@ -1214,6 +1221,7 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 ### `/campaigns` — Campaign List
 - Status badges: DRAFT / RUNNING / PAUSED / COMPLETED / CANCELLED
 - Progress bar: `sent/total`
+- **Already Replied** column — shows `alreadyRepliedCount` (unique contacts who replied for that `bulan` + `campaignType`, capped at `targetRepliesPerArea` per area — excess replies beyond target are ignored) alongside the bulan and type label (e.g. "42 Desember · STIK"). Helps the user see useful reply coverage across all campaigns for the same month + type.
 - Actions: View, Cancel
 
 ### `/campaigns/new` — Create Campaign

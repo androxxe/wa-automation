@@ -33,11 +33,47 @@ router.get('/', async (_req, res) => {
     const replyCountMap     = new Map(replyCounts.map((r)     => [r.campaignId, r._count.id]))
     const cancelledCountMap = new Map(cancelledCounts.map((r) => [r.campaignId, r._count.id]))
 
-    const data = campaigns.map((c) => ({
-      ...c,
-      replyCount:     replyCountMap.get(c.id)     ?? 0,
-      cancelledCount: cancelledCountMap.get(c.id) ?? 0,
-    }))
+    // Count unique contacts who already replied per (bulan, campaignType) combo,
+    // grouped by area and capped at targetRepliesPerArea per area.
+    // E.g. if target=20 and an area has 25 replies, only 20 count — excess is ignored.
+    const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
+    const defaultTarget = appConfig?.defaultTargetRepliesPerArea ?? 20
+
+    const bulanTypeKeys = [...new Set(campaigns.map((c) => `${c.bulan}::${c.campaignType}`))]
+    // Store per-area reply counts for each (bulan, campaignType) so different campaigns
+    // can apply their own target cap.
+    const repliedByAreaMap = new Map<string, Array<{ areaId: string; count: number }>>()
+    await Promise.all(
+      bulanTypeKeys.map(async (key) => {
+        const [bulan, campaignType] = key.split('::')
+        const byArea = await db.contact.groupBy({
+          by:    ['areaId'],
+          where: {
+            messages: {
+              some: {
+                reply:    { isNot: null },
+                campaign: { bulan, campaignType },
+              },
+            },
+          },
+          _count: { id: true },
+        })
+        repliedByAreaMap.set(key, byArea.map((r) => ({ areaId: r.areaId, count: r._count.id })))
+      }),
+    )
+
+    const data = campaigns.map((c) => {
+      const target = c.targetRepliesPerArea ?? defaultTarget
+      const byArea = repliedByAreaMap.get(`${c.bulan}::${c.campaignType}`) ?? []
+      const alreadyRepliedCount = byArea.reduce((sum, a) => sum + Math.min(a.count, target), 0)
+
+      return {
+        ...c,
+        replyCount:     replyCountMap.get(c.id)     ?? 0,
+        cancelledCount: cancelledCountMap.get(c.id) ?? 0,
+        alreadyRepliedCount,
+      }
+    })
 
     res.json({ ok: true, data })
   } catch (err) {

@@ -27,6 +27,9 @@ const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? 
 // Per-agent session send counters (in-memory; reset on worker restart)
 const sessionSendCount = new Map<number, number>()
 
+// Round-robin index — persists across jobs, resets on worker restart
+let roundRobinIndex = 0
+
 // In-memory tracker: when each phone was last polled for replies (epoch ms)
 const lastPolledAt = new Map<string, number>()
 
@@ -95,7 +98,12 @@ const worker = new Worker<MessageJob>(
         ...runningSessionAgents.map((a) => a.agentId),
       ])
 
-      const online = agentManager.getAllAgents()
+      // Force a fresh DOM-based status check on every agent so we never assign
+      // work to an agent that was banned or disconnected since the last poll.
+      const allAgents = agentManager.getAllAgents()
+      await Promise.all(allAgents.map(({ agent: a }) => a.getStatus()))
+
+      const online = allAgents
         .filter(({ agent: a, agentId }) =>
           a.status === 'connected' && !excludedAgentIds.has(agentId),
         )
@@ -106,23 +114,23 @@ const worker = new Worker<MessageJob>(
         continue
       }
 
-      // Sort by activity with random tiebreaker so load is spread across all agents.
-      // Without the tiebreaker, a stable sort always puts the lower-ID agent first
-      // when both are idle (activeJobCount === 0), causing only one agent to ever work.
-      online.sort((a, b) => {
-        const diff = a.agent.activeJobCount - b.agent.activeJobCount
-        return diff !== 0 ? diff : Math.random() - 0.5
-      })
+      // Round-robin: sort by agentId for a stable order, then rotate starting
+      // position using a persistent index so each job picks the next agent in
+      // sequence. This distributes sends evenly across agents — important for
+      // minimising per-account volume and reducing WhatsApp ban risk.
+      online.sort((a, b) => a.agentId - b.agentId)
       if (preferredAgentId) {
         const idx = online.findIndex(({ agentId }) => agentId === preferredAgentId)
         if (idx > 0) online.unshift(...online.splice(idx, 1))
       }
 
-      // Pick first agent under its daily cap
-      for (const { agent: candidate } of online) {
+      // Pick the next agent under its daily cap, starting from roundRobinIndex
+      for (let i = 0; i < online.length; i++) {
+        const candidate = online[(roundRobinIndex + i) % online.length].agent
         const sent = await todaySendCount(candidate.agentId)
         if (sent < candidate.dailySendCap) {
           agent = candidate
+          roundRobinIndex = (roundRobinIndex + i + 1) % online.length
           break
         }
       }

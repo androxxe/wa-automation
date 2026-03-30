@@ -12,6 +12,7 @@ interface Campaign {
   totalCount: number
   sentCount: number
   replyCount: number
+  alreadyRepliedCount: number
   targetRepliesPerArea: number | null
   areas: { areaId: string }[]
   createdAt: string
@@ -63,17 +64,17 @@ export default function Campaigns() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['Name', 'Type', 'Month', 'Status', 'Progress', 'Replies', 'Created', 'Actions'].map((h) => (
+              {['Name', 'Type', 'Month', 'Status', 'Progress', 'Replies', 'Already Replied', 'Created', 'Actions'].map((h) => (
                 <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y">
             {isLoading && (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+              <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
             )}
             {!isLoading && campaigns.length === 0 && (
-              <tr><td colSpan={8} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
+              <tr><td colSpan={9} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
             {campaigns.map((c) => {
               const progress    = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
@@ -116,6 +117,17 @@ export default function Campaigns() {
                       )}
                       {targetMet && <span className="text-xs text-green-600 font-bold">✓</span>}
                     </div>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={`font-semibold ${c.alreadyRepliedCount > 0 ? 'text-emerald-600' : 'text-muted-foreground'}`}
+                      title={`Unique contacts who replied for ${c.bulan} ${c.campaignType}`}
+                    >
+                      {c.alreadyRepliedCount}
+                    </span>
+                    <span className="text-muted-foreground text-xs ml-1">
+                      {c.bulan} · {c.campaignType}
+                    </span>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
                     {new Date(c.createdAt).toLocaleDateString()}
