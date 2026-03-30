@@ -1,4 +1,4 @@
-import { Worker, type Job } from 'bullmq'
+import { Worker, DelayedError, type Job } from 'bullmq'
 import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
@@ -140,7 +140,7 @@ const worker = new Worker<MessageJob>(
         const delay = msUntilNextOpen()
         console.log(`[worker] all agents at daily cap, rescheduling in ${Math.round(delay / 60000)}m`)
         await job.moveToDelayed(Date.now() + delay, token)
-        return
+        throw new DelayedError()
       }
     }
 
@@ -164,7 +164,7 @@ const worker = new Worker<MessageJob>(
         log(`outside working hours, rescheduling in ${Math.round(delay / 60000)}m`)
         agent.activeJobCount--
         await job.moveToDelayed(Date.now() + delay, token)
-        return
+        throw new DelayedError()
       }
 
       // 2. Mid-session break (per agent — uses agent's own break settings)
@@ -254,6 +254,10 @@ worker.on('failed', async (job, err) => {
   }
 })
 
+worker.on('error', (err) => {
+  console.error('[worker] worker error:', err)
+})
+
 // ─── Phone-check worker ───────────────────────────────────────────────────────
 
 const phoneCheckWorker = new Worker<PhoneCheckJob>(
@@ -288,12 +292,16 @@ const phoneCheckWorker = new Worker<PhoneCheckJob>(
     }
   },
   // Concurrency = number of agents — each job picks a different agent for parallel checking.
-  { connection: redis as never, concurrency: parseInt(process.env.PHONE_CHECK_CONCURRENCY ?? '3', 10) },
+  { connection: redis as never, concurrency: parseInt(process.env.PHONE_CHECK_CONCURRENCY ?? '3', 10), lockDuration: 10 * 60 * 1000 },
 )
 
 phoneCheckWorker.on('failed', (job, err) => {
   console.error(`[phone-check] failed for ${job?.data.phone}:`, err)
   if (job?.data.phone) redis.del(`wa:checking:${job.data.phone}`).catch(() => {})
+})
+
+phoneCheckWorker.on('error', (err) => {
+  console.error('[phone-check] worker error:', err)
 })
 
 // ─── Reply polling ────────────────────────────────────────────────────────────
