@@ -22,6 +22,7 @@ export type MessageStatus =
   | 'READ'
   | 'FAILED'
   | 'CANCELLED'
+  | 'EXPIRED'
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 

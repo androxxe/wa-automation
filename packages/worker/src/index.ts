@@ -289,9 +289,10 @@ async function expireOldMessages(): Promise<number> {
   const expiryCutoff = new Date(Date.now() - REPLY_EXPIRE_DAYS * 24 * 60 * 60 * 1000)
   const result = await db.message.updateMany({
     where: {
-      status: { in: ['SENT', 'DELIVERED', 'READ'] },
-      reply:  null,
-      sentAt: { lt: expiryCutoff },
+      status:    { in: ['SENT', 'DELIVERED', 'READ'] },
+      reply:     null,
+      sentAt:    { lt: expiryCutoff },
+      updatedAt: { lt: expiryCutoff }, // skip recently un-expired messages (grace period)
     },
     data: { status: 'EXPIRED' },
   })

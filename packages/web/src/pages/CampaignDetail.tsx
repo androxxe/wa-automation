@@ -314,6 +314,7 @@ interface Campaign {
   failedCount:    number
   replyCount:     number
   cancelledCount: number
+  expiredCount:   number
   targetRepliesPerArea: number | null
   areas:        CampaignArea[]
 }
@@ -345,6 +346,7 @@ const MSG_STATUS_COLORS: Record<string, string> = {
   CANCELLED: 'bg-gray-100 text-gray-500',
   QUEUED:    'bg-purple-100 text-purple-700',
   PENDING:   'bg-gray-100 text-gray-500',
+  EXPIRED:   'bg-orange-100 text-orange-600',
 }
 
 export default function CampaignDetail() {
@@ -449,6 +451,22 @@ export default function CampaignDetail() {
     onError: (e) => alert(String(e)),
   })
 
+  const unexpireMutation = useMutation({
+    mutationFn: (messageIds?: string[]) =>
+      apiFetch<{ unexpired: number }>(
+        `/api/campaigns/${id}/unexpire`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(messageIds ? { messageIds } : {}) },
+      ),
+    onSuccess: (result) => {
+      alert(result.unexpired > 0
+        ? `${result.unexpired} message${result.unexpired !== 1 ? 's' : ''} moved back to SENT for reply polling.`
+        : 'No expired messages to unexpire.')
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
+
   if (!campaign) return <div className="text-muted-foreground py-8 text-center">Loading…</div>
 
   const totalPages = Math.ceil(total / 50)
@@ -481,7 +499,7 @@ export default function CampaignDetail() {
         </div>
 
         {/* Stats */}
-        <div className="grid gap-4 md:grid-cols-7">
+        <div className="grid gap-4 md:grid-cols-8">
           {[
             { label: 'Total',     value: campaign.totalCount,     color: 'text-foreground' },
             { label: 'Sent',      value: campaign.sentCount,      color: 'text-blue-600' },
@@ -489,6 +507,7 @@ export default function CampaignDetail() {
             { label: 'Read',      value: campaign.readCount,      color: 'text-green-600' },
             { label: 'Failed',    value: campaign.failedCount,    color: 'text-red-500' },
             { label: 'Cancelled', value: campaign.cancelledCount, color: 'text-orange-500' },
+            { label: 'Expired',   value: campaign.expiredCount,   color: 'text-orange-600' },
             { label: 'Replies',   value: campaign.replyCount,     color: 'text-purple-600' },
           ].map(({ label, value, color }) => (
             <div key={label} className="rounded-lg border bg-card p-4 text-center">
@@ -539,6 +558,16 @@ export default function CampaignDetail() {
               className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50"
             >
               {retryFailedMutation.isPending ? 'Retrying…' : `Retry Failed (${campaign.failedCount})`}
+            </button>
+          )}
+          {campaign.expiredCount > 0 && !['CANCELLED', 'DRAFT'].includes(campaign.status) && (
+            <button
+              type="button"
+              onClick={() => unexpireMutation.mutate(undefined)}
+              disabled={unexpireMutation.isPending}
+              className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50"
+            >
+              {unexpireMutation.isPending ? 'Unexpiring…' : `Unexpire (${campaign.expiredCount})`}
             </button>
           )}
         </div>
@@ -662,6 +691,19 @@ export default function CampaignDetail() {
                           title="Cancel this message"
                         >
                           &#x2715;
+                        </button>
+                      </div>
+                    ) : m.status === 'EXPIRED' ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-orange-100 text-orange-600">EXPIRED</span>
+                        <button
+                          type="button"
+                          onClick={() => unexpireMutation.mutate([m.id])}
+                          disabled={unexpireMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-gray-300 hover:bg-accent disabled:opacity-50"
+                          title="Unexpire — move back to SENT for reply polling"
+                        >
+                          Unexpire
                         </button>
                       </div>
                     ) : m.status === 'QUEUED' ? (

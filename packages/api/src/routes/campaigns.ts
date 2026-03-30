@@ -99,11 +99,12 @@ router.get('/:id', async (req, res) => {
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
 
-    const cancelledCount = await db.message.count({
-      where: { campaignId: campaign.id, status: 'CANCELLED' },
-    })
+    const [cancelledCount, expiredCount] = await Promise.all([
+      db.message.count({ where: { campaignId: campaign.id, status: 'CANCELLED' } }),
+      db.message.count({ where: { campaignId: campaign.id, status: 'EXPIRED' } }),
+    ])
 
-    res.json({ ok: true, data: { ...campaign, cancelledCount } })
+    res.json({ ok: true, data: { ...campaign, cancelledCount, expiredCount } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -603,6 +604,41 @@ router.post('/:id/retry-failed', async (req, res) => {
     await messageQueue.addBulk(jobs as never)
 
     res.json({ ok: true, data: { retried: retryable.length, skipped } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── POST /api/campaigns/:id/unexpire ─────────────────────────────────────────
+// Reset EXPIRED messages back to SENT so they re-enter the reply polling pool.
+// Body: { messageIds?: string[] } — if omitted, un-expires ALL expired messages.
+// The worker's expireOldMessages() uses an updatedAt guard so un-expired messages
+// get a fresh REPLY_EXPIRE_DAYS window before they can be expired again.
+
+router.post('/:id/unexpire', async (req, res) => {
+  const { messageIds } = req.body as { messageIds?: string[] }
+  const hasFilter = Array.isArray(messageIds) && messageIds.length > 0
+
+  try {
+    const campaign = await db.campaign.findUnique({ where: { id: req.params.id } })
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Not found' }); return }
+    if (['CANCELLED', 'DRAFT'].includes(campaign.status)) {
+      res.status(400).json({ ok: false, error: `Cannot unexpire messages in a ${campaign.status.toLowerCase()} campaign` })
+      return
+    }
+
+    const result = await db.message.updateMany({
+      where: {
+        campaignId: req.params.id,
+        status:     'EXPIRED',
+        reply:      null,
+        ...(hasFilter && { id: { in: messageIds } }),
+      },
+      data: { status: 'SENT' },
+    })
+
+    console.log(`[campaigns] un-expired ${result.count} message(s) for campaign ${req.params.id}`)
+    res.json({ ok: true, data: { unexpired: result.count } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
