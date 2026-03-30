@@ -375,10 +375,11 @@ router.post('/:id/cancel', async (req, res) => {
 // ─── POST /api/campaigns/:id/topup ───────────────────────────────────────────
 // Enqueue the next batch of fresh contacts for areas that sent all their initial
 // batch but haven't reached the reply target yet.
-// Body: { areaId? } — omit to top-up ALL eligible areas in the campaign.
+// Body: { areaId?, count? } — omit areaId to top-up ALL eligible areas.
+// count: manual number of contacts to top-up per area (overrides formula).
 
 router.post('/:id/topup', async (req, res) => {
-  const { areaId: specificAreaId } = req.body as { areaId?: string }
+  const { areaId: specificAreaId, count: manualCount } = req.body as { areaId?: string; count?: number }
 
   try {
     const campaign = await db.campaign.findUnique({
@@ -394,7 +395,7 @@ router.post('/:id/topup', async (req, res) => {
     const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
     const target    = campaign.targetRepliesPerArea ?? appConfig?.defaultTargetRepliesPerArea ?? 20
     const rate      = campaign.expectedReplyRate    ?? appConfig?.defaultExpectedReplyRate    ?? 0.5
-    const batchSize = Math.ceil(target / rate)
+    const batchSize = (manualCount && manualCount > 0) ? manualCount : Math.ceil(target / rate)
 
     const areaEntries = specificAreaId
       ? campaign.areas.filter((ca) => ca.areaId === specificAreaId)

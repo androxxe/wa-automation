@@ -411,10 +411,10 @@ export default function CampaignDetail() {
   })
 
   const topupMutation = useMutation({
-    mutationFn: (areaId?: string) =>
+    mutationFn: ({ areaId, count }: { areaId?: string; count?: number }) =>
       apiFetch<{ totalEnqueued: number; areas: { areaName: string; enqueued: number; skipped: string | null }[] }>(
         `/api/campaigns/${id}/topup`,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(areaId ? { areaId } : {}) },
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...(areaId ? { areaId } : {}), ...(count ? { count } : {}) }) },
       ),
     onSuccess: (result) => {
       const summary = result.areas.filter((a) => a.enqueued > 0).map((a) => `${a.areaName}: +${a.enqueued}`).join(', ')
@@ -423,6 +423,17 @@ export default function CampaignDetail() {
     },
     onError: (e) => alert(String(e)),
   })
+
+  const promptTopup = (areaId?: string) => {
+    const input = prompt('How many contacts to top up per area?\n(Leave empty to use default formula)')
+    if (input === null) return // cancelled
+    const count = input.trim() === '' ? undefined : parseInt(input, 10)
+    if (count !== undefined && (isNaN(count) || count <= 0)) {
+      alert('Please enter a valid positive number.')
+      return
+    }
+    topupMutation.mutate({ areaId, count })
+  }
 
   const deleteMessageMutation = useMutation({
     mutationFn: (messageId: string) =>
@@ -580,7 +591,7 @@ export default function CampaignDetail() {
               {['RUNNING', 'PAUSED'].includes(campaign.status) && (
                 <button
                    type="button"
-                   onClick={() => topupMutation.mutate(undefined)}
+                   onClick={() => promptTopup(undefined)}
                    disabled={topupMutation.isPending}
                    className="text-xs border px-2.5 py-1 rounded-md hover:bg-accent disabled:opacity-50"
                  >
@@ -624,7 +635,7 @@ export default function CampaignDetail() {
                         {needsTopup && ['RUNNING', 'PAUSED'].includes(campaign.status) && (
                           <button
                             type="button"
-                            onClick={() => topupMutation.mutate(ca.areaId)}
+                            onClick={() => promptTopup(ca.areaId)}
                             disabled={topupMutation.isPending}
                             className="text-xs border px-2 py-0.5 rounded hover:bg-accent disabled:opacity-50"
                           >
