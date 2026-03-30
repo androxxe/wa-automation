@@ -148,6 +148,13 @@ const worker = new Worker<MessageJob>(
     const usedAgentId = agent.agentId
     const log = (msg: string) => console.log(`[agent:${usedAgentId}] ${msg}`)
 
+    // Record which agent will handle this message BEFORE attempting the send,
+    // so even if the send fails the agentId is persisted for reply polling.
+    await db.message.update({
+      where: { id: messageId },
+      data:  { agentId: usedAgentId },
+    }).catch(() => {})
+
     try {
       log(`picked up msg:${messageId} → ${phone}`)
 
@@ -310,13 +317,15 @@ async function expireOldMessages(): Promise<number> {
   return result.count
 }
 
-// Returns Map<phone, sentAt> — batched and prioritised so each poll cycle is bounded.
-async function getUnrepliedPhones(): Promise<Map<string, Date>> {
+// Returns Map<agentId, Map<phone, sentAt>> — grouped by sending agent so each agent
+// only polls replies for conversations it owns. Batched and prioritised per agent.
+async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date>>> {
   const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const messages = await db.message.findMany({
     where:  {
       status:   { in: ['SENT', 'DELIVERED', 'READ'] },
       reply:    null,
+      agentId:  { not: null },
       campaign: {
         OR: [
           { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
@@ -324,45 +333,49 @@ async function getUnrepliedPhones(): Promise<Map<string, Date>> {
         ],
       },
     },
-    select: { phone: true, sentAt: true },
+    select: { phone: true, sentAt: true, agentId: true },
   })
 
-  // Deduplicate by phone, keeping the MOST RECENT sentAt per phone
-  const map = new Map<string, Date>()
+  // Group by agentId, deduplicating by phone within each agent (keep MOST RECENT sentAt)
+  const byAgent = new Map<number, Map<string, Date>>()
   for (const m of messages) {
-    const existing = map.get(m.phone)
+    const agentId = m.agentId!
+    if (!byAgent.has(agentId)) byAgent.set(agentId, new Map())
+    const agentMap = byAgent.get(agentId)!
     const ts = m.sentAt ?? new Date(0)
-    if (!existing || ts > existing) map.set(m.phone, ts)
+    const existing = agentMap.get(m.phone)
+    if (!existing || ts > existing) agentMap.set(m.phone, ts)
   }
 
-  // Sort by priority: never-polled first, then oldest-polled, then most-recent sentAt.
-  // Phones polled within the cooldown window are deprioritised to the end.
+  // Apply prioritisation + batching per agent
+  const result = new Map<number, Map<string, Date>>()
   const now = Date.now()
-  const entries = [...map.entries()].sort((a, b) => {
-    const aLastPoll = lastPolledAt.get(a[0]) ?? 0
-    const bLastPoll = lastPolledAt.get(b[0]) ?? 0
-    const aInCooldown = aLastPoll > 0 && (now - aLastPoll) < REPLY_REPOLL_COOLDOWN
-    const bInCooldown = bLastPoll > 0 && (now - bLastPoll) < REPLY_REPOLL_COOLDOWN
 
-    // Phones in cooldown go to the back
-    if (aInCooldown !== bInCooldown) return aInCooldown ? 1 : -1
-    // Among non-cooldown: never-polled first (lastPoll=0), then oldest-polled
-    if (aLastPoll !== bLastPoll) return aLastPoll - bLastPoll
-    // Tie-break: most recently sent first
-    return b[1].getTime() - a[1].getTime()
-  })
+  for (const [agentId, phoneMap] of byAgent) {
+    const entries = [...phoneMap.entries()].sort((a, b) => {
+      const aLastPoll = lastPolledAt.get(a[0]) ?? 0
+      const bLastPoll = lastPolledAt.get(b[0]) ?? 0
+      const aInCooldown = aLastPoll > 0 && (now - aLastPoll) < REPLY_REPOLL_COOLDOWN
+      const bInCooldown = bLastPoll > 0 && (now - bLastPoll) < REPLY_REPOLL_COOLDOWN
 
-  // Slice to batch size
-  const batched = new Map<string, Date>()
-  for (const [phone, sentAt] of entries.slice(0, REPLY_BATCH_SIZE)) {
-    batched.set(phone, sentAt)
+      if (aInCooldown !== bInCooldown) return aInCooldown ? 1 : -1
+      if (aLastPoll !== bLastPoll) return aLastPoll - bLastPoll
+      return b[1].getTime() - a[1].getTime()
+    })
+
+    const batched = new Map<string, Date>()
+    for (const [phone, sentAt] of entries.slice(0, REPLY_BATCH_SIZE)) {
+      batched.set(phone, sentAt)
+    }
+
+    if (phoneMap.size > REPLY_BATCH_SIZE) {
+      console.log(`[poll] agent:${agentId} has ${phoneMap.size} unreplied phones, batched to ${batched.size}`)
+    }
+
+    if (batched.size > 0) result.set(agentId, batched)
   }
 
-  if (map.size > REPLY_BATCH_SIZE) {
-    console.log(`[poll] ${map.size} total unreplied phones, batched to ${batched.size}`)
-  }
-
-  return batched
+  return result
 }
 
 async function handleReply(params: {
@@ -551,11 +564,6 @@ function startReplyPolling() {
   let _isPolling = false
 
   const poll = async () => {
-    const online = agentManager.getAllAgents().find(({ agent }) => agent.status === 'connected')
-    if (!online) {
-      console.log('[poll] skipping — no agent connected')
-      return
-    }
     if (_isPolling) {
       console.log('[poll] previous poll still running, skipping this tick')
       return
@@ -565,25 +573,40 @@ function startReplyPolling() {
       // 1. Expire old unreplied messages first (shrinks the pool permanently)
       await expireOldMessages()
 
-      // 2. Get batched + prioritised unreplied phones
-      const unrepliedPhones = await getUnrepliedPhones()
-      if (unrepliedPhones.size === 0) return
-      console.log(`[agent:${online.agentId}][poll] checking ${unrepliedPhones.size} unreplied phone(s)`)
-      await online.agent.pollReplies(handleReply, unrepliedPhones as Map<string, Date>, handleStaleMessage)
+      // 2. Get unreplied phones grouped by sending agent
+      const byAgent = await getUnrepliedPhonesByAgent()
+      if (byAgent.size === 0) return
 
-      // 3. Update lastPolledAt for all phones in this batch
-      const now = Date.now()
-      for (const phone of unrepliedPhones.keys()) {
-        lastPolledAt.set(phone, now)
+      // 3. Each connected agent polls only its own sent phones
+      const allAgents = agentManager.getAllAgents()
+      let polledAny = false
+
+      for (const [agentId, phones] of byAgent) {
+        const entry = allAgents.find(({ agentId: id }) => id === agentId)
+        if (!entry || entry.agent.status !== 'connected') {
+          // Sending agent is offline — skip, we can't check its chats from another session
+          continue
+        }
+
+        console.log(`[agent:${agentId}][poll] checking ${phones.size} unreplied phone(s)`)
+        await entry.agent.pollReplies(handleReply, phones, handleStaleMessage)
+        polledAny = true
+
+        // 4. Update lastPolledAt for all phones polled by this agent
+        const now = Date.now()
+        for (const phone of phones.keys()) {
+          lastPolledAt.set(phone, now)
+        }
       }
 
-      // 4. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
+      // 5. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
+      const now = Date.now()
       const staleThreshold = now - REPLY_REPOLL_COOLDOWN * 2
       for (const [phone, ts] of lastPolledAt) {
         if (ts < staleThreshold) lastPolledAt.delete(phone)
       }
 
-      console.log(`[agent:${online.agentId}][poll] done`)
+      if (polledAny) console.log('[poll] done')
     } catch (err) {
       console.error('[worker] reply poll error:', err)
     } finally {

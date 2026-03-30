@@ -4,6 +4,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { AppConfigData } from '@aice/shared'
 
+interface UnexpireResult { unexpired: number }
+
 const DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
 
 function formatDays(days: number[]): string {
@@ -56,6 +58,21 @@ export default function Settings() {
       setSaved(true)
       setTimeout(() => setSaved(false), 2500)
     },
+  })
+
+  const unexpireAllMutation = useMutation({
+    mutationFn: () =>
+      apiFetch<UnexpireResult>('/api/campaigns/unexpire-all', {
+        method: 'POST',
+      }),
+    onSuccess: (result) => {
+      alert(
+        result.unexpired > 0
+          ? `${result.unexpired} message${result.unexpired !== 1 ? 's' : ''} moved back to SENT for reply polling.`
+          : 'No expired messages to unexpire.',
+      )
+    },
+    onError: (e) => alert(String(e)),
   })
 
   const effectiveTarget = parseInt(target) || 20
@@ -152,6 +169,35 @@ export default function Settings() {
         ) : (
           <p className="text-sm text-muted-foreground">Loading...</p>
         )}
+      </div>
+
+      <div className="rounded-lg border bg-card p-5 space-y-3">
+        <h3 className="font-semibold">Maintenance</h3>
+        <p className="text-xs text-muted-foreground">
+          Actions for recovering from issues. Use with care.
+        </p>
+        <div className="space-y-2">
+          <div className="flex items-start gap-4">
+            <div className="flex-1">
+              <p className="text-sm font-medium">Unexpire all messages</p>
+              <p className="text-xs text-muted-foreground">
+                Moves all EXPIRED messages across every campaign back to SENT so they re-enter the reply polling pool.
+                Use this if messages were expired before their replies could be checked (e.g. after a polling bug fix).
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                if (confirm('Unexpire ALL expired messages across every campaign? They will be moved back to SENT for reply polling.'))
+                  unexpireAllMutation.mutate()
+              }}
+              disabled={unexpireAllMutation.isPending}
+              className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50 whitespace-nowrap"
+            >
+              {unexpireAllMutation.isPending ? 'Unexpiring...' : 'Unexpire All'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

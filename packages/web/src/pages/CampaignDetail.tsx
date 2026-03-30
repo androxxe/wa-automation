@@ -563,7 +563,7 @@ export default function CampaignDetail() {
           {campaign.expiredCount > 0 && !['CANCELLED', 'DRAFT'].includes(campaign.status) && (
             <button
               type="button"
-              onClick={() => unexpireMutation.mutate(undefined)}
+              onClick={() => { if (confirm(`Unexpire ${campaign.expiredCount} expired message(s)? They will be moved back to SENT for reply polling.`)) unexpireMutation.mutate(undefined) }}
               disabled={unexpireMutation.isPending}
               className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50"
             >
@@ -698,7 +698,7 @@ export default function CampaignDetail() {
                         <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-orange-100 text-orange-600">EXPIRED</span>
                         <button
                           type="button"
-                          onClick={() => unexpireMutation.mutate([m.id])}
+                          onClick={() => { if (confirm('Unexpire this message? It will be moved back to SENT for reply polling.')) unexpireMutation.mutate([m.id]) }}
                           disabled={unexpireMutation.isPending}
                           className="text-xs px-1.5 py-0.5 rounded border border-gray-300 hover:bg-accent disabled:opacity-50"
                           title="Unexpire — move back to SENT for reply polling"

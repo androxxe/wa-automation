@@ -344,7 +344,7 @@ export class BrowserAgent {
         await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
         return false
       }
-      return true
+      return result === 'registered'
     })
   }
 

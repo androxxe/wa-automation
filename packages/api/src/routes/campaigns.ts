@@ -680,6 +680,29 @@ router.post('/:id/unexpire', async (req, res) => {
   }
 })
 
+// ─── POST /api/campaigns/unexpire-all ────────────────────────────────────────
+// Reset ALL expired messages across every campaign back to SENT so they
+// re-enter the reply polling pool. Useful after fixing reply-polling bugs
+// that may have caused messages to expire without being properly polled.
+
+router.post('/unexpire-all', async (_req, res) => {
+  try {
+    const result = await db.message.updateMany({
+      where: {
+        status: 'EXPIRED',
+        reply:  null,
+        campaign: { status: { notIn: ['CANCELLED', 'DRAFT'] } },
+      },
+      data: { status: 'SENT' },
+    })
+
+    console.log(`[campaigns] globally un-expired ${result.count} message(s)`)
+    res.json({ ok: true, data: { unexpired: result.count } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // ─── DELETE /api/campaigns/:id/messages/:messageId ───────────────────────────
 // Cancel a single QUEUED or FAILED message (sets status → CANCELLED).
 // Pulls the job from BullMQ if still queued.
