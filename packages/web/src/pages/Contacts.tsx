@@ -156,8 +156,19 @@ export default function Contacts() {
   const [statusFilter, setStatusFilter]       = useState('')
   const [typeFilter, setTypeFilter]           = useState('')
   const [areaFilter, setAreaFilter]           = useState('')
+  const [searchInput, setSearchInput]         = useState('')
+  const [searchQuery, setSearchQuery]         = useState('')
   const [validateMsg, setValidateMsg]         = useState<string | null>(null)
   const [validasiModalOpen, setValidasiModal] = useState(false)
+
+  // Debounce search input — waits 400ms after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery(searchInput)
+      setPage(1)
+    }, 400)
+    return () => clearTimeout(timer)
+  }, [searchInput])
 
   const { data: allAreas = [] } = useQuery<Area[]>({
     queryKey: ['areas'],
@@ -180,9 +191,10 @@ export default function Contacts() {
   if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
   if (typeFilter)                   params.set('contactType', typeFilter)
   if (effectiveAreaFilter)          params.set('areaId', effectiveAreaFilter)
+  if (searchQuery)                  params.set('search', searchQuery)
 
   const { data, isLoading } = useQuery<ContactsPage>({
-    queryKey: ['contacts', page, statusFilter, typeFilter, effectiveAreaFilter],
+    queryKey: ['contacts', page, statusFilter, typeFilter, effectiveAreaFilter, searchQuery],
     queryFn:  () => apiFetch<ContactsPage>(`/api/contacts?${params}`),
   })
 
@@ -235,8 +247,19 @@ export default function Contacts() {
 
   const totalPages = data ? Math.ceil(data.total / 50) : 1
 
+  // Per-row validate mutation
+  const validateSingleMutation = useMutation({
+    mutationFn: (contactId: string) =>
+      apiFetch<{ queued: number }>(`/api/contacts/${contactId}/validate-wa`, { method: 'POST' }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['contacts'] })
+      queryClient.invalidateQueries({ queryKey: ['validate-wa-status'] })
+    },
+  })
+
   return (
     <div className="space-y-4">
+      {/* Row 1: Title + Search */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Contacts</h2>
@@ -244,37 +267,48 @@ export default function Contacts() {
             {data ? `${data.total.toLocaleString()} total` : 'Loading...'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Tipe filter */}
-          <select
-            value={typeFilter}
-            onChange={(e) => { setTypeFilter(e.target.value); setAreaFilter(''); setPage(1) }}
-            className="text-sm border rounded-md px-3 py-1.5 bg-background"
-          >
-            <option value="">Semua Tipe</option>
-            <option value="STIK">STIK</option>
-            <option value="KARDUS">KARDUS</option>
-          </select>
+        <input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Cari nama / no. HP…"
+          className="text-sm border rounded-md px-3 py-1.5 bg-background w-[280px] outline-none focus:ring-1 focus:ring-ring"
+        />
+      </div>
 
-          {/* Area searchable combobox */}
-          <AreaPicker
-            value={effectiveAreaFilter}
-            onChange={(id) => { setAreaFilter(id); setPage(1) }}
-            areas={pickerAreas}
-          />
+      {/* Row 2: Filters + Action buttons */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {/* Tipe filter */}
+        <select
+          value={typeFilter}
+          onChange={(e) => { setTypeFilter(e.target.value); setAreaFilter(''); setPage(1) }}
+          className="text-sm border rounded-md px-3 py-1.5 bg-background"
+        >
+          <option value="">Semua Tipe</option>
+          <option value="STIK">STIK</option>
+          <option value="KARDUS">KARDUS</option>
+        </select>
 
-          {/* Status filter */}
-          <select
-            value={statusFilter}
-            onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
-            className="text-sm border rounded-md px-3 py-1.5 bg-background"
-          >
-            <option value="">Semua Status</option>
-            <option value="unchecked">Belum dicek</option>
-            <option value="valid">Terdaftar</option>
-            <option value="invalid">Tidak valid</option>
-          </select>
+        {/* Area searchable combobox */}
+        <AreaPicker
+          value={effectiveAreaFilter}
+          onChange={(id) => { setAreaFilter(id); setPage(1) }}
+          areas={pickerAreas}
+        />
 
+        {/* Status filter */}
+        <select
+          value={statusFilter}
+          onChange={(e) => { setStatusFilter(e.target.value); setPage(1) }}
+          className="text-sm border rounded-md px-3 py-1.5 bg-background"
+        >
+          <option value="">Semua Status</option>
+          <option value="unchecked">Belum dicek</option>
+          <option value="valid">Terdaftar</option>
+          <option value="invalid">Tidak valid</option>
+        </select>
+
+        <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
             onClick={() => setValidasiModal(true)}
@@ -317,8 +351,8 @@ export default function Contacts() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['No', 'Store Name', 'Department', 'Area', 'Tipe', 'Phone (raw)', 'Phone (normalized)', 'Status WA', 'Exchange'].map((h) => (
-                <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
+              {['No', 'Store Name', 'Department', 'Area', 'Tipe', 'Phone (raw)', 'Phone (normalized)', 'Status WA', 'Aksi'].map((h) => (
+                <th key={h} className={`px-4 py-2.5 text-left font-medium ${h === 'Aksi' ? 'w-[1%]' : ''}`}>{h === 'Aksi' ? '' : h}</th>
               ))}
             </tr>
           </thead>
@@ -346,7 +380,19 @@ export default function Contacts() {
                 <td className="px-4 py-2.5">
                   <WaStatusBadge phoneValid={c.phoneValid} waChecked={c.waChecked} waChecking={c.waChecking} />
                 </td>
-                <td className="px-4 py-2.5 text-muted-foreground">{c.exchangeCount ?? '—'}</td>
+                <td className="px-4 py-2.5">
+                  {!c.waChecking && (
+                    <button
+                      type="button"
+                      onClick={() => validateSingleMutation.mutate(c.id)}
+                      disabled={validateSingleMutation.isPending}
+                      title={c.waChecked || !c.phoneValid ? 'Cek ulang nomor ini' : 'Validasi nomor ini'}
+                      className="text-xs px-2 py-0.5 rounded border hover:bg-accent transition-colors disabled:opacity-50"
+                    >
+                      {c.waChecked || !c.phoneValid ? 'Cek Ulang' : 'Validasi'}
+                    </button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

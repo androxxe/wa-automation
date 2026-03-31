@@ -1,4 +1,4 @@
-import { Worker, DelayedError, type Job } from 'bullmq'
+import { Worker, Queue, DelayedError, type Job } from 'bullmq'
 import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
@@ -637,6 +637,76 @@ function startReplyPolling() {
   }, 5000)
 }
 
+// ─── Startup reconciliation ───────────────────────────────────────────────────
+
+/**
+ * On worker startup, find messages stuck as QUEUED in MySQL that have no
+ * corresponding BullMQ job (e.g. Redis data was lost). Re-enqueue them so
+ * they get processed.
+ */
+async function reconcileStuckQueued(): Promise<void> {
+  const queue = new Queue<MessageJob>(QUEUE_NAME, { connection: redis as never })
+
+  try {
+    // 1. Find all QUEUED messages in RUNNING campaigns
+    const stuckMessages = await db.message.findMany({
+      where: {
+        status:   'QUEUED',
+        campaign: { status: 'RUNNING' },
+      },
+      include: {
+        campaign: { select: { id: true } },
+        contact:  { select: { id: true } },
+      },
+    })
+
+    if (stuckMessages.length === 0) {
+      console.log('[reconcile] no stuck QUEUED messages found')
+      return
+    }
+
+    console.log(`[reconcile] found ${stuckMessages.length} QUEUED message(s) in RUNNING campaigns`)
+
+    // 2. Get all existing job IDs from BullMQ (waiting + delayed + active)
+    const [waiting, delayed, active] = await Promise.all([
+      queue.getJobs(['waiting', 'prioritized'], 0, -1),
+      queue.getJobs(['delayed'], 0, -1),
+      queue.getJobs(['active'], 0, -1),
+    ])
+    const existingMessageIds = new Set<string>()
+    for (const job of [...waiting, ...delayed, ...active]) {
+      if (job?.data?.messageId) existingMessageIds.add(job.data.messageId)
+    }
+
+    // 3. Filter to only orphaned messages (no matching BullMQ job)
+    const orphaned = stuckMessages.filter((m) => !existingMessageIds.has(m.id))
+
+    if (orphaned.length === 0) {
+      console.log(`[reconcile] all ${stuckMessages.length} QUEUED message(s) have matching BullMQ jobs — no action needed`)
+      return
+    }
+
+    console.log(`[reconcile] ${orphaned.length} orphaned QUEUED message(s) — re-enqueueing to BullMQ`)
+
+    // 4. Re-enqueue orphaned messages
+    const jobs = orphaned.map((m) => ({
+      name: 'message',
+      data: {
+        messageId:  m.id,
+        campaignId: m.campaignId,
+        contactId:  m.contactId,
+        phone:      m.phone,
+        body:       m.body,
+      } satisfies MessageJob,
+    }))
+
+    await queue.addBulk(jobs)
+    console.log(`[reconcile] re-enqueued ${jobs.length} message(s) successfully`)
+  } finally {
+    await queue.close()
+  }
+}
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function startWarmCommandListener(): Promise<void> {
@@ -663,6 +733,11 @@ async function startWarmCommandListener(): Promise<void> {
 
 async function main() {
   await validateStartup()
+
+  // Re-enqueue any QUEUED messages orphaned by Redis data loss BEFORE
+  // agents come online and the worker starts picking up new jobs.
+  await reconcileStuckQueued()
+
   await agentManager.init(redis)
   await agentManager.startPollingStatus()
 

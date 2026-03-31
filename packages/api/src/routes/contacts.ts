@@ -22,7 +22,7 @@ router.get('/areas', async (_req, res) => {
 
 // GET /api/contacts
 router.get('/', async (req, res) => {
-  const { departmentId, areaId, contactType, phoneValid, waChecked, page = '1', limit = '50' } =
+  const { departmentId, areaId, contactType, phoneValid, waChecked, search, page = '1', limit = '50' } =
     req.query as Record<string, string>
 
   try {
@@ -32,6 +32,13 @@ router.get('/', async (req, res) => {
       ...(contactType  && { contactType }),
       ...(phoneValid !== undefined && phoneValid !== '' && { phoneValid: phoneValid === 'true' }),
       ...(waChecked  !== undefined && waChecked  !== '' && { waChecked:  waChecked  === 'true' }),
+      ...(search && {
+        OR: [
+          { storeName: { contains: search } },
+          { phoneRaw:  { contains: search } },
+          { phoneNorm: { contains: search } },
+        ],
+      }),
     }
 
     const [contacts, total] = await Promise.all([
@@ -311,6 +318,27 @@ router.post('/validate-wa/cancel', async (_req, res) => {
     console.log(`[api] validate-wa/cancel — drained ${phones.length} waiting jobs`)
 
     res.json({ ok: true, data: { cancelled: phones.length } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// POST /api/contacts/:id/validate-wa
+// Enqueue a single contact's phone for WA registration check (or re-check).
+router.post('/:id/validate-wa', async (req, res) => {
+  try {
+    const contact = await db.contact.findUnique({
+      where:  { id: req.params.id },
+      select: { id: true, phoneNorm: true },
+    })
+    if (!contact) { res.status(404).json({ ok: false, error: 'Contact not found' }); return }
+
+    const job = { name: `check:${contact.phoneNorm}`, data: { phone: contact.phoneNorm, contactId: contact.id } }
+    await phoneCheckQueue.add(job.name, job.data)
+    await redis.setex(WA_CHECKING_KEY(contact.phoneNorm), WA_CHECKING_TTL, '1')
+
+    console.log(`[api] validate-wa/single — queued ${contact.phoneNorm} (contact ${contact.id})`)
+    res.json({ ok: true, data: { queued: 1 } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

@@ -552,8 +552,9 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 
 | Method | Route | Description |
 |---|---|---|
-| `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked) |
+| `GET` | `/api/contacts` | List contacts (filter: dept, area, phoneValid, waChecked, **search**). `search` query param performs case-insensitive substring match against `storeName`, `phoneRaw`, and `phoneNorm` (OR). |
 | `GET` | `/api/contacts/:id` | Single contact detail |
+| `POST` | `/api/contacts/:id/validate-wa` | Queue a **single contact's phone** for WA registration check (or re-check). Enqueues one job for the contact's `phoneNorm`, sets the Redis checking flag. Used by the per-row "Validasi" / "Cek Ulang" button in the contacts table. |
 | `POST` | `/api/contacts/validate-wa` | Queue WA registration checks. Body: `{ areaIds?[], recheckAreaIds?[], areaId?, limitPerArea?, limit?, recheck? }`. Supports **multi-area selection** via `areaIds` array. `recheckAreaIds` is for already-validated areas that the user wants to re-check (all phones). `limitPerArea` caps contacts queued per area. Contacts are **deduplicated by `phoneNorm`** before enqueuing — one job per unique phone number regardless of how many Contact records share it (STIK + KARDUS same phone = one Playwright check). Default: only unchecked contacts. `recheck: true` re-checks all. |
 | `GET` | `/api/contacts/validate-wa/count` | Returns **all areas** with per-area counts: `{ unchecked, areaCount, areas: [{ areaId, name, contactType, unchecked, validated, registered, invalid, total }] }`. Includes fully-validated areas (unchecked=0) so the modal can show them as re-checkable. `registered` = confirmed on WA, `invalid` = bad format or not on WA. |
 | `GET` | `/api/contacts/validate-wa/status` | Live phone-check queue counts: `{ waiting, active, completed, failed, total }` |
