@@ -21,6 +21,7 @@ const REPLY_WINDOW_DAYS      = parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS ?
 const REPLY_EXPIRE_DAYS      = parseInt(process.env.REPLY_EXPIRE_DAYS ?? '3', 10)
 const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '30', 10)
 const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? '600000', 10)
+const REPLY_POLL_CONCURRENCY = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '2', 10)
 // dailySendCap, breakEvery, typeDelay are now per-agent (BrowserAgent fields).
 // Env vars remain as fallback defaults when an agent has no override.
 
@@ -578,8 +579,24 @@ async function handleStaleMessage(phone: string): Promise<void> {
   }
 }
 
+/**
+ * Run async functions with a concurrency limit (simple semaphore).
+ * All functions are executed; at most `limit` run at the same time.
+ */
+async function runWithConcurrency(fns: Array<() => Promise<void>>, limit: number): Promise<void> {
+  let idx = 0
+  const next = async (): Promise<void> => {
+    while (idx < fns.length) {
+      const fn = fns[idx++]
+      await fn()
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, fns.length) }, () => next())
+  await Promise.allSettled(workers)
+}
+
 function startReplyPolling() {
-  console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s`)
+  console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s (concurrency: ${REPLY_POLL_CONCURRENCY})`)
 
   let _isPolling = false
 
@@ -604,35 +621,39 @@ function startReplyPolling() {
       const byAgent = await getUnrepliedPhonesByAgent()
       if (byAgent.size === 0) return
 
-      // 3. Each connected agent polls its own sent phones — IN PARALLEL
+      // 3. Each connected agent polls its own sent phones — with LIMITED concurrency
       const allAgents = agentManager.getAllAgents()
       let polledAny = false
 
-      const pollTasks = [...byAgent].map(([agentId, phones]) => {
+      const pollFns: Array<() => Promise<void>> = []
+
+      for (const [agentId, phones] of byAgent) {
         const entry = allAgents.find(({ agentId: id }) => id === agentId)
         if (!entry || entry.agent.status !== 'connected') {
           // Sending agent is offline — skip, we can't check its chats from another session
-          return null
+          continue
         }
 
         console.log(`[agent:${agentId}][poll] checking ${phones.size} unreplied phone(s)`)
         polledAny = true
 
-        return entry.agent.pollReplies(handleReply, phones, handleStaleMessage)
-          .then(() => {
+        pollFns.push(async () => {
+          try {
+            await entry.agent.pollReplies(handleReply, phones, handleStaleMessage)
             // Update lastPolledAt for all phones polled by this agent
             const now = Date.now()
             for (const phone of phones.keys()) {
               lastPolledAt.set(phone, now)
             }
-          })
-          .catch((err) => {
+          } catch (err) {
             console.error(`[agent:${agentId}][poll] error:`, err)
-          })
-      }).filter(Boolean)
+          }
+        })
+      }
 
-      if (pollTasks.length > 0) {
-        await Promise.allSettled(pollTasks)
+      if (pollFns.length > 0) {
+        // Run at most REPLY_POLL_CONCURRENCY agents simultaneously
+        await runWithConcurrency(pollFns, REPLY_POLL_CONCURRENCY)
       }
 
       // 5. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)

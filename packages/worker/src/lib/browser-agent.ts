@@ -146,6 +146,8 @@ export class BrowserAgent {
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-default-apps',
+        '--disable-focus-on-navigate',
+        '--no-focus-on-launch',
       ],
       viewport:   null,
       userAgent:  USER_AGENT,
