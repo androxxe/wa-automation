@@ -198,6 +198,8 @@ model AppConfig {
   id                          String   @id @default("singleton")
   defaultTargetRepliesPerArea Int      @default(20)
   defaultExpectedReplyRate    Float    @default(0.5)
+  replyPollEnabled            Boolean  @default(true)
+  sendEnabled                 Boolean  @default(true)
   updatedAt                   DateTime @updatedAt
 }
 

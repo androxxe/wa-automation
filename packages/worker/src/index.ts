@@ -71,7 +71,17 @@ const worker = new Worker<MessageJob>(
       return
     }
 
-    // 0b. Resolve agent — pick the least-busy online agent that hasn't hit its daily cap.
+    // 0b. Check dynamic toggle — pause sending if disabled via Settings
+    {
+      const cfg = await db.appConfig.findUnique({ where: { id: 'singleton' } })
+      if (cfg && !cfg.sendEnabled) {
+        console.log(`[worker] sending disabled via settings, rescheduling msg:${messageId} in 30s`)
+        await job.moveToDelayed(Date.now() + 30_000, token)
+        throw new DelayedError()
+      }
+    }
+
+    // 0c. Resolve agent — pick the least-busy online agent that hasn't hit its daily cap.
     //     If all agents are capped, reschedule the job via BullMQ delayed queue (no sleeping).
     const AGENT_WAIT_TIMEOUT = 10 * 60 * 1000
     const agentWaitStart     = Date.now()
@@ -98,10 +108,12 @@ const worker = new Worker<MessageJob>(
         ...runningSessionAgents.map((a) => a.agentId),
       ])
 
-      // Force a fresh DOM-based status check on every agent so we never assign
-      // work to an agent that was banned or disconnected since the last poll.
+      // Use cached status from the 15s polling interval instead of forcing a
+      // DOM-based status check on every job. The old approach waited up to 30s
+      // per agent (180s total for 6 agents) before each message, severely
+      // limiting throughput. The 15s AgentManager polling is frequent enough
+      // to detect disconnections.
       const allAgents = agentManager.getAllAgents()
-      await Promise.all(allAgents.map(({ agent: a }) => a.getStatus()))
 
       const online = allAgents
         .filter(({ agent: a, agentId }) =>
@@ -578,6 +590,13 @@ function startReplyPolling() {
     }
     _isPolling = true
     try {
+      // Check dynamic toggle — skip entire poll cycle if disabled via Settings
+      const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
+      if (appConfig && !appConfig.replyPollEnabled) {
+        console.log('[poll] reply polling disabled via settings, skipping')
+        return
+      }
+
       // 1. Expire old unreplied messages first (shrinks the pool permanently)
       await expireOldMessages()
 
@@ -585,26 +604,35 @@ function startReplyPolling() {
       const byAgent = await getUnrepliedPhonesByAgent()
       if (byAgent.size === 0) return
 
-      // 3. Each connected agent polls only its own sent phones
+      // 3. Each connected agent polls its own sent phones — IN PARALLEL
       const allAgents = agentManager.getAllAgents()
       let polledAny = false
 
-      for (const [agentId, phones] of byAgent) {
+      const pollTasks = [...byAgent].map(([agentId, phones]) => {
         const entry = allAgents.find(({ agentId: id }) => id === agentId)
         if (!entry || entry.agent.status !== 'connected') {
           // Sending agent is offline — skip, we can't check its chats from another session
-          continue
+          return null
         }
 
         console.log(`[agent:${agentId}][poll] checking ${phones.size} unreplied phone(s)`)
-        await entry.agent.pollReplies(handleReply, phones, handleStaleMessage)
         polledAny = true
 
-        // 4. Update lastPolledAt for all phones polled by this agent
-        const now = Date.now()
-        for (const phone of phones.keys()) {
-          lastPolledAt.set(phone, now)
-        }
+        return entry.agent.pollReplies(handleReply, phones, handleStaleMessage)
+          .then(() => {
+            // Update lastPolledAt for all phones polled by this agent
+            const now = Date.now()
+            for (const phone of phones.keys()) {
+              lastPolledAt.set(phone, now)
+            }
+          })
+          .catch((err) => {
+            console.error(`[agent:${agentId}][poll] error:`, err)
+          })
+      }).filter(Boolean)
+
+      if (pollTasks.length > 0) {
+        await Promise.allSettled(pollTasks)
       }
 
       // 5. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)

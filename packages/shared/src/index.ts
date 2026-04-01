@@ -269,4 +269,7 @@ export interface AppConfigData {
   replyPollIntervalMs:      number
   campaignReplyWindowDays:  number
   phoneCheckConcurrency:    number
+  // Dynamic toggles — stored in DB, editable via Settings
+  replyPollEnabled:         boolean
+  sendEnabled:              boolean
 }

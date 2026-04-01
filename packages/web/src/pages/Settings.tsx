@@ -60,6 +60,34 @@ export default function Settings() {
     },
   })
 
+  const togglePollMutation = useMutation({
+    mutationFn: () =>
+      apiFetch('/api/config', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          replyPollEnabled: !config?.replyPollEnabled,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['config'] })
+    },
+  })
+
+  const toggleSendMutation = useMutation({
+    mutationFn: () =>
+      apiFetch('/api/config', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          sendEnabled: !config?.sendEnabled,
+        }),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['config'] })
+    },
+  })
+
   const unexpireAllMutation = useMutation({
     mutationFn: () =>
       apiFetch<UnexpireResult>('/api/campaigns/unexpire-all', {
@@ -132,6 +160,75 @@ export default function Settings() {
           </button>
           {saved && <span className="text-sm text-green-600">Saved!</span>}
         </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-5 space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="font-semibold">Reply Polling</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Automatically scan WhatsApp Web for new replies every {config ? `${(config.replyPollIntervalMs / 1000).toFixed(0)}s` : '...'}.
+              Disable to focus on sending only.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => togglePollMutation.mutate()}
+            disabled={!config || togglePollMutation.isPending}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${
+              config?.replyPollEnabled ? 'bg-primary' : 'bg-gray-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                config?.replyPollEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+        {config && (
+          <div className={`text-xs font-medium px-2 py-1 rounded inline-block ${
+            config.replyPollEnabled
+              ? 'bg-green-100 text-green-700'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {config.replyPollEnabled ? 'Enabled' : 'Disabled — sending only mode'}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border bg-card p-5 space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <h3 className="font-semibold">Send Messages</h3>
+            <p className="text-xs text-muted-foreground mt-1">
+              Pause or resume outgoing messages. Jobs stay queued and auto-resume when re-enabled.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => toggleSendMutation.mutate()}
+            disabled={!config || toggleSendMutation.isPending}
+            className={`relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-2 disabled:opacity-50 ${
+              config?.sendEnabled ? 'bg-primary' : 'bg-gray-300'
+            }`}
+          >
+            <span
+              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                config?.sendEnabled ? 'translate-x-6' : 'translate-x-1'
+              }`}
+            />
+          </button>
+        </div>
+        {config && (
+          <div className={`text-xs font-medium px-2 py-1 rounded inline-block ${
+            config.sendEnabled
+              ? 'bg-green-100 text-green-700'
+              : 'bg-amber-100 text-amber-700'
+          }`}>
+            {config.sendEnabled ? 'Enabled' : 'Paused — jobs rescheduled every 30s until re-enabled'}
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border bg-card p-5 space-y-3">

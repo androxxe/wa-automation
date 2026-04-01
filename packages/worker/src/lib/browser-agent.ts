@@ -355,10 +355,12 @@ export class BrowserAgent {
     sentPhones: Map<string, Date>,
     onStale?: (phone: string) => Promise<void>,
   ): Promise<void> {
-    return this._withBrowserLock(async () => {
-      const page = this.page!
-
-      for (const [phone, sentAt] of sentPhones) {
+    // Lock is acquired PER PHONE instead of for the entire batch.
+    // This allows sendMessage() to interleave between poll checks,
+    // preventing long agent lockouts during large reply-poll batches.
+    for (const [phone, sentAt] of sentPhones) {
+      await this._withBrowserLock(async () => {
+        const page = this.page!
         const number    = phone.replace('+', '')
         const url       = `https://web.whatsapp.com/send?phone=${number}`
         const sentAtMs  = sentAt.getTime()
@@ -383,7 +385,7 @@ export class BrowserAgent {
 
         if (!chatLoaded) {
           console.log(`[agent:${this.agentId}] chat failed to load for ${phone}, skipping`)
-          continue
+          return
         }
 
         await page.waitForTimeout(1500)
@@ -474,19 +476,19 @@ export class BrowserAgent {
         if (lastIncoming === '__STALE__') {
           console.warn(`[agent:${this.agentId}] stale anchor for ${phone} — latest message absent from WhatsApp chat, marking FAILED for retry`)
           await onStale?.(phone)
-          continue
+          return
         }
 
         if (!lastIncoming) {
           console.log(`[agent:${this.agentId}] no reply after sent message for ${phone}`)
-          continue
+          return
         }
 
         console.log(`[agent:${this.agentId}] reply from ${phone}: "${lastIncoming.slice(0, 40)}${lastIncoming.length > 40 ? '…' : ''}"`)
         const screenshotPath = await this._saveReplyScreenshot(phone)
         await onReply({ phone, text: lastIncoming, screenshotPath })
-      }
-    })
+      })
+    }
   }
 
   private async _saveReplyScreenshot(phone: string): Promise<string | null> {
