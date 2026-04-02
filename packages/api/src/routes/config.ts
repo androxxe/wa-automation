@@ -53,6 +53,7 @@ router.get('/', async (_req, res) => {
         defaultExpectedReplyRate:    cfg.defaultExpectedReplyRate,
         replyPollEnabled:            cfg.replyPollEnabled,
         sendEnabled:                 cfg.sendEnabled,
+        replyPollConcurrency:        cfg.replyPollConcurrency,
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),
@@ -70,6 +71,7 @@ const PatchConfig = z.object({
   defaultExpectedReplyRate:    z.number().min(0.01).max(1).optional(),
   replyPollEnabled:            z.boolean().optional(),
   sendEnabled:                 z.boolean().optional(),
+  replyPollConcurrency:        z.number().int().min(1).max(10).optional(),
 })
 
 router.patch('/', async (req, res) => {
@@ -95,6 +97,7 @@ router.patch('/', async (req, res) => {
         defaultExpectedReplyRate:    cfg.defaultExpectedReplyRate,
         replyPollEnabled:            cfg.replyPollEnabled,
         sendEnabled:                 cfg.sendEnabled,
+        replyPollConcurrency:        cfg.replyPollConcurrency,
         defaultSendPerArea:          Math.ceil(
           cfg.defaultTargetRepliesPerArea / cfg.defaultExpectedReplyRate,
         ),

@@ -376,6 +376,7 @@ export default function CampaignDetail() {
     if (!id) return
     const es = new EventSource(`/api/campaigns/${id}/events`)
     es.onmessage = () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
       queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     }
@@ -398,6 +399,7 @@ export default function CampaignDetail() {
       }),
     onSuccess: () => {
       setPreview(null)
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
       queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     },
@@ -407,7 +409,10 @@ export default function CampaignDetail() {
   const actionMutation = useMutation({
     mutationFn: (verb: 'pause' | 'resume' | 'cancel') =>
       apiFetch(`/api/campaigns/${id}/${verb}`, { method: 'POST' }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['campaign', id] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+    },
   })
 
   const topupMutation = useMutation({
@@ -419,7 +424,9 @@ export default function CampaignDetail() {
     onSuccess: (result) => {
       const summary = result.areas.filter((a) => a.enqueued > 0).map((a) => `${a.areaName}: +${a.enqueued}`).join(', ')
       alert(summary ? `Top-up queued: ${summary}` : 'No fresh contacts available to top up.')
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     },
     onError: (e) => alert(String(e)),
   })
@@ -439,6 +446,7 @@ export default function CampaignDetail() {
     mutationFn: (messageId: string) =>
       apiFetch(`/api/campaigns/${id}/messages/${messageId}`, { method: 'DELETE' }),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
       queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     },
@@ -456,6 +464,7 @@ export default function CampaignDetail() {
         ? `${result.retried} message${result.retried !== 1 ? 's' : ''} re-queued${result.skipped > 0 ? `, ${result.skipped} skipped (invalid phone)` : ''}.`
         : result.skipped > 0 ? 'All failed messages have invalid phone numbers and cannot be retried.' : 'No failed messages to retry.'
       alert(msg)
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
       queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     },
@@ -472,6 +481,7 @@ export default function CampaignDetail() {
       alert(result.unexpired > 0
         ? `${result.unexpired} message${result.unexpired !== 1 ? 's' : ''} moved back to SENT for reply polling.`
         : 'No expired messages to unexpire.')
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
       queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
     },

@@ -200,6 +200,7 @@ model AppConfig {
   defaultExpectedReplyRate    Float    @default(0.5)
   replyPollEnabled            Boolean  @default(true)
   sendEnabled                 Boolean  @default(true)
+  replyPollConcurrency        Int      @default(1)
   updatedAt                   DateTime @updatedAt
 }
 

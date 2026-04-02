@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useQuery, useMutation } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { ContactTypeTree, ColumnMapping, ParsedSheet } from '@aice/shared'
 
@@ -19,6 +19,7 @@ const TYPE_BADGE: Record<string, string> = {
 }
 
 export default function Import() {
+  const queryClient = useQueryClient()
   const [state, setState] = useState<ImportState>({ step: 'scan' })
   const [error, setError] = useState<string | null>(null)
 
@@ -53,8 +54,16 @@ export default function Import() {
           mapping:        state.confirmedMapping,
         }),
       }),
-    onSuccess: (result) => { setState((s) => ({ ...s, step: 'done', result })); setError(null) },
-    onError:   (e) => setError(String(e)),
+    onSuccess: (result) => {
+      setState((s) => ({ ...s, step: 'done', result }))
+      setError(null)
+      queryClient.invalidateQueries({ queryKey: ['contacts'] })
+      queryClient.invalidateQueries({ queryKey: ['areas'] })
+      queryClient.invalidateQueries({ queryKey: ['files-areas'] })
+      queryClient.invalidateQueries({ queryKey: ['files-scan'] })
+      queryClient.invalidateQueries({ queryKey: ['validate-wa-count'] })
+    },
+    onError: (e) => setError(String(e)),
   })
 
   const isLoading = parseMutation.isPending || mappingMutation.isPending || importMutation.isPending

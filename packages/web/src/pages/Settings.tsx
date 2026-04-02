@@ -99,6 +99,9 @@ export default function Settings() {
           ? `${result.unexpired} message${result.unexpired !== 1 ? 's' : ''} moved back to SENT for reply polling.`
           : 'No expired messages to unexpire.',
       )
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages'] })
     },
     onError: (e) => alert(String(e)),
   })
@@ -195,6 +198,35 @@ export default function Settings() {
             {config.replyPollEnabled ? 'Enabled' : 'Disabled — sending only mode'}
           </div>
         )}
+        {config && (
+          <div className="flex items-center gap-3 pt-1">
+            <label htmlFor="poll-concurrency" className="text-sm font-medium whitespace-nowrap">
+              Concurrency
+            </label>
+            <select
+              id="poll-concurrency"
+              value={config.replyPollConcurrency}
+              onChange={(e) => {
+                const val = parseInt(e.target.value)
+                apiFetch('/api/config', {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ replyPollConcurrency: val }),
+                }).then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
+              }}
+              className="border rounded-md px-2 py-1 text-sm bg-background"
+            >
+              {[1, 2, 3, 4, 5].map((n) => (
+                <option key={n} value={n}>{n} agent{n > 1 ? 's' : ''}</option>
+              ))}
+            </select>
+            <span className="text-xs text-muted-foreground">
+              {config.replyPollConcurrency > 1
+                ? 'Multiple agents poll simultaneously — may steal window focus on macOS'
+                : 'Sequential — no focus steal'}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="rounded-lg border bg-card p-5 space-y-3">
@@ -226,7 +258,7 @@ export default function Settings() {
               ? 'bg-green-100 text-green-700'
               : 'bg-amber-100 text-amber-700'
           }`}>
-            {config.sendEnabled ? 'Enabled' : 'Paused — jobs rescheduled every 30s until re-enabled'}
+            {config.sendEnabled ? 'Enabled' : 'Paused — jobs rescheduled every 5m until re-enabled'}
           </div>
         )}
       </div>

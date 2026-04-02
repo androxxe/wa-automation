@@ -272,4 +272,5 @@ export interface AppConfigData {
   // Dynamic toggles — stored in DB, editable via Settings
   replyPollEnabled:         boolean
   sendEnabled:              boolean
+  replyPollConcurrency:     number
 }

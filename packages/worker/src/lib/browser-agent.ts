@@ -66,6 +66,23 @@ export class BrowserAgent {
     this.validationOnly = validationOnly ?? false
   }
 
+  // ─── Quiet navigation (no window focus steal on macOS) ────────────────────
+
+  /**
+   * Navigate without stealing OS window focus.
+   * page.goto() uses CDP Page.navigate which activates the window on macOS.
+   * In-page location.href assignment stays in the renderer process and avoids it.
+   */
+  private async _gotoQuiet(
+    url: string,
+    waitUntil: 'load' | 'domcontentloaded' = 'domcontentloaded',
+  ): Promise<void> {
+    const page = this.page!
+    // evaluate may throw when navigation destroys the execution context — that's expected
+    await page.evaluate((u) => { location.href = u }, url).catch(() => {})
+    await page.waitForLoadState(waitUntil)
+  }
+
   // ─── Lock ─────────────────────────────────────────────────────────────────
 
   async _withBrowserLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -146,8 +163,6 @@ export class BrowserAgent {
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-default-apps',
-        '--disable-focus-on-navigate',
-        '--no-focus-on-launch',
       ],
       viewport:   null,
       userAgent:  USER_AGENT,
@@ -220,7 +235,7 @@ export class BrowserAgent {
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
-      await page.goto(url, { waitUntil: 'load' })
+      await this._gotoQuiet(url, 'load')
 
       // Race: detect invalid-number popup vs compose box appearing.
       // Whichever signal fires first wins — no more waiting 30s for a
@@ -299,7 +314,7 @@ export class BrowserAgent {
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
-      await page.goto(url, { waitUntil: 'domcontentloaded' })
+      await this._gotoQuiet(url)
 
       const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
       const STABILISE_MS     = 1500
@@ -361,13 +376,19 @@ export class BrowserAgent {
     // This allows sendMessage() to interleave between poll checks,
     // preventing long agent lockouts during large reply-poll batches.
     for (const [phone, sentAt] of sentPhones) {
+      // Yield to pending send jobs — if a send job is waiting, abort the rest
+      // of this poll batch so the agent can process the message first.
+      if (this.activeJobCount > 0) {
+        console.log(`[agent:${this.agentId}][poll] send job waiting, yielding remaining ${sentPhones.size} phones`)
+        break
+      }
       await this._withBrowserLock(async () => {
         const page = this.page!
         const number    = phone.replace('+', '')
         const url       = `https://web.whatsapp.com/send?phone=${number}`
         const sentAtMs  = sentAt.getTime()
 
-        await page.goto(url, { waitUntil: 'domcontentloaded' })
+        await this._gotoQuiet(url)
 
         await page
           .waitForSelector('[data-testid="startup"]', { state: 'hidden', timeout: 10000 })

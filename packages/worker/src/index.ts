@@ -21,12 +21,19 @@ const REPLY_WINDOW_DAYS      = parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS ?
 const REPLY_EXPIRE_DAYS      = parseInt(process.env.REPLY_EXPIRE_DAYS ?? '3', 10)
 const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '30', 10)
 const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? '600000', 10)
-const REPLY_POLL_CONCURRENCY = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '2', 10)
+// REPLY_POLL_CONCURRENCY is now read from DB (appConfig.replyPollConcurrency) each poll cycle.
+// Env var serves as fallback when the DB value is missing.
+const REPLY_POLL_CONCURRENCY_DEFAULT = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '1', 10)
 // dailySendCap, breakEvery, typeDelay are now per-agent (BrowserAgent fields).
 // Env vars remain as fallback defaults when an agent has no override.
 
 // Per-agent session send counters (in-memory; reset on worker restart)
 const sessionSendCount = new Map<number, number>()
+
+// Throttle "sending disabled" log — only log once per 5 minutes
+let lastSendDisabledLogAt = 0
+const SEND_DISABLED_LOG_INTERVAL = 5 * 60 * 1000
+const SEND_DISABLED_RESCHEDULE   = 5 * 60 * 1000 // 5 minutes
 
 // Round-robin index — persists across jobs, resets on worker restart
 let roundRobinIndex = 0
@@ -76,8 +83,12 @@ const worker = new Worker<MessageJob>(
     {
       const cfg = await db.appConfig.findUnique({ where: { id: 'singleton' } })
       if (cfg && !cfg.sendEnabled) {
-        console.log(`[worker] sending disabled via settings, rescheduling msg:${messageId} in 30s`)
-        await job.moveToDelayed(Date.now() + 30_000, token)
+        const now = Date.now()
+        if (now - lastSendDisabledLogAt >= SEND_DISABLED_LOG_INTERVAL) {
+          console.log(`[worker] sending disabled via settings, rescheduling messages in ${SEND_DISABLED_RESCHEDULE / 60000}m`)
+          lastSendDisabledLogAt = now
+        }
+        await job.moveToDelayed(Date.now() + SEND_DISABLED_RESCHEDULE, token)
         throw new DelayedError()
       }
     }
@@ -596,7 +607,7 @@ async function runWithConcurrency(fns: Array<() => Promise<void>>, limit: number
 }
 
 function startReplyPolling() {
-  console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s (concurrency: ${REPLY_POLL_CONCURRENCY})`)
+  console.log(`[worker] reply polling every ${REPLY_POLL_INTERVAL / 1000}s (default concurrency: ${REPLY_POLL_CONCURRENCY_DEFAULT})`)
 
   let _isPolling = false
 
@@ -607,12 +618,14 @@ function startReplyPolling() {
     }
     _isPolling = true
     try {
-      // Check dynamic toggle — skip entire poll cycle if disabled via Settings
+      // Check dynamic toggles from Settings
       const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
       if (appConfig && !appConfig.replyPollEnabled) {
         console.log('[poll] reply polling disabled via settings, skipping')
         return
       }
+      const pollConcurrency = (appConfig as Record<string, unknown>)?.replyPollConcurrency as number | undefined
+        ?? REPLY_POLL_CONCURRENCY_DEFAULT
 
       // 1. Expire old unreplied messages first (shrinks the pool permanently)
       await expireOldMessages()
@@ -634,6 +647,13 @@ function startReplyPolling() {
           continue
         }
 
+        // Skip agents that are currently sending — don't let reply polling
+        // block the send pipeline. The agent will be polled next cycle when idle.
+        if (entry.agent.activeJobCount > 0) {
+          console.log(`[agent:${agentId}][poll] busy sending (${entry.agent.activeJobCount} job), skipping this cycle`)
+          continue
+        }
+
         console.log(`[agent:${agentId}][poll] checking ${phones.size} unreplied phone(s)`)
         polledAny = true
 
@@ -652,8 +672,8 @@ function startReplyPolling() {
       }
 
       if (pollFns.length > 0) {
-        // Run at most REPLY_POLL_CONCURRENCY agents simultaneously
-        await runWithConcurrency(pollFns, REPLY_POLL_CONCURRENCY)
+        // Run at most pollConcurrency agents simultaneously (configurable via Settings)
+        await runWithConcurrency(pollFns, pollConcurrency)
       }
 
       // 5. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
