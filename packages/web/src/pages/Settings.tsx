@@ -6,6 +6,11 @@ import type { AppConfigData } from '@aice/shared'
 
 interface UnexpireResult { unexpired: number }
 
+interface ManualPollResult {
+  queued:  Array<{ phone: string; agentId: number }>
+  skipped: Array<{ phone: string; reason: string }>
+}
+
 const DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'] as const
 
 function formatDays(days: number[]): string {
@@ -29,6 +34,8 @@ export default function Settings() {
   const [target, setTarget] = useState('')
   const [rate, setRate]     = useState('')
   const [saved, setSaved]   = useState(false)
+  const [manualPhones, setManualPhones]       = useState('')
+  const [manualPollResult, setManualPollResult] = useState<ManualPollResult | null>(null)
 
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
@@ -105,6 +112,38 @@ export default function Settings() {
     },
     onError: (e) => alert(String(e)),
   })
+
+  const manualPollMutation = useMutation({
+    mutationFn: (phones: string[]) =>
+      apiFetch<ManualPollResult>('/api/replies/poll-manual', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ phones }),
+      }),
+    onSuccess: (result) => {
+      setManualPollResult(result)
+    },
+    onError: (e) => alert(String(e)),
+  })
+
+  const handleManualPoll = () => {
+    const phones = manualPhones
+      .split(/[\n,]+/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+
+    if (phones.length === 0) {
+      alert('Enter at least one phone number')
+      return
+    }
+    if (phones.length > 100) {
+      alert('Maximum 100 phone numbers per request')
+      return
+    }
+
+    setManualPollResult(null)
+    manualPollMutation.mutate(phones)
+  }
 
   const effectiveTarget = parseInt(target) || 20
   const effectiveRate   = parseFloat(rate) / 100 || 0.5
@@ -327,6 +366,64 @@ export default function Settings() {
             </button>
           </div>
         </div>
+      </div>
+
+      <div className="rounded-lg border bg-card p-5 space-y-3">
+        <h3 className="font-semibold">Manual Reply Poll</h3>
+        <p className="text-xs text-muted-foreground">
+          Enter phone numbers to manually trigger reply polling. Useful for catching replies that the automatic
+          system missed (expired messages, agent offline, etc.). One number per line or comma-separated.
+        </p>
+        <textarea
+          value={manualPhones}
+          onChange={(e) => setManualPhones(e.target.value)}
+          placeholder={'08123456789\n08234567890\n+6281345678901'}
+          rows={5}
+          className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
+        />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleManualPoll}
+            disabled={manualPollMutation.isPending || !manualPhones.trim()}
+            className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50"
+          >
+            {manualPollMutation.isPending ? 'Queuing...' : 'Poll Replies'}
+          </button>
+          {manualPhones.trim() && (
+            <span className="text-xs text-muted-foreground">
+              {manualPhones.split(/[\n,]+/).map((p) => p.trim()).filter(Boolean).length} number(s)
+            </span>
+          )}
+        </div>
+        {manualPollResult && (
+          <div className="space-y-2 text-sm">
+            {manualPollResult.queued.length > 0 && (
+              <div className="bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                <p className="font-medium text-green-800">
+                  Queued {manualPollResult.queued.length} phone(s) for polling
+                </p>
+                <ul className="mt-1 text-xs text-green-700 space-y-0.5">
+                  {manualPollResult.queued.map((q) => (
+                    <li key={q.phone}>{q.phone} (agent #{q.agentId})</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {manualPollResult.skipped.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                <p className="font-medium text-amber-800">
+                  Skipped {manualPollResult.skipped.length} phone(s)
+                </p>
+                <ul className="mt-1 text-xs text-amber-700 space-y-0.5">
+                  {manualPollResult.skipped.map((s) => (
+                    <li key={s.phone}>{s.phone} — {s.reason}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

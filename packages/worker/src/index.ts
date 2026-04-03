@@ -800,6 +800,58 @@ async function startWarmCommandListener(): Promise<void> {
   console.log('[worker] listening on warm:command channel')
 }
 
+async function startManualPollListener(): Promise<void> {
+  const sub = redis.duplicate()
+  await sub.subscribe('reply:poll-manual')
+  sub.on('message', (_channel, message) => {
+    try {
+      const { byAgent } = JSON.parse(message) as {
+        byAgent: Record<string, Record<string, string>> // agentId → { phone → sentAtISO }
+      }
+
+      // Process in background — don't block the subscriber
+      ;(async () => {
+        const allAgents = agentManager.getAllAgents()
+
+        for (const [agentIdStr, phoneEntries] of Object.entries(byAgent)) {
+          const agentId = parseInt(agentIdStr, 10)
+          const entry   = allAgents.find(({ agentId: id }) => id === agentId)
+
+          if (!entry || entry.agent.status !== 'connected') {
+            console.warn(`[manual-poll] agent:${agentId} is not connected, skipping ${Object.keys(phoneEntries).length} phone(s)`)
+            continue
+          }
+
+          // Build the Map<string, Date> that pollReplies expects
+          const phonesMap = new Map<string, Date>()
+          for (const [phone, sentAtISO] of Object.entries(phoneEntries)) {
+            phonesMap.set(phone, new Date(sentAtISO))
+          }
+
+          console.log(`[manual-poll] agent:${agentId} polling ${phonesMap.size} phone(s)`)
+
+          try {
+            await entry.agent.pollReplies(handleReply, phonesMap, handleStaleMessage)
+            // Update lastPolledAt tracking
+            const now = Date.now()
+            for (const phone of phonesMap.keys()) {
+              lastPolledAt.set(phone, now)
+            }
+            console.log(`[manual-poll] agent:${agentId} done polling ${phonesMap.size} phone(s)`)
+          } catch (err) {
+            console.error(`[manual-poll] agent:${agentId} error:`, err)
+          }
+        }
+
+        console.log('[manual-poll] done')
+      })().catch((err) => console.error('[manual-poll] unexpected error:', err))
+    } catch (err) {
+      console.error('[manual-poll] command parse error:', err)
+    }
+  })
+  console.log('[worker] listening on reply:poll-manual channel')
+}
+
 async function main() {
   await validateStartup()
 
@@ -821,6 +873,7 @@ async function main() {
   console.log(`[worker] listening on queues: ${QUEUE_NAME}, ${PHONE_CHECK_QUEUE_NAME}, warm-queue`)
   startReplyPolling()
   await startWarmCommandListener()
+  await startManualPollListener()
 }
 
 main().catch((err) => {
