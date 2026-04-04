@@ -20,7 +20,7 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 | Browser Automation | playwright | latest | Controls N real visible Chromium windows |
 | Anti-Detection | Custom stealth init script | — | Removes headless/automation fingerprints via `addInitScript` |
 | Excel Parsing | xlsx (SheetJS) | latest | Read `.xlsx`, inconsistent headers |
-| AI | @anthropic-ai/sdk | latest | Header mapping, reply analysis, message variation |
+| AI | @anthropic-ai/sdk / @google/generative-ai | latest | Multi-provider: Anthropic (default) or Gemini. Controlled via `LLM_PROVIDER` env var. Header mapping, reply analysis, message variation |
 | Queue | bullmq + ioredis | latest | Durable rate-limited message queue |
 | Database | Prisma + MySQL | latest | Requires running MySQL instance |
 | Realtime | Server-Sent Events (SSE) | — | Express native, no socket.io |
@@ -61,56 +61,65 @@ whatsapp-automation/
 ## Environment Variables (`.env`)
 
 ```env
-# Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
+# ─── LLM Provider ─────────────────────────────────────────────────────────────
+# Options: anthropic, openai, gemini (default: anthropic if not set)
+LLM_PROVIDER=gemini
 
-# Data paths
+# ─── Anthropic (used when LLM_PROVIDER=anthropic) ─────────────────────────────
+ANTHROPIC_API_KEY=sk-ant-...
+CLAUDE_MODEL=claude-4.5-haiku
+
+# ─── Google Gemini (used when LLM_PROVIDER=gemini) ────────────────────────────
+GOOGLE_API_KEY=your-api-key
+GEMINI_MODEL=gemini-2.0-flash
+
+# ─── Data paths ───────────────────────────────────────────────────────────────
 DATA_FOLDER=/absolute/path/to/data          # root folder containing Department 1..9
 OUTPUT_FOLDER=/absolute/path/to/output      # where response files are written
 
-# Database
+# ─── Database ─────────────────────────────────────────────────────────────────
 DATABASE_URL=mysql://root@localhost:3306/wa_automation
 
-# Redis
+# ─── Redis ────────────────────────────────────────────────────────────────────
 REDIS_URL=redis://localhost:6379
 
-# Browser automation
+# ─── Browser automation ───────────────────────────────────────────────────────
 BROWSER_PROFILE_PATH=./browser-profile      # base directory for all agent profiles; each agent's profile lives at {BROWSER_PROFILE_PATH}/{agentId}/
 BROWSER_HEADLESS=false                      # always false — visible windows required
 
-# Working hours (WIB = Asia/Jakarta, UTC+7)
+# ─── Working hours (WIB = Asia/Jakarta, UTC+7) ────────────────────────────────
 WORKING_HOURS_START=08:00
 WORKING_HOURS_END=17:00
 WORKING_DAYS=1,2,3,4,5,6                   # 1=Monday … 7=Sunday
 TIMEZONE=Asia/Jakarta
 
-# Rate limiting (Gaussian distribution — not mechanical fixed interval)
+# ─── Rate limiting (Gaussian distribution — not mechanical fixed interval) ─────
 RATE_LIMIT_MEAN_MS=35000                    # mean 35 seconds between messages
 RATE_LIMIT_STDDEV_MS=8000                   # std deviation ±8 seconds
 RATE_LIMIT_MIN_MS=20000                     # hard floor — never faster than 20s
 RATE_LIMIT_MAX_MS=90000                     # hard ceiling — never slower than 90s
 
-# Safety caps & timing — global defaults, all overridable per agent in the Agents UI
+# ─── Safety caps & timing — global defaults, all overridable per agent in the Agents UI
 DAILY_SEND_CAP=150                          # max messages per day per agent
 MID_SESSION_BREAK_EVERY=30                  # pause after every N messages
 MID_SESSION_BREAK_MIN_MS=180000             # min break duration (3 min)
 MID_SESSION_BREAK_MAX_MS=480000             # max break duration (8 min)
 
-# Typing speed
+# ─── Typing speed ─────────────────────────────────────────────────────────────
 TYPE_DELAY_MIN_MS=80                        # fastest keystroke delay (ms)
 TYPE_DELAY_MAX_MS=180                       # slowest keystroke delay (ms)
 
-# Reply polling
+# ─── Reply polling ────────────────────────────────────────────────────────────
 REPLY_POLL_INTERVAL_MS=60000               # scan WA Web for new replies every 60s (per agent)
 CAMPAIGN_REPLY_WINDOW_DAYS=3               # accept late replies for N days after campaign completes (default: 3)
 
-# Phone check parallelism — set to match your number of agents (default 3)
+# ─── Phone check parallelism ──────────────────────────────────────────────────
 PHONE_CHECK_CONCURRENCY=3                  # how many phone-check jobs run in parallel
 
-# API server
+# ─── API server ───────────────────────────────────────────────────────────────
 PORT=3001
 
-# Web (Vite — must be prefixed VITE_)
+# ─── Web (Vite — must be prefixed VITE_) ──────────────────────────────────────
 VITE_API_URL=http://localhost:3001
 ```
 
@@ -121,7 +130,9 @@ VITE_API_URL=http://localhost:3001
 Both `@aice/api` and `@aice/worker` run a startup validation before accepting traffic:
 
 1. **Environment variables** — checks all required vars are present and not placeholder values
-2. **ANTHROPIC_API_KEY format** — must start with `sk-ant-`
+2. **LLM provider** — validates the active provider's API key:
+   - `anthropic`: `ANTHROPIC_API_KEY` must start with `sk-ant-`
+   - `gemini`: `GOOGLE_API_KEY` must be present
 3. **DATABASE_URL format** — must start with `mysql://`
 4. **MySQL connection** — `SELECT 1` query
 5. **Redis connection** — `PING`

@@ -29,6 +29,13 @@ function checkAnthropicKey(): { pass: boolean; reason?: string } {
   return { pass: true }
 }
 
+function checkGeminiKey(): { pass: boolean; reason?: string } {
+  const val = process.env.GOOGLE_API_KEY ?? ''
+  if (!val)
+    return { pass: false, reason: 'not set' }
+  return { pass: true }
+}
+
 function checkDatabaseUrl(): { pass: boolean; reason?: string } {
   const val = process.env.DATABASE_URL ?? ''
   if (!val.startsWith('mysql://'))
@@ -79,6 +86,9 @@ function printResults(checks: Check[]): number {
   return failures
 }
 
+type Provider = 'anthropic' | 'openai' | 'gemini'
+const PROVIDER: Provider = (process.env.LLM_PROVIDER?.toLowerCase() ?? 'anthropic') as Provider
+
 export async function validateStartup(): Promise<void> {
   console.log()
   console.log(bold('  Startup checks'))
@@ -88,8 +98,6 @@ export async function validateStartup(): Promise<void> {
   console.log(dim('  environment variables'))
 
   const envChecks: Check[] = [
-    { label: 'ANTHROPIC_API_KEY (present)',  result: checkEnvVar('ANTHROPIC_API_KEY') },
-    { label: 'ANTHROPIC_API_KEY (format)',   result: checkAnthropicKey() },
     { label: 'DATABASE_URL (present)',       result: checkEnvVar('DATABASE_URL') },
     { label: 'DATABASE_URL (format)',        result: checkDatabaseUrl() },
     { label: 'REDIS_URL',                   result: checkEnvVar('REDIS_URL') },
@@ -97,6 +105,23 @@ export async function validateStartup(): Promise<void> {
     { label: 'DATA_FOLDER (exists)',        result: checkDataFolder() },
     { label: 'OUTPUT_FOLDER',              result: checkEnvVar('OUTPUT_FOLDER') },
   ]
+
+  if (PROVIDER === 'anthropic') {
+    envChecks.unshift(
+      { label: 'LLM_PROVIDER', result: { pass: true } },
+      { label: 'ANTHROPIC_API_KEY (present)', result: checkEnvVar('ANTHROPIC_API_KEY') },
+      { label: 'ANTHROPIC_API_KEY (format)',  result: checkAnthropicKey() },
+    )
+  } else if (PROVIDER === 'gemini') {
+    envChecks.unshift(
+      { label: 'LLM_PROVIDER', result: { pass: true } },
+      { label: 'GOOGLE_API_KEY', result: checkGeminiKey() },
+    )
+  } else {
+    envChecks.unshift(
+      { label: 'LLM_PROVIDER', result: { pass: true } },
+    )
+  }
 
   const envFailures = printResults(envChecks)
 

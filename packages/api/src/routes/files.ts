@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { scanDataFolder, parseSheet, parseSheetWithMapping } from '../lib/excel'
-import { mapHeaders } from '../lib/claude'
+import { mapHeaders } from '../lib/llm'
 import { normalizePhone } from '../lib/phone'
 import { db } from '../lib/db'
 import type { ContactType } from '@aice/shared'
