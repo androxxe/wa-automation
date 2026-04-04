@@ -58,3 +58,4 @@ data-output/
 
 dump.rdb
 redis/data/
+redis/data-dev/
