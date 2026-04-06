@@ -77,10 +77,17 @@ jawaban rules:
   })
 
   const text = (message.content[0] as { type: string; text: string }).text
+  console.log('[Claude] analyzeReply input:', { replyText, bulan })
+  console.log('[Claude] analyzeReply raw response:', text)
+
   const json = text.match(/\{[\s\S]*\}/)?.[0]
   if (!json) throw new Error('Claude did not return valid JSON for reply analysis')
 
-  return JSON.parse(json) as ReplyAnalysis
+  const parsed = JSON.parse(json) as ReplyAnalysis
+
+  console.log('[Claude] analyzeReply parsed result:', parsed)
+
+  return parsed
 }
 
 // ─── Job 3: Message variation ─────────────────────────────────────────────────
