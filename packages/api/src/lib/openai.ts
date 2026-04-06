@@ -1,10 +1,11 @@
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import OpenAI from 'openai'
 import type { ColumnMapping, ReplyAnalysis } from '@aice/shared'
 
-const MODEL = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash'
+const MODEL = process.env.OPENAI_MODEL ?? 'gpt-4o-mini'
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY ?? '')
-const model = genAI.getGenerativeModel({ model: MODEL })
+if (!process.env.OPENAI_API_KEY) throw new Error('OPENAI_API_KEY is not set')
+
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 function parseJsonFrom(text: string, context: string): unknown {
   const json = text.match(/\{[\s\S]*\}/)?.[0]
@@ -12,23 +13,50 @@ function parseJsonFrom(text: string, context: string): unknown {
   return JSON.parse(json)
 }
 
-async function runChat(prompt: string, opts: { maxTokens: number; temperature: number }): Promise<string> {
+function handleApiError(err: unknown, context: string): never {
+  const status = (err as { status?: number }).status
+  const message = (err as { message?: string }).message ?? 'Unknown error'
+
+  let friendly: string
+  switch (status) {
+    case 400:
+      friendly = `OpenAI API error (400): ${message}`
+      break
+    case 401:
+      friendly = 'OpenAI API error (401): Invalid API key'
+      break
+    case 429:
+      friendly = 'OpenAI API error (429): Rate limit exceeded or quota exhausted'
+      break
+    case 500:
+      friendly = 'OpenAI API error (500): Internal server error'
+      break
+    default:
+      friendly = `OpenAI API error (${status ?? 'unknown'}): ${message}`
+  }
+
+  console.error(`[OpenAI] ${context}:`, friendly)
+  throw new Error(friendly)
+}
+
+async function runChat(
+  prompt: string,
+  opts: { maxTokens: number; temperature: number; jsonMode?: boolean },
+): Promise<string> {
   try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        maxOutputTokens: opts.maxTokens,
-        temperature: opts.temperature,
-      },
+    const completion = await client.chat.completions.create({
+      model: MODEL,
+      max_tokens: opts.maxTokens,
+      temperature: opts.temperature,
+      response_format: opts.jsonMode ? { type: 'json_object' } : undefined,
+      messages: [{ role: 'user', content: prompt }],
     })
-    return result.response.text()
+
+    const text = completion.choices[0]?.message?.content
+    if (!text) throw new Error('OpenAI returned empty response')
+    return text
   } catch (err: unknown) {
-    if (err instanceof Error && 'status' in err) {
-      const status = (err as { status: number }).status
-      console.error(`[Gemini] API error ${status}:`, err.message)
-      throw new Error(`Gemini API error (${status}): ${err.message}`)
-    }
-    throw err
+    handleApiError(err, 'runChat')
   }
 }
 
@@ -53,7 +81,7 @@ Return JSON only:
   "total_count": "<exact header string or null>"
 }`
 
-  const text = await runChat(prompt, { maxTokens: 512, temperature: 0 })
+  const text = await runChat(prompt, { maxTokens: 512, temperature: 0, jsonMode: true })
   return parseJsonFrom(text, 'Header mapping') as ColumnMapping
 }
 
@@ -84,14 +112,14 @@ jawaban rules:
 - 0  = store denied they did the exchange (category is "denied")
 - null = cannot determine a clear yes or no (question/unclear/other)`
 
-  const text = await runChat(prompt, { maxTokens: 300, temperature: 0 })
+  const text = await runChat(prompt, { maxTokens: 300, temperature: 0, jsonMode: true })
 
-  console.log('[Gemini] analyzeReply input:', { replyText, bulan })
-  console.log('[Gemini] analyzeReply raw response:', text)
+  console.log('[OpenAI] analyzeReply input:', { replyText, bulan })
+  console.log('[OpenAI] analyzeReply raw response:', text)
 
   const parsed = parseJsonFrom(text, 'Reply analysis') as ReplyAnalysis
 
-  console.log('[Gemini] analyzeReply parsed result:', parsed)
+  console.log('[OpenAI] analyzeReply parsed result:', parsed)
 
   return parsed
 }

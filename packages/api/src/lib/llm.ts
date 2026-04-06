@@ -1,6 +1,7 @@
 import type { ColumnMapping, ReplyAnalysis } from '@aice/shared'
 import * as claude from './claude'
 import * as gemini from './gemini'
+import * as openai from './openai'
 
 type Provider = 'anthropic' | 'openai' | 'gemini'
 
@@ -8,6 +9,8 @@ const PROVIDER: Provider = (process.env.LLM_PROVIDER?.toLowerCase() ?? 'anthropi
 
 function getProvider() {
   switch (PROVIDER) {
+    case 'openai':
+      return openai
     case 'gemini':
       return gemini
     case 'anthropic':

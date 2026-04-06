@@ -26,7 +26,8 @@
     "redis:stop:dev": "redis-cli -p 6379 shutdown",
     "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
     "redis:flush:dev": "redis-cli -p 6379 FLUSHALL",
-    "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts"
+    "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts",
+    "test:analyze": "pnpm --filter @aice/api test:analyze"
   },
   "devDependencies": {
     "dotenv-cli": "^11.0.0"

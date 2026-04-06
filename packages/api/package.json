@@ -14,12 +14,14 @@
     "db:studio:prod": "dotenv -e ../../.env.prod -- prisma studio --schema=prisma/schema.prisma",
     "db:migrate": "dotenv -e ../../.env.dev -- prisma migrate dev --schema=prisma/schema.prisma",
     "db:migrate:prod": "dotenv -e ../../.env.prod -- prisma migrate deploy --schema=prisma/schema.prisma",
-    "db:fresh": "dotenv -e ../../.env.dev -- tsx ../../scripts/prod-guard.ts prisma migrate reset --schema=prisma/schema.prisma"
+    "db:fresh": "dotenv -e ../../.env.dev -- tsx ../../scripts/prod-guard.ts prisma migrate reset --schema=prisma/schema.prisma",
+    "test:analyze": "tsx --env-file=../../.env.dev src/lib/test-analyze.ts"
   },
   "dependencies": {
     "@aice/shared": "workspace:*",
     "@anthropic-ai/sdk": "^0.37.0",
     "@google/generative-ai": "^0.24.1",
+    "openai": "^4.85.0",
     "@prisma/client": "^6.0.0",
     "bullmq": "^5.0.0",
     "cors": "^2.8.5",

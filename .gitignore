@@ -55,6 +55,7 @@ Thumbs.db
 
 data/
 data-output/
+data-output-dev/
 
 dump.rdb
 redis/data/
