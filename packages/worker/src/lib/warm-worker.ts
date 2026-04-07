@@ -160,9 +160,10 @@ async function completeWarmSession(sessionId: string): Promise<void> {
   const sessionAgents = await db.warmSessionAgent.findMany({
     where: { warmSessionId: sessionId },
   })
+  const agentIds = sessionAgents.map((a) => a.agentId)
   await db.agent.updateMany({
-    where: { id: { in: sessionAgents.map((a) => a.agentId) } },
-    data:  { isWarmed: true, warmedAt: new Date() },
+    where: { id: { in: agentIds } },
+    data:  { isWarmed: true, warmedAt: new Date(), warmDaysCompleted: { increment: 1 } },
   })
 
   redis

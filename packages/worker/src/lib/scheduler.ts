@@ -73,3 +73,16 @@ export function randomBreakDuration(min = BREAK_MIN, max = BREAK_MAX): number {
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+/**
+ * Adaptive poll interval based on message age.
+ * Older messages are polled less frequently to reduce CPU/DOM load
+ * and break the bot signal of fixed-intensity polling.
+ */
+export function pollIntervalForMessage(sentAt: Date): number {
+  const ageHours = (Date.now() - sentAt.getTime()) / (1000 * 60 * 60)
+  if (ageHours < 1)  return 120_000   // 2 min
+  if (ageHours < 4)  return 300_000   // 5 min
+  if (ageHours < 12) return 600_000   // 10 min
+  return 1_800_000                     // 30 min
+}

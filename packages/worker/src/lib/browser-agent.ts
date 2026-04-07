@@ -236,74 +236,153 @@ export class BrowserAgent {
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
       await this._gotoQuiet(url, 'load')
+      await this._typeAndSendBody(body, page, phone)
+    })
+  }
 
-      // Race: detect invalid-number popup vs compose box appearing.
-      // Whichever signal fires first wins — no more waiting 30s for a
-      // compose box that will never come on an invalid number.
-      const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
-      const INPUT_SELECTORS  = [
-        '[data-testid="conversation-compose-box-input"]',
-        'div[contenteditable="true"][data-tab="10"]',
-        'div[contenteditable="true"][aria-label="Type a message"]',
-        'footer div[contenteditable="true"]',
+  // ─── sendMessageViaSidebar ────────────────────────────────────────────────
+
+  /**
+   * Send a message by searching the phone number in the WA sidebar search box.
+   * More human-like than direct URL navigation. Falls back to sendMessage() if search fails.
+   */
+  async sendMessageViaSidebar(phone: string, body: string): Promise<void> {
+    return this._withBrowserLock(async () => {
+      const page = this.page!
+      const number = phone.replace('+', '')
+
+      // Go to main page
+      await this._gotoQuiet('https://web.whatsapp.com', 'load')
+
+      // Wait for chat list / sidebar
+      await page.waitForSelector('#side, [data-testid="chat-list"]', { timeout: 15000 })
+        .catch(() => { /* may use different selector — proceed anyway */ })
+      await page.waitForTimeout(1000 + Math.random() * 1000)
+
+      // Click search box — it's an <input> element with data-tab="3"
+      const SEARCH_SELECTORS = [
+        'input[data-tab="3"]',
+        'input[aria-label="Search or start a new chat"]',
+        '[data-testid="chat-list-search"]',
+        'span[data-icon="search"]',
       ].join(', ')
 
-      const handle = await page
-        .waitForFunction(
-          ({ keywords, inputSel }: { keywords: string[]; inputSel: string }): string | false => {
-            // Check for "not registered" modal
-            const modal = document.querySelector('[data-animate-modal-popup="true"]')
-            if (modal) {
-              const text = (modal.textContent ?? '').toLowerCase()
-              if (keywords.some((kw) => text.includes(kw))) return 'invalid'
-            }
-            // Check for compose input box
-            const compose = document.querySelector(inputSel)
-            if (compose) return 'ready'
-            return false
-          },
-          { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS },
-          { timeout: 30000, polling: 100 },
-        )
+      const searchBox = await page.waitForSelector(SEARCH_SELECTORS, { timeout: 10000 })
         .catch(() => null)
 
-      const signal = handle ? ((await handle.jsonValue()) as string) : null
-
-      if (signal === 'invalid') {
-        await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
-        await page.waitForTimeout(500)
-        throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
+      if (!searchBox) {
+        console.log(`[agent:${this.agentId}] sidebar search box not found, falling back to URL nav`)
+        await this._sendViaUrl(phone, body, page)
+        return
       }
 
-      if (!signal) {
-        throw new Error(`Timeout waiting for WhatsApp chat to load for ${phone}`)
-      }
-
-      const inputSelector = INPUT_SELECTORS
-      await page.click(inputSelector)
+      await searchBox.click()
       await page.waitForTimeout(500)
 
-      await page.keyboard.press('Control+A')
-      await page.keyboard.press('Backspace')
-      await page.waitForTimeout(200)
+      // Type phone number character by character
+      for (const char of number) {
+        await page.keyboard.type(char, {
+          delay: this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs),
+        })
+      }
+      await page.waitForTimeout(1500 + Math.random() * 1000)
 
-      const lines = body.split('\n')
-      for (let i = 0; i < lines.length; i++) {
-        for (const char of lines[i]) {
-          await page.keyboard.type(char, {
-            delay: this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs),
-          })
-        }
-        if (i < lines.length - 1) {
-          await page.keyboard.press('Shift+Enter')
-          await page.waitForTimeout(300 + Math.random() * 300)
-        }
+      // Click first search result or press Enter
+      const firstResult = await page.waitForSelector(
+        '[data-testid="cell-frame-container"], [role="button"][aria-label*="' + number.slice(-4) + '"]',
+        { timeout: 8000 },
+      ).catch(() => null)
+
+      if (firstResult) {
+        await firstResult.click()
+      } else {
+        await page.keyboard.press('Enter')
       }
 
-      await page.waitForTimeout(1000 + Math.random() * 2000)
-      await page.keyboard.press('Enter')
-      await page.waitForTimeout(1500)
+      await page.waitForTimeout(2000)
+
+      // Now type and send the message body
+      await this._typeAndSendBody(body, page, phone)
     })
+  }
+
+  // ─── Internal: shared send helpers ────────────────────────────────────────
+
+  /**
+   * Core send logic used by both sendMessage() and sendMessageViaSidebar().
+   * Expects the chat panel to already be open.
+   */
+  private async _typeAndSendBody(body: string, page: Page, phone: string): Promise<void> {
+    const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
+    const INPUT_SELECTORS  = [
+      '[data-testid="conversation-compose-box-input"]',
+      'div[contenteditable="true"][data-tab="10"]',
+      'div[contenteditable="true"][aria-label="Type a message"]',
+      'footer div[contenteditable="true"]',
+    ].join(', ')
+
+    const handle = await page
+      .waitForFunction(
+        ({ keywords, inputSel }: { keywords: string[]; inputSel: string }): string | false => {
+          const modal = document.querySelector('[data-animate-modal-popup="true"]')
+          if (modal) {
+            const text = (modal.textContent ?? '').toLowerCase()
+            if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+          }
+          const compose = document.querySelector(inputSel)
+          if (compose) return 'ready'
+          return false
+        },
+        { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS },
+        { timeout: 30000, polling: 100 },
+      )
+      .catch(() => null)
+
+    const signal = handle ? ((await handle.jsonValue()) as string) : null
+
+    if (signal === 'invalid') {
+      await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
+      await page.waitForTimeout(500)
+      throw new Error(`Nomor ${phone} tidak terdaftar di WhatsApp`)
+    }
+
+    if (!signal) {
+      throw new Error(`Timeout waiting for WhatsApp chat to load for ${phone}`)
+    }
+
+    await page.click(INPUT_SELECTORS)
+    await page.waitForTimeout(500)
+
+    await page.keyboard.press('Control+A')
+    await page.keyboard.press('Backspace')
+    await page.waitForTimeout(200)
+
+    const lines = body.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+      for (const char of lines[i]) {
+        await page.keyboard.type(char, {
+          delay: this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs),
+        })
+      }
+      if (i < lines.length - 1) {
+        await page.keyboard.press('Shift+Enter')
+        await page.waitForTimeout(300 + Math.random() * 300)
+      }
+    }
+
+    await page.waitForTimeout(1000 + Math.random() * 2000)
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(1500)
+  }
+
+  /**
+   * URL-based send — extracted from original sendMessage() for reuse as fallback.
+   */
+  private async _sendViaUrl(phone: string, body: string, page: Page): Promise<void> {
+    const number = phone.replace('+', '')
+    const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
+    await this._gotoQuiet(url, 'load')
+    await this._typeAndSendBody(body, page, phone)
   }
 
   // ─── checkPhoneRegistered ────────────────────────────────────────────────
@@ -375,6 +454,13 @@ export class BrowserAgent {
     // Lock is acquired PER PHONE instead of for the entire batch.
     // This allows sendMessage() to interleave between poll checks,
     // preventing long agent lockouts during large reply-poll batches.
+    //
+    // Random delay between phone visits (15-45s) to break the bot signal
+    // of rapid-fire navigations to different numbers.
+    const POLL_INTER_VISIT_MIN = parseInt(process.env.POLL_INTER_VISIT_DELAY_MIN_MS ?? '15000', 10)
+    const POLL_INTER_VISIT_MAX = parseInt(process.env.POLL_INTER_VISIT_DELAY_MAX_MS ?? '45000', 10)
+    let visitIndex = 0
+
     for (const [phone, sentAt] of sentPhones) {
       // Yield to pending send jobs — if a send job is waiting, abort the rest
       // of this poll batch so the agent can process the message first.
@@ -382,6 +468,30 @@ export class BrowserAgent {
         console.log(`[agent:${this.agentId}][poll] send job waiting, yielding remaining ${sentPhones.size} phones`)
         break
       }
+
+      // Random delay between visits (skip first visit — no need to wait before starting)
+      if (visitIndex > 0) {
+        const delay = POLL_INTER_VISIT_MIN + Math.random() * (POLL_INTER_VISIT_MAX - POLL_INTER_VISIT_MIN)
+        console.log(`[agent:${this.agentId}][poll] inter-visit delay: ${Math.round(delay / 1000)}s`)
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delay)
+          // Allow interruption: if a send job arrives, resolve immediately
+          const check = setInterval(() => {
+            if (this.activeJobCount > 0) {
+              clearInterval(check)
+              clearTimeout(timer)
+              resolve()
+            }
+          }, 500)
+        })
+        // Re-check after delay — a send job may have arrived during the wait
+        if (this.activeJobCount > 0) {
+          console.log(`[agent:${this.agentId}][poll] send job arrived during inter-visit delay, aborting remaining phones`)
+          break
+        }
+      }
+      visitIndex++
+
       await this._withBrowserLock(async () => {
         const page = this.page!
         const number    = phone.replace('+', '')

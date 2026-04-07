@@ -45,14 +45,32 @@ async function checkDatabase(): Promise<{ pass: boolean; reason?: string }> {
   }
 }
 
-async function checkRedis(): Promise<{ pass: boolean; reason?: string }> {
+function checkRedis(): Promise<{ pass: boolean; reason?: string }> {
   try {
-    await redis.ping()
-    return { pass: true }
+    return redis.ping().then(() => ({ pass: true })).catch((err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { pass: false, reason: msg }
+    })
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
-    return { pass: false, reason: msg }
+    return Promise.resolve({ pass: false, reason: msg })
   }
+}
+
+function checkOptionalRatio(key: string): { pass: boolean; reason?: string; note?: string } {
+  const val = process.env[key]
+  if (!val) return { pass: true, note: 'not set — using default' }
+  const num = parseFloat(val)
+  if (isNaN(num) || num < 0 || num > 1) return { pass: false, reason: 'must be a number between 0.0 and 1.0' }
+  return { pass: true }
+}
+
+function checkOptionalPositiveInt(key: string): { pass: boolean; reason?: string; note?: string } {
+  const val = process.env[key]
+  if (!val) return { pass: true, note: 'not set — using default' }
+  const num = parseInt(val, 10)
+  if (isNaN(num) || num < 0) return { pass: false, reason: 'must be a positive integer' }
+  return { pass: true }
 }
 
 // ─── Runner ───────────────────────────────────────────────────────────────────
@@ -110,6 +128,26 @@ export async function validateStartup(): Promise<void> {
 
   if (connFailures > 0) {
     console.log(red(bold(`  ${connFailures} check(s) failed — fix the issues above and restart\n`)))
+    process.exit(1)
+  }
+
+  // ── 3. Anti-restriction settings ──────────────────────────────────────────
+  console.log(dim('  anti-restriction settings'))
+
+  const antiRestrictionChecks: Check[] = [
+    { label: 'SIDEBAR_SEND_RATIO (0.0-1.0)', result: checkOptionalRatio('SIDEBAR_SEND_RATIO') },
+    { label: 'REPLY_BATCH_SIZE (positive)',  result: checkOptionalPositiveInt('REPLY_BATCH_SIZE') },
+    { label: 'REPLY_POLL_COOLDOWN_MS',       result: checkOptionalPositiveInt('REPLY_POLL_COOLDOWN_MS') },
+    { label: 'POLL_INTER_VISIT_DELAY_MIN_MS', result: checkOptionalPositiveInt('POLL_INTER_VISIT_DELAY_MIN_MS') },
+    { label: 'POLL_INTER_VISIT_DELAY_MAX_MS', result: checkOptionalPositiveInt('POLL_INTER_VISIT_DELAY_MAX_MS') },
+  ]
+
+  const antiRestrictionFailures = printResults(antiRestrictionChecks)
+
+  console.log()
+
+  if (antiRestrictionFailures > 0) {
+    console.log(red(bold(`  ${antiRestrictionFailures} anti-restriction setting(s) invalid — fix or remove from .env\n`)))
     process.exit(1)
   }
 

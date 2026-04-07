@@ -10,6 +10,7 @@ import {
   gaussianDelay,
   randomBreakDuration,
   sleep,
+  pollIntervalForMessage,
 } from './lib/scheduler'
 import { warmWorker, startWarmSession, resumeWarmSession } from './lib/warm-worker'
 
@@ -19,8 +20,10 @@ const PHONE_CHECK_QUEUE_NAME = 'phone-check'
 const REPLY_POLL_INTERVAL    = parseInt(process.env.REPLY_POLL_INTERVAL_MS ?? '60000', 10)
 const REPLY_WINDOW_DAYS      = parseInt(process.env.CAMPAIGN_REPLY_WINDOW_DAYS ?? '3', 10)
 const REPLY_EXPIRE_DAYS      = parseInt(process.env.REPLY_EXPIRE_DAYS ?? '3', 10)
-const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '30', 10)
+const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '10', 10)
 const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? '600000', 10)
+const PHONE_POLL_COOLDOWN    = parseInt(process.env.REPLY_POLL_COOLDOWN_MS ?? '180000', 10)
+const SIDEBAR_RATIO          = parseFloat(process.env.SIDEBAR_SEND_RATIO ?? '0.70')
 // REPLY_POLL_CONCURRENCY is now read from DB (appConfig.replyPollConcurrency) each poll cycle.
 // Env var serves as fallback when the DB value is missing.
 const REPLY_POLL_CONCURRENCY_DEFAULT = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '1', 10)
@@ -205,9 +208,15 @@ const worker = new Worker<MessageJob>(
       log(`waiting ${Math.round(delay / 1000)}s before send (session #${count})`)
       await sleep(delay)
 
-      // 4. Send
-      log(`sending to ${phone}…`)
-      await agent.sendMessage(phone, body)
+      // 4. Send — mixed navigation (sidebar search vs direct URL)
+      const useSidebar = Math.random() < SIDEBAR_RATIO
+      if (useSidebar) {
+        log(`sending via sidebar search to ${phone}…`)
+        await agent.sendMessageViaSidebar(phone, body)
+      } else {
+        log(`sending via URL to ${phone}…`)
+        await agent.sendMessage(phone, body)
+      }
 
       // 6. Update message record
       await db.message.updateMany({
@@ -384,7 +393,17 @@ async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date
   const now = Date.now()
 
   for (const [agentId, phoneMap] of byAgent) {
-    const entries = [...phoneMap.entries()].sort((a, b) => {
+    // Filter: only include phones whose adaptive poll interval has elapsed
+    const duePhones = [...phoneMap.entries()].filter(([phone, sentAt]) => {
+      const lastPoll = lastPolledAt.get(phone) ?? 0
+      const elapsed  = now - lastPoll
+      const interval = pollIntervalForMessage(sentAt)
+      const cooldown = Math.max(interval, PHONE_POLL_COOLDOWN)
+      return elapsed >= cooldown
+    })
+
+    // Sort remaining phones by priority
+    const entries = duePhones.sort((a, b) => {
       const aLastPoll = lastPolledAt.get(a[0]) ?? 0
       const bLastPoll = lastPolledAt.get(b[0]) ?? 0
       const aInCooldown = aLastPoll > 0 && (now - aLastPoll) < REPLY_REPOLL_COOLDOWN
@@ -400,6 +419,10 @@ async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date
       batched.set(phone, sentAt)
     }
 
+    const skipped = phoneMap.size - duePhones.length
+    if (skipped > 0) {
+      console.log(`[poll] agent:${agentId} skipped ${skipped} phone(s) still in adaptive cooldown`)
+    }
     if (phoneMap.size > REPLY_BATCH_SIZE) {
       console.log(`[poll] agent:${agentId} has ${phoneMap.size} unreplied phones, batched to ${batched.size}`)
     }
