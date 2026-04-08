@@ -159,6 +159,7 @@ export class BrowserAgent {
       args: [
         '--no-sandbox',
         '--start-maximized',
+        '--window-size=1920,1080',
         '--disable-blink-features=AutomationControlled',
         '--no-first-run',
         '--no-default-browser-check',
