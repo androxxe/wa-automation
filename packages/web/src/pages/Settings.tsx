@@ -7,7 +7,7 @@ import type { AppConfigData } from '@aice/shared'
 interface UnexpireResult { unexpired: number }
 
 interface ManualPollResult {
-  queued:  Array<{ phone: string; agentId: number }>
+  queued:  Array<{ phone: string; agentId: number; mode?: 'unreplied' | 'fallback_latest' }>
   skipped: Array<{ phone: string; reason: string }>
 }
 
@@ -372,7 +372,8 @@ export default function Settings() {
         <h3 className="font-semibold">Manual Reply Poll</h3>
         <p className="text-xs text-muted-foreground">
           Enter phone numbers to manually trigger reply polling. Useful for catching replies that the automatic
-          system missed (expired messages, agent offline, etc.). One number per line or comma-separated.
+          system missed (expired messages, FAILED status drift, agent offline, etc.). If no unreplied message
+          is found, the latest message for that phone is used as a fallback anchor. One number per line or comma-separated.
         </p>
         <textarea
           value={manualPhones}
@@ -403,12 +404,14 @@ export default function Settings() {
                 <p className="font-medium text-green-800">
                   Queued {manualPollResult.queued.length} phone(s) for polling
                 </p>
-                <ul className="mt-1 text-xs text-green-700 space-y-0.5">
-                  {manualPollResult.queued.map((q) => (
-                    <li key={q.phone}>{q.phone} (agent #{q.agentId})</li>
-                  ))}
-                </ul>
-              </div>
+                  <ul className="mt-1 text-xs text-green-700 space-y-0.5">
+                    {manualPollResult.queued.map((q) => (
+                      <li key={q.phone}>
+                        {q.phone} (agent #{q.agentId}){q.mode === 'fallback_latest' ? ' — fallback anchor' : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
             )}
             {manualPollResult.skipped.length > 0 && (
               <div className="bg-amber-50 border border-amber-200 rounded-md px-3 py-2">

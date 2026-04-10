@@ -6,6 +6,7 @@ import { redis } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
 
 const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
+const ALLOWED_REPLY_CATEGORIES = new Set(['confirmed', 'denied', 'question', 'unclear', 'other'])
 
 const router: import('express').Router = Router()
 
@@ -153,10 +154,73 @@ router.get('/screenshot', (req, res) => {
   res.sendFile(abs)
 })
 
+// ─── PATCH /api/replies/:id — manual correction for classification/jawaban ───
+// Body: { category?: ReplyCategory|null, jawaban?: 1|0|null }
+
+router.patch('/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const body = req.body as { category?: string | null; jawaban?: number | null }
+
+    const hasCategory = Object.prototype.hasOwnProperty.call(body, 'category')
+    const hasJawaban  = Object.prototype.hasOwnProperty.call(body, 'jawaban')
+
+    if (!hasCategory && !hasJawaban) {
+      res.status(400).json({ ok: false, error: 'Provide at least one field: category or jawaban' })
+      return
+    }
+
+    const data: { claudeCategory?: string | null; jawaban?: number | null } = {}
+
+    if (hasCategory) {
+      const category = body.category
+      if (category !== null && typeof category !== 'string') {
+        res.status(400).json({ ok: false, error: 'category must be a string or null' })
+        return
+      }
+      if (typeof category === 'string' && !ALLOWED_REPLY_CATEGORIES.has(category)) {
+        res.status(400).json({ ok: false, error: 'Invalid category' })
+        return
+      }
+      data.claudeCategory = category
+    }
+
+    if (hasJawaban) {
+      const jawaban = body.jawaban
+      if (jawaban !== null && jawaban !== 0 && jawaban !== 1) {
+        res.status(400).json({ ok: false, error: 'jawaban must be 1, 0, or null' })
+        return
+      }
+      data.jawaban = jawaban
+    }
+
+    const updated = await db.reply.update({
+      where: { id },
+      data,
+      select: {
+        id:             true,
+        claudeCategory: true,
+        jawaban:        true,
+      },
+    }).catch(() => null)
+
+    if (!updated) {
+      res.status(404).json({ ok: false, error: 'Reply not found' })
+      return
+    }
+
+    res.json({ ok: true, data: updated })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // ─── POST /api/replies/poll-manual — trigger manual reply poll for specific phones ─
 // Body: { phones: string[] }
-// Normalizes each phone, finds unreplied messages (including EXPIRED), groups by
-// sending agent, and publishes a Redis command for the worker to poll immediately.
+// Normalizes each phone and finds a per-phone polling anchor, grouped by sending agent:
+//   1) Prefer the latest unreplied message (including EXPIRED/FAILED)
+//   2) Fallback to the latest message if no unreplied message exists
+// This ensures manual poll still triggers the worker for replied phones.
 
 router.post('/poll-manual', async (req, res) => {
   try {
@@ -199,49 +263,102 @@ router.post('/poll-manual', async (req, res) => {
       return
     }
 
-    // Find unreplied messages for these phones — include EXPIRED so manual poll
-    // can catch replies the automatic system missed after expiration.
-    const messages = await db.message.findMany({
+    // Step 1: Find unreplied messages for these phones.
+    // Includes EXPIRED and FAILED to allow manual recovery checks when status
+    // drift happened (e.g. actually sent but marked FAILED).
+    const unrepliedMessages = await db.message.findMany({
       where: {
         phone:   { in: validPhones.map((p) => p.phone) },
-        status:  { in: ['SENT', 'DELIVERED', 'READ', 'EXPIRED'] },
+        status:  { in: ['SENT', 'DELIVERED', 'READ', 'EXPIRED', 'FAILED'] },
         reply:   null,
         agentId: { not: null },
       },
-      select: { phone: true, sentAt: true, agentId: true },
+      select: { phone: true, sentAt: true, createdAt: true, agentId: true },
     })
 
-    // Group by agentId, deduplicating by phone (keep most recent sentAt)
-    const byAgent = new Map<number, Map<string, string>>() // agentId → phone → sentAt ISO
-    for (const m of messages) {
-      const agentId = m.agentId!
-      if (!byAgent.has(agentId)) byAgent.set(agentId, new Map())
-      const agentMap = byAgent.get(agentId)!
-      const ts = m.sentAt ?? new Date(0)
-      const existing = agentMap.get(m.phone)
-      if (!existing || ts.toISOString() > existing) {
-        agentMap.set(m.phone, ts.toISOString())
+    type ManualPollAnchor = {
+      phone: string
+      sentAt: Date
+      agentId: number
+      mode: 'unreplied' | 'fallback_latest'
+    }
+
+    const selectedByPhone = new Map<string, ManualPollAnchor>()
+
+    // Deduplicate unreplied by phone (keep most recent sentAt)
+    for (const m of unrepliedMessages) {
+      const ts = m.sentAt ?? m.createdAt
+      const existing = selectedByPhone.get(m.phone)
+      if (!existing || ts > existing.sentAt) {
+        selectedByPhone.set(m.phone, {
+          phone: m.phone,
+          sentAt: ts,
+          agentId: m.agentId!,
+          mode: 'unreplied',
+        })
       }
     }
 
+    // Step 2 (fallback): for phones with no unreplied message, use latest
+    // message so manual poll can still force a worker-side check.
+    const fallbackPhones = validPhones
+      .map((p) => p.phone)
+      .filter((phone) => !selectedByPhone.has(phone))
+
+    if (fallbackPhones.length > 0) {
+      const fallbackMessages = await db.message.findMany({
+        where: {
+          phone:   { in: fallbackPhones },
+          status:  { in: ['SENT', 'DELIVERED', 'READ', 'EXPIRED', 'FAILED'] },
+          agentId: { not: null },
+        },
+        select: { phone: true, sentAt: true, createdAt: true, agentId: true },
+      })
+
+      for (const m of fallbackMessages) {
+        const ts = m.sentAt ?? m.createdAt
+        const existing = selectedByPhone.get(m.phone)
+        if (!existing || ts > existing.sentAt) {
+          selectedByPhone.set(m.phone, {
+            phone: m.phone,
+            sentAt: ts,
+            agentId: m.agentId!,
+            mode: 'fallback_latest',
+          })
+        }
+      }
+    }
+
+    // Group by agentId for Redis payload
+    const byAgent = new Map<number, Map<string, string>>() // agentId → phone → sentAt ISO
+    for (const selected of selectedByPhone.values()) {
+      if (!byAgent.has(selected.agentId)) byAgent.set(selected.agentId, new Map())
+      byAgent.get(selected.agentId)!.set(selected.phone, selected.sentAt.toISOString())
+    }
+
     // Track which phones were found and which were not
-    const foundPhones = new Set(messages.map((m) => m.phone))
+    const foundPhones = new Set(selectedByPhone.keys())
     const skipped = [
       ...invalidPhones.map((p) => ({ phone: p.raw, reason: `Invalid: ${p.reason}` })),
       ...validPhones
         .filter((p) => !foundPhones.has(p.phone))
-        .map((p) => ({ phone: p.phone, reason: 'No unreplied message found for this phone' })),
+        .map((p) => ({ phone: p.phone, reason: 'No sent message with assigned agent found for this phone' })),
     ]
 
-    const queued: Array<{ phone: string; agentId: number }> = []
+    const queued: Array<{ phone: string; agentId: number; mode: 'unreplied' | 'fallback_latest' }> = []
 
     if (byAgent.size > 0) {
-      // Serialize the map for Redis: { byAgent: { [agentId]: { [phone]: sentAtISO } } }
-      const payload: Record<string, Record<string, string>> = {}
+      // Serialize for Redis:
+      // { byAgent: { [agentId]: { [phone]: { sentAt, mode } } } }
+      const payload: Record<string, Record<string, { sentAt: string; mode: 'unreplied' | 'fallback_latest' }>> = {}
       for (const [agentId, phoneMap] of byAgent) {
-        payload[String(agentId)] = Object.fromEntries(phoneMap)
+        payload[String(agentId)] = {}
         for (const phone of phoneMap.keys()) {
-          queued.push({ phone, agentId })
+          const selected = selectedByPhone.get(phone)
+          const mode = selected?.mode ?? 'unreplied'
+          const sentAt = phoneMap.get(phone) ?? new Date(0).toISOString()
+          payload[String(agentId)][phone] = { sentAt, mode }
+          queued.push({ phone, agentId, mode })
         }
       }
 

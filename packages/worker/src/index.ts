@@ -451,17 +451,18 @@ async function handleReply(params: {
   phone:          string
   text:           string
   screenshotPath: string | null
+  allowUpdateExisting?: boolean
 }) {
-  const { phone, text, screenshotPath } = params
+  const { phone, text, screenshotPath, allowUpdateExisting = false } = params
 
   // Fan-out: ALL unreplied messages for this phone in ACTIVE campaigns (covers STIK + KARDUS).
   // Also includes COMPLETED campaigns within the reply window so late replies are still captured.
   // Excludes COMPLETED campaigns older than REPLY_WINDOW_DAYS and all CANCELLED campaigns.
   const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
-  const messages = await db.message.findMany({
+  const unrepliedMessages = await db.message.findMany({
     where: {
       phone,
-      status:   { in: ['SENT', 'DELIVERED', 'READ'] },
+      status:   { in: ['SENT', 'DELIVERED', 'READ', 'EXPIRED', 'FAILED'] },
       reply:    null,
       campaign: {
         OR: [
@@ -477,20 +478,46 @@ async function handleReply(params: {
     orderBy: { sentAt: 'desc' },
   })
 
-  if (messages.length === 0) return
+  let latestRepliedMessage: any = null
+  if (unrepliedMessages.length === 0 && allowUpdateExisting) {
+    latestRepliedMessage = await db.message.findFirst({
+      where: {
+        phone,
+        reply: { isNot: null },
+        campaign: {
+          OR: [
+            { status: { notIn: ['COMPLETED', 'CANCELLED'] } },
+            { status: 'COMPLETED', completedAt: { gte: replyWindowCutoff } },
+          ],
+        },
+      },
+      include: {
+        campaign: true,
+        contact:  { include: { area: true } },
+        reply: true,
+      },
+      orderBy: [
+        { sentAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+    })
+  }
+
+  if (unrepliedMessages.length === 0 && !latestRepliedMessage) return
 
   // Call Claude ONCE with the reply text, reuse result for all fan-out replies
   const apiUrl = `http://localhost:${process.env.PORT ?? 3001}`
   let analysisData: Record<string, unknown> = {}
   try {
-    const firstMsg = messages[0]
+    const analysisMsg = unrepliedMessages[0] ?? latestRepliedMessage
+    if (!analysisMsg) return
     const resp = await fetch(`${apiUrl}/api/analyze/reply`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({
         replyText:    text,
-        bulan:        firstMsg.campaign.bulan,
-        campaignType: firstMsg.contact.area.contactType,
+        bulan:        analysisMsg.campaign.bulan,
+        campaignType: analysisMsg.contact.area.contactType,
       }),
     })
     if (resp.ok) {
@@ -501,8 +528,8 @@ async function handleReply(params: {
     console.warn('[worker] analyze/reply call failed:', err)
   }
 
-  // Create Reply records + update counts + check stop condition
-  for (const msg of messages) {
+  // Normal path: create Reply records + update counts + check stop condition
+  for (const msg of unrepliedMessages) {
     // Guard: if reply.create fails (e.g. duplicate on second poll), skip ALL counter
     // updates for this message — avoids double-counting replyCount.
     const reply = await db.reply.create({
@@ -582,7 +609,31 @@ async function handleReply(params: {
     }).catch(() => {})
   }
 
-  console.log(`[worker] reply from ${phone} fanned out to ${messages.length} message(s)`)
+  if (unrepliedMessages.length > 0) {
+    console.log(`[worker] reply from ${phone} fanned out to ${unrepliedMessages.length} message(s)`)
+    return
+  }
+
+  // Manual fallback path: refresh latest existing reply text/analysis without
+  // touching counters.
+  if (allowUpdateExisting && latestRepliedMessage) {
+    await db.reply.update({
+      where: { messageId: latestRepliedMessage.id },
+      data: {
+        body:           text,
+        screenshotPath,
+        claudeCategory:  (analysisData.category  as string) ?? null,
+        claudeSentiment: (analysisData.sentiment as string) ?? null,
+        claudeSummary:   (analysisData.summary   as string) ?? null,
+        jawaban:         (analysisData.jawaban   as number | null) ?? null,
+        receivedAt:      new Date(),
+      },
+    }).catch((err) => {
+      console.warn(`[worker] reply.update failed for msg ${latestRepliedMessage.id}:`, err)
+    })
+
+    console.log(`[worker] manual poll refreshed latest reply for ${phone} (msg:${latestRepliedMessage.id})`)
+  }
 }
 
 // Called when pollReplies detects that the expected outgoing message is absent from
@@ -948,7 +999,7 @@ async function startManualPollListener(): Promise<void> {
   sub.on('message', (_channel, message) => {
     try {
       const { byAgent } = JSON.parse(message) as {
-        byAgent: Record<string, Record<string, string>> // agentId → { phone → sentAtISO }
+        byAgent: Record<string, Record<string, string | { sentAt: string; mode?: 'unreplied' | 'fallback_latest' }>>
       }
 
       // Process in background — don't block the subscriber
@@ -964,16 +1015,38 @@ async function startManualPollListener(): Promise<void> {
             continue
           }
 
-          // Build the Map<string, Date> that pollReplies expects
+          // Build the Map<string, Date> that pollReplies expects, plus per-phone mode.
           const phonesMap = new Map<string, Date>()
-          for (const [phone, sentAtISO] of Object.entries(phoneEntries)) {
-            phonesMap.set(phone, new Date(sentAtISO))
+          const modeByPhone = new Map<string, 'unreplied' | 'fallback_latest'>()
+          for (const [phone, meta] of Object.entries(phoneEntries)) {
+            if (typeof meta === 'string') {
+              phonesMap.set(phone, new Date(meta))
+              modeByPhone.set(phone, 'unreplied')
+              continue
+            }
+
+            phonesMap.set(phone, new Date(meta.sentAt))
+            modeByPhone.set(phone, meta.mode === 'fallback_latest' ? 'fallback_latest' : 'unreplied')
           }
 
           console.log(`[manual-poll] agent:${agentId} polling ${phonesMap.size} phone(s)`)
 
           try {
-            await entry.agent.pollReplies(handleReply, phonesMap, handleStaleMessage)
+            // Manual poll is an explicit operator action. Disable stale-anchor guard
+            // so worker still performs a best-effort reply scan for selected phones,
+            // including cases marked FAILED/EXPIRED due to status drift.
+            await entry.agent.pollReplies(
+              ({ phone, text, screenshotPath }) =>
+                handleReply({
+                  phone,
+                  text,
+                  screenshotPath,
+                  allowUpdateExisting: modeByPhone.get(phone) === 'fallback_latest',
+                }),
+              phonesMap,
+              handleStaleMessage,
+              { disableStaleGuard: true },
+            )
             // Update lastPolledAt tracking
             const now = Date.now()
             for (const phone of phonesMap.keys()) {

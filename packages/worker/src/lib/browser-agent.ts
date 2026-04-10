@@ -456,6 +456,7 @@ export class BrowserAgent {
     onReply:  (params: { phone: string; text: string; screenshotPath: string | null }) => Promise<void>,
     sentPhones: Map<string, Date>,
     onStale?: (phone: string) => Promise<void>,
+    options?: { disableStaleGuard?: boolean },
   ): Promise<void> {
     // Lock is acquired PER PHONE instead of for the entire batch.
     // This allows sendMessage() to interleave between poll checks,
@@ -542,7 +543,8 @@ export class BrowserAgent {
         // our latest Bulan-2 message never appeared in WhatsApp (silent delivery failure).
         // In that case we must NOT fire handleReply — doing so would attribute the old
         // Bulan-1 reply (R1, which sits after M1 in the DOM) to the Bulan-2 message (M2).
-        const lastIncoming = await page.evaluate((expectedSentAtMs: number): string | null | '__STALE__' => {
+        const lastIncoming = await page.evaluate((payload: { expectedSentAtMs: number; disableStaleGuard: boolean }): string | null | '__STALE__' => {
+          const { expectedSentAtMs, disableStaleGuard } = payload
           // Collect all top-level message rows in DOM order
           const rows = Array.from(document.querySelectorAll(
             '[data-id], .message-in, .message-out',
@@ -571,7 +573,7 @@ export class BrowserAgent {
           const preText  = outEl.querySelector?.('.copyable-text[data-pre-plain-text]')
             ?.getAttribute('data-pre-plain-text') ?? null
 
-          if (preText) {
+          if (preText && !disableStaleGuard) {
             // Format (id-ID locale): "[H.MM, DD/MM/YYYY] "
             const dm = preText.match(/,\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/)
             if (dm) {
@@ -610,7 +612,7 @@ export class BrowserAgent {
             lastEl.querySelector('.copyable-text')?.textContent?.trim() ??
             null
           )
-        }, sentAtMs)
+        }, { expectedSentAtMs: sentAtMs, disableStaleGuard: options?.disableStaleGuard === true })
 
         if (lastIncoming === '__STALE__') {
           console.warn(`[agent:${this.agentId}] stale anchor for ${phone} — latest message absent from WhatsApp chat, marking FAILED for retry`)

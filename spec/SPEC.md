@@ -1282,7 +1282,15 @@ Campaign targets specific **areas** of a single type (not whole departments). At
 - Reply summary (confirmed % / denied % / unclear %)
 
 ### `/responses` — Reply Inbox
-- Table: Store Name | Area | Dept | Message Sent | Reply | Category | Sentiment | Time
+- Table: Campaign | Store Name | Phone | Area | Dept | Message Sent | Reply | Summary | Jawaban | Category | Time | Screenshot
+- Inline manual correction controls per row:
+  - `Jawaban` selector: `Ya` | `Tidak` | `Tidak Jelas`
+  - `Category` selector: `confirmed|denied|question|unclear|other`
+  - `Save` button updates selected row via `PATCH /api/replies/:id`
+- Manual correction endpoint:
+  - `PATCH /api/replies/:id`
+  - Body: `{ category?: ReplyCategory|null, jawaban?: 1|0|null }`
+  - Use case: fix Claude misclassification (e.g. move `unclear` to `confirmed`)
 - Export to XLSX button (`GET /api/export/responses`)
 - "Write to Output Folder" button (`POST /api/export/write`)
 - "Regenerate CSV Reports" button (`POST /api/export/report`)
@@ -1300,6 +1308,22 @@ Campaign targets specific **areas** of a single type (not whole departments). At
   - Save button
 - Config display (working hours, rate limits, daily cap) — read-only from env
 - Link to `/agents` for browser/agent management (browser controls moved to `/agents`)
+- **Maintenance** section:
+  - "Unexpire all messages" button — moves all `EXPIRED` messages back to `SENT` for re-polling
+- **Manual Reply Poll** section:
+  - Input accepts one phone per line or comma-separated list (max 100)
+  - Triggers `POST /api/replies/poll-manual` with `{ phones: string[] }`
+  - API behavior per phone:
+    1. Prefer latest unreplied message (`SENT|DELIVERED|READ|EXPIRED|FAILED`, `reply=null`, `agentId!=null`)
+    2. If none, fallback to latest message (`SENT|DELIVERED|READ|EXPIRED|FAILED`, `agentId!=null`)
+  - Selected phones are grouped by `agentId` and published to Redis channel `reply:poll-manual`
+  - Worker behavior for manual poll:
+    - Uses best-effort scan mode (stale-anchor guard disabled for this flow)
+    - Allows recovering replies for messages that drifted to `FAILED`/`EXPIRED`
+    - For `mode=fallback_latest`, if no unreplied message exists, refreshes the latest existing reply for that phone (updates text + Claude fields) without incrementing counters
+  - Response shape:
+    - `queued[]`: `{ phone, agentId, mode }`, where `mode` is `unreplied` or `fallback_latest`
+    - `skipped[]`: invalid numbers or phones with no sent message tied to an agent
 
 ---
 

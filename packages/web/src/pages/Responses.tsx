@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { ReplyCategory } from '@aice/shared'
 
@@ -351,11 +351,13 @@ function StatsBar({ stats }: { stats: RepliesResponse['stats'] }) {
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function Responses() {
+  const queryClient = useQueryClient()
   const [filterCampaignId, setFilterCampaignId] = useState('')
   const [filterCategory,   setFilterCategory]   = useState('')
   const [filterJawaban,    setFilterJawaban]     = useState('')
   const [page,             setPage]              = useState(1)
   const [screenshot,       setScreenshot]        = useState<string | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, { category: string; jawaban: string }>>({})
 
   // Reset to page 1 whenever filters change
   function updateFilter<T>(setter: (v: T) => void) {
@@ -383,6 +385,27 @@ export default function Responses() {
   const replies = data?.replies ?? []
   const stats   = data?.stats ?? { total: 0, confirmed: 0, denied: 0, question: 0, unclear: 0, other: 0 }
   const pages   = data?.pages ?? 1
+
+  const updateReplyMutation = useMutation({
+    mutationFn: (payload: { id: string; category: string; jawaban: string }) =>
+      apiFetch(`/api/replies/${payload.id}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          category: payload.category || null,
+          jawaban: payload.jawaban === '1' ? 1 : payload.jawaban === '0' ? 0 : null,
+        }),
+      }),
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['replies'] })
+      setDrafts((prev) => {
+        const next = { ...prev }
+        delete next[variables.id]
+        return next
+      })
+    },
+    onError: (e) => alert(String(e)),
+  })
 
   return (
     <div className="space-y-4">
@@ -448,7 +471,7 @@ export default function Responses() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['Campaign', 'Store', 'Area / Dept', 'Message Sent', 'Reply', 'Summary', 'Jawaban', 'Category', 'Time', ''].map((h) => (
+              {['Campaign', 'Store', 'Phone', 'Area / Dept', 'Message Sent', 'Reply', 'Summary', 'Jawaban', 'Category', 'Time', 'Screenshot', 'Update'].map((h) => (
                 <th key={h} className="px-3 py-2.5 text-left font-medium whitespace-nowrap">{h}</th>
               ))}
             </tr>
@@ -456,7 +479,7 @@ export default function Responses() {
           <tbody className="divide-y">
             {replies.length === 0 && !repliesQuery.isFetching && (
               <tr>
-                <td colSpan={10} className="px-4 py-10 text-center text-muted-foreground">
+                <td colSpan={12} className="px-4 py-10 text-center text-muted-foreground">
                   No replies yet
                 </td>
               </tr>
@@ -472,6 +495,11 @@ export default function Responses() {
                 {/* Store */}
                 <td className="px-3 py-2.5 font-medium whitespace-nowrap">
                   {r.message.contact.storeName}
+                </td>
+
+                {/* Phone */}
+                <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">
+                  {r.message.phone}
                 </td>
 
                 {/* Area / Dept */}
@@ -507,32 +535,58 @@ export default function Responses() {
 
                 {/* Jawaban */}
                 <td className="px-3 py-2.5 whitespace-nowrap">
-                  {r.jawaban === 1 && (
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">Ya</span>
-                  )}
-                  {r.jawaban === 0 && (
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-600">Tidak</span>
-                  )}
-                  {r.jawaban === null && (
-                    <span className="text-muted-foreground/40 text-xs">—</span>
-                  )}
+                  <select
+                    value={drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))}
+                    onChange={(e) => {
+                      const nextJawaban = e.target.value
+                      const currentCategory = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [r.id]: { category: currentCategory, jawaban: nextJawaban },
+                      }))
+                    }}
+                    className="text-xs rounded border bg-background px-2 py-1"
+                  >
+                    <option value="1">Ya</option>
+                    <option value="0">Tidak</option>
+                    <option value="null">Tidak Jelas</option>
+                  </select>
                 </td>
 
                 {/* Category */}
                 <td className="px-3 py-2.5 whitespace-nowrap">
-                  {r.claudeCategory ? (
-                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1 w-fit ${CATEGORY_COLORS[r.claudeCategory] ?? ''}`}>
-                      {r.claudeSentiment && (
-                        <span
-                          className={`inline-block w-1.5 h-1.5 rounded-full ${SENTIMENT_COLORS[r.claudeSentiment] ?? 'bg-gray-400'}`}
-                          title={r.claudeSentiment}
-                        />
-                      )}
-                      {r.claudeCategory}
-                    </span>
-                  ) : (
-                    <span className="text-muted-foreground/40 text-xs">—</span>
-                  )}
+                  <div className="space-y-1">
+                    <select
+                      value={drafts[r.id]?.category ?? (r.claudeCategory ?? '')}
+                      onChange={(e) => {
+                        const nextCategory = e.target.value
+                        const currentJawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
+                        setDrafts((prev) => ({
+                          ...prev,
+                          [r.id]: { category: nextCategory, jawaban: currentJawaban },
+                        }))
+                      }}
+                      className="text-xs rounded border bg-background px-2 py-1 min-w-[120px]"
+                    >
+                      <option value="">—</option>
+                      <option value="confirmed">Confirmed</option>
+                      <option value="denied">Denied</option>
+                      <option value="question">Question</option>
+                      <option value="unclear">Unclear</option>
+                      <option value="other">Other</option>
+                    </select>
+                    {(drafts[r.id]?.category ?? r.claudeCategory) && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium inline-flex items-center gap-1 w-fit ${CATEGORY_COLORS[(drafts[r.id]?.category ?? r.claudeCategory ?? '') as ReplyCategory] ?? ''}`}>
+                        {r.claudeSentiment && (
+                          <span
+                            className={`inline-block w-1.5 h-1.5 rounded-full ${SENTIMENT_COLORS[r.claudeSentiment] ?? 'bg-gray-400'}`}
+                            title={r.claudeSentiment}
+                          />
+                        )}
+                        {drafts[r.id]?.category ?? r.claudeCategory}
+                      </span>
+                    )}
+                  </div>
                 </td>
 
                 {/* Time */}
@@ -566,6 +620,26 @@ export default function Responses() {
                       </svg>
                     </span>
                   )}
+                </td>
+
+                {/* Update */}
+                <td className="px-3 py-2.5 whitespace-nowrap">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
+                      const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
+                      updateReplyMutation.mutate({ id: r.id, category, jawaban })
+                    }}
+                    disabled={updateReplyMutation.isPending || (() => {
+                      const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
+                      const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
+                      return category === (r.claudeCategory ?? '') && jawaban === (r.jawaban === null ? 'null' : String(r.jawaban))
+                    })()}
+                    className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent disabled:opacity-40"
+                  >
+                    {updateReplyMutation.isPending ? 'Saving…' : 'Save'}
+                  </button>
                 </td>
               </tr>
             ))}
