@@ -5,12 +5,20 @@ import { messageQueue } from '../lib/queue'
 import type { MessageJob } from '@aice/shared'
 
 const router: import('express').Router = Router()
+const CAMPAIGN_STATUSES = ['DRAFT', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const
 
 // ─── GET /api/campaigns ───────────────────────────────────────────────────────
 
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
+    const { status } = req.query as Record<string, string | undefined>
+    if (status && !CAMPAIGN_STATUSES.includes(status as (typeof CAMPAIGN_STATUSES)[number])) {
+      res.status(400).json({ ok: false, error: 'Invalid campaign status filter' })
+      return
+    }
+
     const campaigns = await db.campaign.findMany({
+      where: status ? { status } : undefined,
       include: { areas: { include: { area: { include: { department: true } } } } },
       orderBy: { createdAt: 'desc' },
     })
@@ -18,20 +26,36 @@ router.get('/', async (_req, res) => {
     // Compute live counts from Message records (one query each for all campaigns)
     // to avoid trusting potentially-stale denormalized counters.
     const campaignIds = campaigns.map((c) => c.id)
-    const [replyCounts, cancelledCounts] = await Promise.all([
+    const [replyCounts, statusCounts] = await Promise.all([
       db.message.groupBy({
         by:    ['campaignId'],
         where: { campaignId: { in: campaignIds }, reply: { isNot: null } },
         _count: { id: true },
       }),
       db.message.groupBy({
-        by:    ['campaignId'],
-        where: { campaignId: { in: campaignIds }, status: 'CANCELLED' },
+        by:    ['campaignId', 'status'],
+        where: { campaignId: { in: campaignIds }, status: { in: ['PENDING', 'QUEUED', 'FAILED', 'CANCELLED'] } },
         _count: { id: true },
       }),
     ])
-    const replyCountMap     = new Map(replyCounts.map((r)     => [r.campaignId, r._count.id]))
-    const cancelledCountMap = new Map(cancelledCounts.map((r) => [r.campaignId, r._count.id]))
+    const replyCountMap = new Map(replyCounts.map((r) => [r.campaignId, r._count.id]))
+    const queueCountMap = new Map<string, number>()
+    const failedCountMap = new Map<string, number>()
+    const cancelledCountMap = new Map<string, number>()
+
+    for (const row of statusCounts) {
+      if (row.status === 'FAILED') {
+        failedCountMap.set(row.campaignId, row._count.id)
+        continue
+      }
+      if (row.status === 'CANCELLED') {
+        cancelledCountMap.set(row.campaignId, row._count.id)
+        continue
+      }
+      if (row.status === 'PENDING' || row.status === 'QUEUED') {
+        queueCountMap.set(row.campaignId, (queueCountMap.get(row.campaignId) ?? 0) + row._count.id)
+      }
+    }
 
     // Count unique contacts who already replied per (bulan, campaignType) combo,
     // grouped by area and capped at targetRepliesPerArea per area.
@@ -69,8 +93,10 @@ router.get('/', async (_req, res) => {
 
       return {
         ...c,
-        replyCount:     replyCountMap.get(c.id)     ?? 0,
-        cancelledCount: cancelledCountMap.get(c.id) ?? 0,
+        replyCount:     replyCountMap.get(c.id)      ?? 0,
+        queuedCount:    queueCountMap.get(c.id)      ?? 0,
+        failedCount:    failedCountMap.get(c.id)     ?? 0,
+        cancelledCount: cancelledCountMap.get(c.id)  ?? 0,
         alreadyRepliedCount,
       }
     })

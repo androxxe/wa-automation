@@ -1236,7 +1236,10 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 
 ### `/campaigns` — Campaign List
 - Status badges: DRAFT / RUNNING / PAUSED / COMPLETED / CANCELLED
+- Status filter dropdown (All + each campaign status) backed by `GET /api/campaigns?status=...`
+- Stats cards for currently shown rows: `Shown`, `Running`, `Paused`, `In Queue`, `Failed`, `Replies`
 - Progress bar: `sent/total`
+- Queue/failed visibility per row via `Queue / Failed` column (`Q {pending+queued} / F {failed}`)
 - **Already Replied** column — shows `alreadyRepliedCount` (unique contacts who replied for that `bulan` + `campaignType`, capped at `targetRepliesPerArea` per area — excess replies beyond target are ignored) alongside the bulan and type label (e.g. "42 Desember · STIK"). Helps the user see useful reply coverage across all campaigns for the same month + type.
 - Actions: View, Cancel
 
