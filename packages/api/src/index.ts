@@ -13,6 +13,7 @@ import exportRouter   from './routes/export'
 import repliesRouter  from './routes/replies'
 import warmerRouter   from './routes/warmer'
 import statsRouter    from './routes/stats'
+import messagesRouter from './routes/messages'
 
 async function main() {
   await validateStartup()
@@ -34,6 +35,7 @@ async function main() {
   app.use('/api/replies',   repliesRouter)
   app.use('/api/warmer',    warmerRouter)
   app.use('/api/stats',     statsRouter)
+  app.use('/api/messages',  messagesRouter)
 
   app.get('/api/health', (_req, res) =>
     res.json({ ok: true, timestamp: new Date().toISOString() }),

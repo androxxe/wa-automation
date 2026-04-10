@@ -290,6 +290,153 @@ function EnqueueModal({
   )
 }
 
+// ─── Manual send modal ───────────────────────────────────────────────────────
+
+function ManualSendModal({
+  template,
+  onClose,
+  agents,
+  prefilledPhone,
+  prefilledBody,
+  messageId,
+  campaignId,
+}: {
+  template:       string
+  onClose:        () => void
+  agents:         AgentSummary[]
+  prefilledPhone?: string
+  prefilledBody?:  string
+  messageId?:      string
+  campaignId:      string
+}) {
+  const queryClient = useQueryClient()
+  const [phone, setPhone]     = useState(prefilledPhone ?? '')
+  const [body, setBody]       = useState(prefilledBody ?? template)
+  const [agentId, setAgentId] = useState('')
+  const [error, setError]     = useState<string | null>(null)
+
+  useEffect(() => {
+    setPhone(prefilledPhone ?? '')
+  }, [prefilledPhone])
+
+  useEffect(() => {
+    setBody(prefilledBody ?? template)
+  }, [prefilledBody, template])
+
+  const normalizedPhone = phone.trim().replace(/[^\d+]/g, '')
+  const disabled        = !normalizedPhone || body.trim().length === 0
+
+  const mutation = useMutation({
+    mutationFn: () => apiFetch<{ requestId: string; status: string; agentId?: number }>(
+      '/api/messages/send',
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          phone: normalizedPhone,
+          body,
+          ...(agentId ? { agentId: Number(agentId) } : {}),
+          ...(messageId ? { messageId } : {}),
+        }),
+      },
+    ),
+    onSuccess: (data) => {
+      alert(`Manual send queued${data.agentId ? ` via agent ${data.agentId}` : ''}. Request: ${data.requestId}`)
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', campaignId] })
+      onClose()
+    },
+    onError: (e) => setError(String(e)),
+  })
+
+  const onlineAgents = agents.filter((a) => a.status === 'ONLINE' && !a.validationOnly)
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-background rounded-lg shadow-lg border w-full max-w-lg mx-4 p-6 space-y-5">
+        <div className="flex items-start justify-between">
+          <div>
+            <h3 className="font-semibold text-base">Manual send</h3>
+            <p className="text-xs text-muted-foreground">Bypasses campaign queue; sends immediately via an online agent.</p>
+          </div>
+          <button type="button" onClick={onClose} className="text-muted-foreground text-sm">×</button>
+        </div>
+
+        {error && (
+          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{error}</div>
+        )}
+
+        <div className="space-y-3">
+          {messageId && (
+            <p className="text-xs text-muted-foreground">Manual resend for message ID: {messageId}</p>
+          )}
+          <label className="block text-sm space-y-1">
+            <span className="text-muted-foreground">Phone</span>
+            <input
+              type="text"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              onBlur={(e) => setPhone(e.target.value.replace(/[^\d+]/g, ''))}
+              placeholder="62xxxxxxxxxx"
+              readOnly={!!messageId}
+              className={`w-full border rounded-md px-3 py-2 bg-background text-sm ${messageId ? 'bg-muted/40 cursor-not-allowed' : ''}`}
+            />
+            <span className="text-xs text-muted-foreground">Digits only, include country code.</span>
+          </label>
+
+          <label className="block text-sm space-y-1">
+            <span className="text-muted-foreground">Body</span>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={6}
+              maxLength={2048}
+              className="w-full border rounded-md px-3 py-2 bg-background text-sm"
+            />
+            <div className="flex justify-between text-xs text-muted-foreground">
+              <span>{messageId ? 'Prefilled from message; editable.' : 'Prefilled from campaign template; editable.'}</span>
+              <span>{body.length}/2048</span>
+            </div>
+          </label>
+
+          <label className="block text-sm space-y-1">
+            <span className="text-muted-foreground">Agent (optional)</span>
+            <select
+              value={agentId}
+              onChange={(e) => setAgentId(e.target.value)}
+              className="w-full border rounded-md px-3 py-2 bg-background text-sm"
+            >
+              <option value="">Auto-pick online agent</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id} disabled={a.status !== 'ONLINE' || a.validationOnly}>
+                  {a.name} {a.status !== 'ONLINE' ? '(offline)' : ''}{a.validationOnly ? ' (validation-only)' : ''}
+                </option>
+              ))}
+            </select>
+            {onlineAgents.length === 0 && (
+              <span className="text-xs text-red-600">No online agents available.</span>
+            )}
+          </label>
+
+          <p className="text-xs text-muted-foreground">Manual send respects working hours; offline/validation agents are disabled.</p>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="border text-sm px-4 py-2 rounded-md">Cancel</button>
+          <button
+            type="button"
+            onClick={() => { setError(null); mutation.mutate() }}
+            disabled={disabled || mutation.isPending || onlineAgents.length === 0}
+            className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50"
+          >
+            {mutation.isPending ? 'Sending…' : 'Send now'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CampaignArea {
@@ -307,6 +454,7 @@ interface Campaign {
   bulan:        string
   campaignType: string
   status:       CampaignStatus
+  template:     string
   totalCount:     number
   sentCount:      number
   deliveredCount: number
@@ -328,6 +476,14 @@ interface Message {
   contact:    { storeName: string }
   reply:      { body: string; claudeCategory: string | null } | null
   agent:      { name: string } | null
+  body?:      string
+}
+
+interface AgentSummary {
+  id:             number
+  name:           string
+  status:         string
+  validationOnly: boolean
 }
 
 const STATUS_COLORS: Record<CampaignStatus, string> = {
@@ -355,12 +511,19 @@ export default function CampaignDetail() {
   const [page, setPage]           = useState(1)
   const [failModal, setFailModal] = useState<string | null>(null)
   const [preview, setPreview]     = useState<AreaEnqueuePreview[] | null>(null)
+  const [manualCtx, setManualCtx] = useState<{ phone?: string; body?: string; messageId?: string } | null>(null)
   const eventSourceRef            = useRef<EventSource | null>(null)
 
   const { data: campaign } = useQuery<Campaign>({
     queryKey: ['campaign', id],
     queryFn:  () => apiFetch<Campaign>(`/api/campaigns/${id}`),
     enabled:  !!id,
+  })
+
+  const { data: agents = [] } = useQuery<AgentSummary[]>({
+    queryKey: ['agents'],
+    queryFn:  () => apiFetch<AgentSummary[]>('/api/agents'),
+    refetchInterval: 10000,
   })
 
   const { data: messagesData } = useQuery<{ messages: Message[]; total: number }>({
@@ -504,6 +667,17 @@ export default function CampaignDetail() {
           loading={enqueueMutation.isPending}
         />
       )}
+      {manualCtx && campaign && (
+        <ManualSendModal
+          template={campaign.template}
+          agents={agents}
+          prefilledPhone={manualCtx.phone}
+          prefilledBody={manualCtx.body}
+          messageId={manualCtx.messageId}
+          campaignId={campaign.id}
+          onClose={() => setManualCtx(null)}
+        />
+      )}
 
       <div className="space-y-6">
         {/* Header */}
@@ -552,6 +726,14 @@ export default function CampaignDetail() {
 
         {/* Controls */}
         <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setManualCtx({ body: campaign.template })}
+            disabled={campaign.status === 'CANCELLED'}
+            className="border text-sm px-4 py-2 rounded-md hover:bg-accent disabled:opacity-50"
+          >
+            Manual send
+          </button>
           {campaign.status === 'DRAFT' && (
             <button
               type="button"
@@ -706,6 +888,15 @@ export default function CampaignDetail() {
                         </button>
                         <button
                           type="button"
+                          onClick={() => setManualCtx({ phone: m.phone, body: m.body ?? campaign.template, messageId: m.id })}
+                          disabled={deleteMessageMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                          title="Manual send for this contact"
+                        >
+                          Manual send
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => { if (confirm('Cancel this message?')) deleteMessageMutation.mutate(m.id) }}
                           disabled={deleteMessageMutation.isPending}
                           className="text-xs px-1.5 py-0.5 rounded border border-gray-300 text-gray-500 hover:bg-accent disabled:opacity-50"
@@ -725,6 +916,15 @@ export default function CampaignDetail() {
                           title="Unexpire — move back to SENT for reply polling"
                         >
                           Unexpire
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setManualCtx({ phone: m.phone, body: m.body ?? campaign.template, messageId: m.id })}
+                          disabled={unexpireMutation.isPending}
+                          className="text-xs px-1.5 py-0.5 rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                          title="Manual send for this contact"
+                        >
+                          Manual send
                         </button>
                       </div>
                     ) : m.status === 'QUEUED' ? (

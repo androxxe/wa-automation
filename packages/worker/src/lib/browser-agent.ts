@@ -230,14 +230,14 @@ export class BrowserAgent {
 
   // ─── sendMessage ──────────────────────────────────────────────────────────
 
-  async sendMessage(phone: string, body: string): Promise<void> {
+  async sendMessage(phone: string, body: string, chatLoadTimeoutMs = 30000): Promise<void> {
     return this._withBrowserLock(async () => {
       const page   = this.page!
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
       await this._gotoQuiet(url, 'load')
-      await this._typeAndSendBody(body, page, phone)
+      await this._typeAndSendBody(body, page, phone, chatLoadTimeoutMs)
     })
   }
 
@@ -247,7 +247,7 @@ export class BrowserAgent {
    * Send a message by searching the phone number in the WA sidebar search box.
    * More human-like than direct URL navigation. Falls back to sendMessage() if search fails.
    */
-  async sendMessageViaSidebar(phone: string, body: string): Promise<void> {
+  async sendMessageViaSidebar(phone: string, body: string, chatLoadTimeoutMs = 30000): Promise<void> {
     return this._withBrowserLock(async () => {
       const page = this.page!
       const number = phone.replace('+', '')
@@ -273,7 +273,7 @@ export class BrowserAgent {
 
       if (!searchBox) {
         console.log(`[agent:${this.agentId}] sidebar search box not found, falling back to URL nav`)
-        await this._sendViaUrl(phone, body, page)
+        await this._sendViaUrl(phone, body, page, chatLoadTimeoutMs)
         return
       }
 
@@ -303,7 +303,7 @@ export class BrowserAgent {
       await page.waitForTimeout(2000)
 
       // Now type and send the message body
-      await this._typeAndSendBody(body, page, phone)
+      await this._typeAndSendBody(body, page, phone, chatLoadTimeoutMs)
     })
   }
 
@@ -313,7 +313,12 @@ export class BrowserAgent {
    * Core send logic used by both sendMessage() and sendMessageViaSidebar().
    * Expects the chat panel to already be open.
    */
-  private async _typeAndSendBody(body: string, page: Page, phone: string): Promise<void> {
+  private async _typeAndSendBody(
+    body: string,
+    page: Page,
+    phone: string,
+    chatLoadTimeoutMs: number,
+  ): Promise<void> {
     const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
     const INPUT_SELECTORS  = [
       '[data-testid="conversation-compose-box-input"]',
@@ -335,7 +340,7 @@ export class BrowserAgent {
           return false
         },
         { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS },
-        { timeout: 30000, polling: 100 },
+        { timeout: chatLoadTimeoutMs, polling: 100 },
       )
       .catch(() => null)
 
@@ -379,11 +384,11 @@ export class BrowserAgent {
   /**
    * URL-based send — extracted from original sendMessage() for reuse as fallback.
    */
-  private async _sendViaUrl(phone: string, body: string, page: Page): Promise<void> {
+  private async _sendViaUrl(phone: string, body: string, page: Page, chatLoadTimeoutMs: number): Promise<void> {
     const number = phone.replace('+', '')
     const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
     await this._gotoQuiet(url, 'load')
-    await this._typeAndSendBody(body, page, phone)
+    await this._typeAndSendBody(body, page, phone, chatLoadTimeoutMs)
   }
 
   // ─── checkPhoneRegistered ────────────────────────────────────────────────

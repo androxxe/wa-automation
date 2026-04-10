@@ -24,6 +24,8 @@ const REPLY_BATCH_SIZE       = parseInt(process.env.REPLY_BATCH_SIZE ?? '10', 10
 const REPLY_REPOLL_COOLDOWN  = parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS ?? '600000', 10)
 const PHONE_POLL_COOLDOWN    = parseInt(process.env.REPLY_POLL_COOLDOWN_MS ?? '180000', 10)
 const SIDEBAR_RATIO          = parseFloat(process.env.SIDEBAR_SEND_RATIO ?? '0.70')
+const MANUAL_SEND_CHANNEL    = process.env.MANUAL_SEND_CHANNEL ?? 'manual-send:cmd'
+const ALLOW_MANUAL_OUTSIDE_HOURS = process.env.ALLOW_MANUAL_OUTSIDE_HOURS === 'true'
 // REPLY_POLL_CONCURRENCY is now read from DB (appConfig.replyPollConcurrency) each poll cycle.
 // Env var serves as fallback when the DB value is missing.
 const REPLY_POLL_CONCURRENCY_DEFAULT = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '1', 10)
@@ -37,6 +39,8 @@ const sessionSendCount = new Map<number, number>()
 let lastSendDisabledLogAt = 0
 const SEND_DISABLED_LOG_INTERVAL = 5 * 60 * 1000
 const SEND_DISABLED_RESCHEDULE   = 5 * 60 * 1000 // 5 minutes
+const CHAT_LOAD_TIMEOUT_MS       = 15000
+const CHAT_LOAD_RETRY_TIMEOUT_MS = Math.max(1000, Math.floor(CHAT_LOAD_TIMEOUT_MS / 2))
 
 // Round-robin index — persists across jobs, resets on worker restart
 let roundRobinIndex = 0
@@ -209,19 +213,29 @@ const worker = new Worker<MessageJob>(
       await sleep(delay)
 
       // 4. Send — mixed navigation (sidebar search vs direct URL)
+      const isRetryAttempt = (job.attemptsMade ?? 0) > 0
+      const chatLoadTimeoutMs = isRetryAttempt ? CHAT_LOAD_RETRY_TIMEOUT_MS : CHAT_LOAD_TIMEOUT_MS
+      log(`chat-load timeout for this attempt: ${chatLoadTimeoutMs}ms (attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1})`)
       const useSidebar = Math.random() < SIDEBAR_RATIO
       if (useSidebar) {
         log(`sending via sidebar search to ${phone}…`)
-        await agent.sendMessageViaSidebar(phone, body)
+        await agent.sendMessageViaSidebar(phone, body, chatLoadTimeoutMs)
       } else {
         log(`sending via URL to ${phone}…`)
-        await agent.sendMessage(phone, body)
+        await agent.sendMessage(phone, body, chatLoadTimeoutMs)
       }
 
       // 6. Update message record
       await db.message.updateMany({
         where: { id: messageId },
-        data:  { status: 'SENT', sentAt: new Date(), body: body, agentId: usedAgentId },
+        data:  {
+          status: 'SENT',
+          sentAt: new Date(),
+          body: body,
+          agentId: usedAgentId,
+          failedAt: null,
+          failReason: null,
+        },
       })
       await incrementDailyCount(usedAgentId)
 
@@ -799,6 +813,111 @@ async function reconcileStuckQueued(): Promise<void> {
   }
 }
 
+// ─── Manual send (fire-and-forget) ────────────────────────────────────────────
+
+interface ManualSendCommand {
+  requestId:    string
+  phone:        string
+  body:         string
+  agentId?:     number
+  requestedBy?: string
+  dryRun?:      boolean
+  messageId?:   string
+}
+
+async function selectManualAgent(preferredAgentId?: number) {
+  const online = agentManager.getAllAgents()
+    .filter(({ agent }) => agent.status === 'connected' && !agent.validationOnly)
+
+  if (preferredAgentId) {
+    const found = online.find(({ agentId }) => agentId === preferredAgentId)
+    if (found) return found.agent
+  }
+
+  if (online.length === 0) return null
+
+  online.sort((a, b) => a.agent.activeJobCount - b.agent.activeJobCount)
+  return online[0].agent
+}
+
+async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
+  const { requestId, phone, body, agentId, dryRun, messageId } = cmd
+  const log = (msg: string) => console.log(`[manual-send:${requestId}] ${msg}`)
+
+  try {
+    const agent = await selectManualAgent(agentId)
+    if (!agent) {
+      log('no online agent available (excluding validation-only)')
+      return
+    }
+
+    if (dryRun) {
+      log(`dry-run ok via agent:${agent.agentId}`)
+      return
+    }
+
+    if (!ALLOW_MANUAL_OUTSIDE_HOURS && !isWorkingHours()) {
+      log('blocked: outside working hours (ALLOW_MANUAL_OUTSIDE_HOURS=false)')
+      return
+    }
+
+    const sentToday = await todaySendCount(agent.agentId)
+    if (sentToday >= agent.dailySendCap) {
+      log(`blocked: daily cap reached (${agent.dailySendCap}) for agent:${agent.agentId}`)
+      return
+    }
+
+    agent.activeJobCount++
+    try {
+      log(`sending via agent:${agent.agentId} to ${phone}`)
+      await agent.sendMessage(phone, body)
+      await incrementDailyCount(agent.agentId)
+      if (messageId) {
+        await db.message.update({
+          where: { id: messageId },
+          data:  {
+            status:  'SENT',
+            sentAt:  new Date(),
+            agentId: agent.agentId,
+            body,
+            failedAt: null,
+            failReason: null,
+          },
+        }).catch((e) => log(`warn: failed to update message status: ${e}`))
+      }
+      log('sent')
+    } catch (err) {
+      if (messageId) {
+        await db.message.update({
+          where: { id: messageId },
+          data:  { status: 'FAILED', failReason: String(err).slice(0, 500) },
+        }).catch(() => {})
+      }
+      log(`error: ${err}`)
+    } finally {
+      agent.activeJobCount--
+    }
+  } catch (err) {
+    console.error(`[manual-send:${requestId}] unexpected error:`, err)
+  }
+}
+
+async function startManualSendListener(): Promise<void> {
+  const sub = redis.duplicate()
+  await sub.subscribe(MANUAL_SEND_CHANNEL)
+  sub.on('message', (_channel, message) => {
+    try {
+      const cmd = JSON.parse(message) as ManualSendCommand
+      ;(async () => handleManualSend(cmd))().catch((err) =>
+        console.error('[manual-send] handler error:', err),
+      )
+    } catch (err) {
+      console.error('[manual-send] command parse error:', err)
+    }
+  })
+  console.log(`[worker] listening on ${MANUAL_SEND_CHANNEL} channel`)
+}
+
 // ─── Startup ──────────────────────────────────────────────────────────────────
 
 async function startWarmCommandListener(): Promise<void> {
@@ -896,6 +1015,7 @@ async function main() {
   console.log(`[worker] listening on queues: ${QUEUE_NAME}, ${PHONE_CHECK_QUEUE_NAME}, warm-queue`)
   startReplyPolling()
   await startWarmCommandListener()
+  await startManualSendListener()
   await startManualPollListener()
 }
 

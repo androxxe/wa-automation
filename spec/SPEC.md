@@ -868,18 +868,22 @@ interface MessageJob {
 5. Check mid-session break counter (per agent) — if `agent.breakEvery` messages since last break: sleep `agent.breakMinMs`–`agent.breakMaxMs` random duration
 6. `await sleep(gaussianDelay())` — human-like interval
 7. Call Claude to generate varied message body (Job 3)
-8. Call `agent.sendMessage(phone, variedBody)` — agent-locked
-9. Update `Message.status = SENT`, `sentAt = now()`, `agentId = agent.id`
+8. Call `agent.sendMessage(phone, variedBody)` — agent-locked; chat-load wait is attempt-aware:
+   - attempt #1 uses 15000ms timeout
+   - attempt #2 (retry) uses half of attempt #1 timeout (7500ms, fail-fast)
+9. Update `Message.status = SENT`, `sentAt = now()`, `agentId = agent.id`, and clear stale failure fields:
+   - `failedAt = null`
+   - `failReason = null`
 10. Increment `DailySendLog.count` for this agent
 11. Increment `Campaign.sentCount`
 12. Decrement `agent:{agentId}:active_jobs` in Redis
 
-**On failure:**
-- Mark `Message.status = FAILED`, store `failReason`
+**On failure (terminal, after retries exhausted):**
+- Mark `Message.status = FAILED`, store `failReason` + `failedAt`
 - If `failReason` contains `"tidak terdaftar"`: also set `contact.phoneValid = false, waChecked = true`
 - Always decrement `agent:{agentId}:active_jobs`
 
-**Retry:** 3 attempts with exponential backoff (5s base).
+**Retry:** 2 total attempts (1 initial + 1 retry) with exponential backoff (5s base).
 
 ---
 
