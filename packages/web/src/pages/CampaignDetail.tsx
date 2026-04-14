@@ -1020,20 +1020,18 @@ export default function CampaignDetail() {
                   <td className="px-4 py-2.5">{m.contact.storeName}</td>
                   <td className="px-4 py-2.5 font-mono text-xs">{m.phone}</td>
                   <td className="px-4 py-2.5 text-xs text-muted-foreground">{m.agent?.name ?? '—'}</td>
-                  <td className="px-4 py-2.5">
+                   <td className="px-4 py-2.5">
                     {m.status === 'FAILED' ? (
                       <div className="flex items-center gap-1">
-                        <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600">FAILED</span>
-                        {m.failReason && (
-                          <button
-                            type="button"
-                            onClick={() => setFailModal(m.failReason!)}
-                            className="text-xs text-red-500 hover:underline"
-                            title="View fail reason"
-                          >
-                            &#x2139;
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          onClick={() => setFailModal(m.failReason!)}
+                          disabled={!m.failReason}
+                          className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50 cursor-help"
+                          title={m.failReason ? 'Click to view fail reason' : 'No fail reason available'}
+                        >
+                          FAILED
+                        </button>
                         <button
                           type="button"
                           onClick={() => retryFailedMutation.mutate([m.id])}
