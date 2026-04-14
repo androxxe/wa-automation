@@ -41,6 +41,7 @@ interface RepliesResponse {
     denied:    number
     question:  number
     unclear:   number
+    invalid:   number
     other:     number
   }
 }
@@ -59,6 +60,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   denied:    'bg-red-100 text-red-600',
   question:  'bg-yellow-100 text-yellow-700',
   unclear:   'bg-gray-100 text-gray-600',
+  invalid:   'bg-orange-100 text-orange-700',
   other:     'bg-blue-100 text-blue-700',
 }
 
@@ -74,6 +76,7 @@ const CATEGORIES: { value: string; label: string }[] = [
   { value: 'denied',    label: 'Denied' },
   { value: 'question',  label: 'Question' },
   { value: 'unclear',   label: 'Unclear' },
+  { value: 'invalid',   label: 'Invalid' },
   { value: 'other',     label: 'Other' },
 ]
 
@@ -334,10 +337,11 @@ function StatsBar({ stats }: { stats: RepliesResponse['stats'] }) {
     { label: 'Denied',    value: stats.denied,    color: 'text-red-600'    },
     { label: 'Question',  value: stats.question,  color: 'text-yellow-600' },
     { label: 'Unclear',   value: stats.unclear,   color: 'text-gray-500'   },
+    { label: 'Invalid',   value: stats.invalid,   color: 'text-red-600'    },
     { label: 'Other',     value: stats.other,     color: 'text-blue-600'   },
   ]
   return (
-    <div className="grid grid-cols-6 gap-3">
+    <div className="grid grid-cols-7 gap-3">
       {items.map(({ label, value, color }) => (
         <div key={label} className="rounded-lg border bg-card px-4 py-3 text-center">
           <p className={`text-2xl font-bold ${color}`}>{value}</p>
@@ -383,7 +387,7 @@ export default function Responses() {
 
   const data    = repliesQuery.data
   const replies = data?.replies ?? []
-  const stats   = data?.stats ?? { total: 0, confirmed: 0, denied: 0, question: 0, unclear: 0, other: 0 }
+  const stats   = data?.stats ?? { total: 0, confirmed: 0, denied: 0, question: 0, unclear: 0, invalid: 0, other: 0 }
   const pages   = data?.pages ?? 1
 
   const updateReplyMutation = useMutation({
@@ -573,6 +577,7 @@ export default function Responses() {
                       <option value="denied">Denied</option>
                       <option value="question">Question</option>
                       <option value="unclear">Unclear</option>
+                      <option value="invalid">Invalid</option>
                       <option value="other">Other</option>
                     </select>
                     {(drafts[r.id]?.category ?? r.claudeCategory) && (

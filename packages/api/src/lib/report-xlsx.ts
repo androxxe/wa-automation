@@ -151,8 +151,8 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         denied:    'FFFCA5A5',
         question:  'FFFDE68A',
         unclear:   'FFE5E7EB',
+        invalid:   'FFFBBF24',
         other:     'FFBFDBFE',
-        invalid:   'FFEF4444',
       }
       const kategoriCell     = dataRow.getCell(8)
       kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
