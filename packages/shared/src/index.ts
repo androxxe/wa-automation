@@ -76,7 +76,7 @@ export interface ColumnMapping {
   total_count: string | null
 }
 
-export type ReplyCategory  = 'confirmed' | 'denied' | 'question' | 'unclear' | 'other'
+export type ReplyCategory  = 'confirmed' | 'denied' | 'question' | 'unclear' | 'invalid' | 'other'
 export type ReplySentiment = 'positive' | 'neutral' | 'negative'
 
 export interface ReplyAnalysis {

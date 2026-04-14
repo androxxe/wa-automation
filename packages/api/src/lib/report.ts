@@ -14,10 +14,11 @@ function csvEscape(value: string): string {
  *
  * Output: OUTPUT_FOLDER/{Type}/{Department}/{Area}_{Bulan}_{YYYY-MM-DD}.csv
  *
- * Columns: Nama Toko, Nomor HP Toko, Department, Area, Agent Phone, Jawaban, Screenshot
+ * Columns: Nama Toko, Nomor HP Toko, Department, Area, Agent Phone, Jawaban, Kategori, Status, Screenshot
  *
  * Includes ALL contacts with a SENT/DELIVERED/READ message — not just replied ones.
  * Contacts without a reply show blank Jawaban and Screenshot.
+ * Invalid replies show "⚠ Invalid" in Status column.
  * Fully rewritten on each call (idempotent).
  */
 export async function generateAreaReport(
@@ -64,6 +65,8 @@ export async function generateAreaReport(
     // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
     const jawaban   = reply != null ? String(reply.jawaban ?? 0) : ''
     const kategori  = reply?.claudeCategory ?? ''
+    const isInvalid = reply?.claudeCategory === 'invalid'
+    const status    = isInvalid ? '⚠ Invalid' : (reply != null ? 'Valid' : '')
     const screenshot = reply?.screenshotPath
       ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
       : ''
@@ -76,6 +79,7 @@ export async function generateAreaReport(
       agentPhone,
       jawaban,
       kategori,
+      status,
       screenshot,
     }
   })
@@ -85,7 +89,7 @@ export async function generateAreaReport(
   fs.mkdirSync(dir, { recursive: true })
 
   const csvPath = path.join(dir, `${area.name}_${bulan}_${today}.csv`)
-  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Kategori,Screenshot'
+  const header  = 'Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Kategori,Status,Screenshot'
   const lines   = rows.map((r) =>
     [
       csvEscape(r.namaToko),
@@ -95,6 +99,7 @@ export async function generateAreaReport(
       csvEscape(r.agentPhone),
       r.jawaban,
       csvEscape(r.kategori),
+      csvEscape(r.status),
       csvEscape(r.screenshot),
     ].join(','),
   )

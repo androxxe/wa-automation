@@ -6,14 +6,14 @@ import { redis } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
 
 const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
-const ALLOWED_REPLY_CATEGORIES = new Set(['confirmed', 'denied', 'question', 'unclear', 'other'])
+const ALLOWED_REPLY_CATEGORIES = new Set(['confirmed', 'denied', 'question', 'unclear', 'invalid', 'other'])
 
 const router: import('express').Router = Router()
 
 // ─── GET /api/replies ─────────────────────────────────────────────────────────
 // Query params:
 //   campaignId  — filter by campaign
-//   category    — 'confirmed'|'denied'|'question'|'unclear'|'other'
+//   category    — 'confirmed'|'denied'|'question'|'unclear'|'invalid'|'other'
 //   jawaban     — '1' (yes) | '0' (no) | 'null' (unclear)
 //   page        — default 1
 //   limit       — default 50, max 200
@@ -104,6 +104,7 @@ router.get('/', async (req, res) => {
       denied:    0,
       question:  0,
       unclear:   0,
+      invalid:   0,
       other:     0,
     } as Record<string, number>
     for (const s of rawStats) {
@@ -371,6 +372,47 @@ router.post('/poll-manual', async (req, res) => {
     })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── PUT /api/replies/:id ─────────────────────────────────────────────────────
+// Update a reply's category and/or jawaban
+// Body: { category?: string, jawaban?: number | null }
+
+router.put('/:id', async (req, res) => {
+  try {
+    const { id } = req.params
+    const { category, jawaban } = req.body as { category?: string; jawaban?: number | null }
+
+    // Validate category if provided
+    if (category && !ALLOWED_REPLY_CATEGORIES.has(category)) {
+      return res.status(400).json({
+        ok: false,
+        error: `Invalid category. Allowed: ${Array.from(ALLOWED_REPLY_CATEGORIES).join(', ')}`,
+      })
+    }
+
+    // Build update object
+    const updateData: Record<string, unknown> = {}
+    if (category !== undefined) updateData.claudeCategory = category
+    if (jawaban !== undefined) updateData.jawaban = jawaban
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ ok: false, error: 'No fields to update' })
+    }
+
+    const updated = await db.reply.update({
+      where: { id },
+      data: updateData,
+    })
+
+    res.json({ ok: true, data: updated })
+  } catch (err) {
+    if (String(err).includes('Record to update not found')) {
+      res.status(404).json({ ok: false, error: 'Reply not found' })
+    } else {
+      res.status(500).json({ ok: false, error: String(err) })
+    }
   }
 })
 

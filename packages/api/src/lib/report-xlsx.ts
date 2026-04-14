@@ -13,11 +13,12 @@ const ROW_H_DEFAULT  = 18
 /**
  * Build an XLSX workbook for a campaign — one sheet per area.
  *
- * Columns: No | Nama Toko | Nomor HP | Department | Area | Agent Phone | Jawaban | Screenshot
- * Screenshots are embedded as images in column H.
+ * Columns: No | Nama Toko | Nomor HP | Department | Area | Agent Phone | Jawaban | Kategori | Status | Dikirim pada | Dibalas pada | Raw Response | Screenshot
+ * Screenshots are embedded as images in column M.
  *
  * Includes ALL contacts with a SENT/DELIVERED/READ message — not just replied ones.
  * Contacts without a reply show blank Jawaban and no Screenshot.
+ * Invalid replies show "⚠ Invalid" in Status column with red background.
  */
 export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffer> {
   const campaign = await db.campaign.findUnique({
@@ -31,6 +32,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
   workbook.created     = new Date()
 
   let totalRows = 0
+  let totalInvalidReplies = 0
 
   for (const ca of campaign.areas) {
     const area = ca.area
@@ -68,6 +70,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       { key: 'agentPhone',  width: 18 },
       { key: 'jawaban',     width: 12 },
       { key: 'kategori',    width: 14 },
+      { key: 'status',      width: 12 },
       { key: 'dikirimPada', width: 20 },
       { key: 'dibalasPada', width: 20 },
       { key: 'rawResponse', width: 40 },
@@ -75,7 +78,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
     ]
 
     // Header row
-    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Dikirim pada', 'Dibalas pada', 'Raw Response', 'Screenshot']
+    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Status', 'Dikirim pada', 'Dibalas pada', 'Raw Response', 'Screenshot']
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
@@ -86,6 +89,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
     })
 
     let rowNo = 1
+    let invalidCount = 0
     for (const contact of sentContacts) {
       const message     = contact.messages[0]
       const reply       = message?.reply
@@ -96,7 +100,14 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       const jawabanLabel = jawaban === 1 ? 'Ya' : jawaban === 0 ? 'Tidak' : ''
       const jawabanColor = jawaban === 1 ? 'FFD1FAE5' : jawaban === 0 ? 'FFFEE2E2' : 'FFFFFFFF'
       const kategori     = reply?.claudeCategory ?? ''
+      const isInvalid    = reply?.claudeCategory === 'invalid'
+      const statusLabel  = isInvalid ? '⚠ Invalid' : (hasReply ? 'Valid' : '')
       const excelRowIdx  = rowNo + 1
+
+      if (isInvalid) {
+        invalidCount++
+        totalInvalidReplies++
+      }
 
       const fmtDate = (d: Date | null | undefined) =>
         d ? d.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta', day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''
@@ -111,8 +122,8 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         : null
       const hasImg  = absPath !== null && fs.existsSync(absPath)
 
-      // col 12 = column L (0-indexed: 11) for screenshot image
-      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, dikirimPada, dibalasPada, rawResponse, ''])
+      // col 13 = column M (0-indexed: 12) for screenshot image
+      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, statusLabel, dikirimPada, dibalasPada, rawResponse, ''])
       dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
       dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
@@ -141,6 +152,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         question:  'FFFDE68A',
         unclear:   'FFE5E7EB',
         other:     'FFBFDBFE',
+        invalid:   'FFEF4444',
       }
       const kategoriCell     = dataRow.getCell(8)
       kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
@@ -149,12 +161,23 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
       }
 
-      dataRow.getCell(9).alignment  = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(9).font       = { color: { argb: 'FF6B7280' } }
-      dataRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(10).font      = { color: { argb: 'FF6B7280' } }
-      dataRow.getCell(11).alignment = { vertical: 'middle', wrapText: true }
-      dataRow.getCell(11).font      = { color: { argb: 'FF374151' } }
+      // Status cell (col 9)
+      const statusCell = dataRow.getCell(9)
+      statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
+      if (isInvalid) {
+        statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
+      } else if (hasReply) {
+        statusCell.font = { color: { argb: 'FF059669' } }
+        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
+      }
+
+      dataRow.getCell(10).alignment  = { vertical: 'middle', horizontal: 'center' }
+      dataRow.getCell(10).font       = { color: { argb: 'FF6B7280' } }
+      dataRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' }
+      dataRow.getCell(11).font      = { color: { argb: 'FF6B7280' } }
+      dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
+      dataRow.getCell(12).font      = { color: { argb: 'FF374151' } }
 
       if (rowNo % 2 === 0) {
         for (let c = 1; c <= 6; c++) {
@@ -171,16 +194,16 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
           const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-          // col 11 = column L (0-indexed), row = excelRowIdx - 1 (0-indexed)
+          // col 12 = column M (0-indexed), row = excelRowIdx - 1 (0-indexed)
           sheet.addImage(imageId, {
-            tl:     { col: 11, row: excelRowIdx - 1 },
+            tl:     { col: 12, row: excelRowIdx - 1 },
             ext:    { width: IMG_W, height: IMG_H },
             editAs: 'oneCell',
           })
         } catch {
-          dataRow.getCell(12).value     = absPath
-          dataRow.getCell(12).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-          dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
+          dataRow.getCell(13).value     = absPath
+          dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+          dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
         }
       }
 
@@ -193,11 +216,13 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
   // Info sheet
   const meta = workbook.addWorksheet('Info')
   meta.addRow(['Laporan AICE WhatsApp Automation'])
-  meta.addRow(['Campaign',    campaign.name])
-  meta.addRow(['Tipe',        campaign.campaignType])
-  meta.addRow(['Bulan',       campaign.bulan])
-  meta.addRow(['Dibuat',      new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })])
-  meta.addRow(['Total baris', totalRows])
+  meta.addRow(['Campaign',           campaign.name])
+  meta.addRow(['Tipe',               campaign.campaignType])
+  meta.addRow(['Bulan',              campaign.bulan])
+  meta.addRow(['Dibuat',             new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })])
+  meta.addRow(['Total baris',        totalRows])
+  meta.addRow(['Total replies valid', totalRows - totalInvalidReplies])
+  meta.addRow(['Total replies invalid', totalInvalidReplies])
   meta.getRow(1).font = { bold: true, size: 13 }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

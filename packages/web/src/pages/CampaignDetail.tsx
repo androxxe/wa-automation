@@ -23,6 +23,79 @@ function FailReasonModal({ reason, onClose }: { reason: string; onClose: () => v
   )
 }
 
+// ─── Screenshot Modal ─────────────────────────────────────────────────────────
+
+function ScreenshotModal({ path, onClose }: { path: string; onClose: () => void }) {
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70">
+      <button
+        type="button"
+        aria-label="Close screenshot"
+        className="absolute inset-0 w-full h-full cursor-default"
+        onClick={onClose}
+      />
+      <div className="relative max-w-2xl w-full mx-4 z-10">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute -top-8 right-0 text-white text-sm opacity-80 hover:opacity-100"
+        >
+          Close ✕
+        </button>
+        <img
+          src={`/api/replies/screenshot?p=${encodeURIComponent(path)}`}
+          alt="reply screenshot"
+          className="w-full rounded-lg shadow-2xl"
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── Mark Invalid Modal ────────────────────────────────────────────────────────
+
+function MarkInvalidModal({
+  replyBody,
+  onConfirm,
+  onClose,
+  loading,
+}: {
+  replyBody: string
+  onConfirm: () => void
+  onClose: () => void
+  loading: boolean
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-background rounded-lg shadow-lg border w-full max-w-md mx-4 p-6 space-y-4">
+        <h3 className="font-semibold text-sm">Mark reply as invalid?</h3>
+        <p className="text-sm text-muted-foreground break-words">Reply: <span className="font-mono text-xs">{replyBody.slice(0, 60)}{replyBody.length > 60 ? '…' : ''}</span></p>
+        <p className="text-xs text-muted-foreground">This will set the category to "Invalid" while keeping the answer.</p>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} disabled={loading} className="px-4 py-2 text-sm rounded-md border hover:bg-accent disabled:opacity-50">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={loading}
+            className="px-4 py-2 text-sm rounded-md bg-red-600 text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {loading ? 'Marking…' : 'Mark Invalid'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Enqueue modal (two tabs: Preview + Select Contacts) ─────────────────────
 
 interface PickerContact {
@@ -600,7 +673,13 @@ interface Message {
   sentAt:     string | null
   failReason: string | null
   contact:    { storeName: string }
-  reply:      { body: string; claudeCategory: string | null } | null
+  reply:      { 
+    id: string
+    body: string
+    claudeCategory: string | null
+    jawaban: number | null
+    screenshotPath: string | null
+  } | null
   agent:      { name: string } | null
   body?:      string
 }
@@ -639,6 +718,8 @@ export default function CampaignDetail() {
   const [preview, setPreview]     = useState<AreaEnqueuePreview[] | null>(null)
   const [manualCtx, setManualCtx] = useState<{ phone?: string; body?: string; messageId?: string } | null>(null)
   const [completeModal, setCompleteModal] = useState(false)
+  const [screenshot, setScreenshot] = useState<string | null>(null)
+  const [invalidReplyId, setInvalidReplyId] = useState<string | null>(null)
   const eventSourceRef            = useRef<EventSource | null>(null)
 
   const { data: campaign } = useQuery<Campaign>({
@@ -790,6 +871,20 @@ export default function CampaignDetail() {
     onError: (e) => alert(String(e)),
   })
 
+  const updateReplyMutation = useMutation({
+    mutationFn: ({ replyId, category, jawaban }: { replyId: string; category: string; jawaban: string }) =>
+      apiFetch(`/api/replies/${replyId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, jawaban: jawaban === 'null' ? null : (jawaban === '1' ? 1 : 0) }),
+      }),
+    onSuccess: () => {
+      setInvalidReplyId(null)
+      queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })
+    },
+    onError: (e) => alert(String(e)),
+  })
+
   if (!campaign) return <div className="text-muted-foreground py-8 text-center">Loading…</div>
 
   const totalPages = Math.ceil(total / 50)
@@ -824,6 +919,24 @@ export default function CampaignDetail() {
           onConfirm={() => completeMutation.mutate()}
           loading={completeMutation.isPending}
         />
+      )}
+      {screenshot && <ScreenshotModal path={screenshot} onClose={() => setScreenshot(null)} />}
+      {invalidReplyId && messages.length > 0 && (
+        <>
+          {(() => {
+            const msg = messages.find((m) => m.reply?.id === invalidReplyId)
+            if (!msg?.reply) return null
+            const currentJawaban = msg.reply.jawaban === null ? 'null' : String(msg.reply.jawaban)
+            return (
+              <MarkInvalidModal
+                replyBody={msg.reply.body}
+                onConfirm={() => updateReplyMutation.mutate({ replyId: invalidReplyId, category: 'invalid', jawaban: currentJawaban })}
+                onClose={() => setInvalidReplyId(null)}
+                loading={updateReplyMutation.isPending}
+              />
+            )
+          })()}
+        </>
       )}
 
       <div className="space-y-6">
@@ -1104,14 +1217,55 @@ export default function CampaignDetail() {
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">
                     {m.sentAt ? new Date(m.sentAt).toLocaleTimeString() : '—'}
                   </td>
-                  <td className="px-4 py-2.5 text-xs max-w-xs truncate">
+                   <td className="px-4 py-2.5 text-xs max-w-xs">
                     {m.reply ? (
-                      <span title={m.reply.body}>
-                        <span className="text-muted-foreground">[{m.reply.claudeCategory ?? 'pending'}]</span>{' '}
-                        {m.reply.body.slice(0, 40)}{m.reply.body.length > 40 ? '…' : ''}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 truncate">
+                          <span title={m.reply.body}>
+                            <span className={`text-muted-foreground mr-1 ${m.reply.claudeCategory === 'invalid' ? 'bg-red-100 text-red-700 px-1.5 py-0.5 rounded' : ''}`}>
+                              [{m.reply.claudeCategory ?? 'pending'}]
+                            </span>{' '}
+                            {m.reply.body.slice(0, 40)}{m.reply.body.length > 40 ? '…' : ''}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          {/* Screenshot button */}
+                          {m.reply.screenshotPath ? (
+                            <button
+                              type="button"
+                              onClick={() => setScreenshot(m.reply!.screenshotPath)}
+                              aria-label="View screenshot"
+                              className="text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                              </svg>
+                            </button>
+                          ) : (
+                            <span aria-hidden="true" className="text-muted-foreground/20">
+                              <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>
+                              </svg>
+                            </span>
+                          )}
+                          {/* Mark Invalid button */}
+                          {m.reply.claudeCategory !== 'invalid' && (
+                            <button
+                              type="button"
+                              onClick={() => setInvalidReplyId(m.reply!.id)}
+                              aria-label="Mark as invalid"
+                              className="text-muted-foreground hover:text-red-600 transition-colors"
+                              title="Mark this reply as invalid"
+                            >
+                              <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/>
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
                     ) : '—'}
-                  </td>
+                   </td>
                 </tr>
               ))}
             </tbody>
