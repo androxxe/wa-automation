@@ -398,6 +398,30 @@ router.post('/:id/cancel', async (req, res) => {
   }
 })
 
+// ─── POST /api/campaigns/:id/complete ────────────────────────────────────────
+// Manually mark a campaign as COMPLETED.
+// Only allowed for RUNNING or PAUSED campaigns.
+// Remaining unsent/queued messages are left as-is; campaign just changes status.
+
+router.post('/:id/complete', async (req, res) => {
+  try {
+    const campaign = await db.campaign.findUnique({ where: { id: req.params.id } })
+    if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
+    if (!['RUNNING', 'PAUSED'].includes(campaign.status)) {
+      res.status(400).json({ ok: false, error: `Campaign must be RUNNING or PAUSED to complete (current: ${campaign.status})` })
+      return
+    }
+
+    await db.campaign.update({
+      where: { id: req.params.id },
+      data:  { status: 'COMPLETED', completedAt: new Date() },
+    })
+    res.json({ ok: true, data: null })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // ─── POST /api/campaigns/:id/topup ───────────────────────────────────────────
 // Enqueue the next batch of fresh contacts for areas that sent all their initial
 // batch but haven't reached the reply target yet.

@@ -290,6 +290,132 @@ function EnqueueModal({
   )
 }
 
+// ─── Complete campaign modal ─────────────────────────────────────────────────
+
+function CompleteCampaignModal({
+  campaignName,
+  onClose,
+  onConfirm,
+  loading,
+}: {
+  campaignName: string
+  onClose: () => void
+  onConfirm: () => void
+  loading: boolean
+}) {
+  const [step, setStep] = useState<'confirm' | 'verify'>('confirm')
+  const [nameInput, setNameInput] = useState('')
+  const nameMatches = nameInput === campaignName
+
+  function handleContinue() {
+    setStep('verify')
+    setNameInput('')
+  }
+
+  function handleConfirm() {
+    if (nameMatches) {
+      onConfirm()
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/40" onClick={onClose} />
+      <div className="relative bg-background rounded-lg shadow-lg border w-full max-w-md mx-4 p-6 space-y-5">
+        {step === 'confirm' && (
+          <>
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="font-semibold text-base">Mark Campaign as Completed?</h3>
+                <p className="text-xs text-muted-foreground mt-1">Campaign: <span className="font-medium">{campaignName}</span></p>
+              </div>
+              <button type="button" onClick={onClose} className="text-muted-foreground text-sm">×</button>
+            </div>
+
+            <div className="bg-yellow-50 border border-yellow-200 rounded px-3 py-2 space-y-2">
+              <p className="text-sm font-medium text-yellow-800">⚠ Warning</p>
+              <p className="text-xs text-yellow-700">
+                This action is <strong>irreversible</strong>. All remaining unsent and queued messages will be marked as completed. The campaign status will change to COMPLETED and cannot be resumed.
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={onClose} className="border text-sm px-4 py-2 rounded-md">Cancel</button>
+              <button
+                type="button"
+                onClick={handleContinue}
+                className="bg-yellow-500 text-white text-sm px-4 py-2 rounded-md hover:bg-yellow-600"
+              >
+                Continue
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === 'verify' && (
+          <>
+            <div className="flex items-start justify-between">
+              <h3 className="font-semibold text-base">Type campaign name to confirm</h3>
+              <button type="button" onClick={onClose} className="text-muted-foreground text-sm">×</button>
+            </div>
+
+            <div className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                To prevent accidental completion, enter the campaign name exactly:
+              </p>
+              <div className="relative">
+                <input
+                  type="text"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  placeholder={campaignName}
+                  className="w-full border rounded-md px-3 py-2 bg-background text-sm font-mono"
+                />
+                <div className="absolute right-3 top-2.5 text-xs">
+                  {nameInput.length > 0 && (
+                    <span className={nameMatches ? 'text-green-600 font-medium' : 'text-red-600 font-medium'}>
+                      {nameMatches ? '✓ Match' : '✗ No match'}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground text-center">
+                Expected: <span className="font-mono font-medium">{campaignName}</span>
+              </p>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setStep('confirm'); setNameInput('') }}
+                className="border text-sm px-4 py-2 rounded-md"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={() => setNameInput('')}
+                disabled={nameInput.length === 0}
+                className="border text-sm px-4 py-2 rounded-md disabled:opacity-50"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirm}
+                disabled={!nameMatches || loading}
+                className="bg-red-600 text-white text-sm px-4 py-2 rounded-md disabled:opacity-50 hover:bg-red-700"
+              >
+                {loading ? 'Completing…' : 'Complete Campaign'}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Manual send modal ───────────────────────────────────────────────────────
 
 function ManualSendModal({
@@ -512,6 +638,7 @@ export default function CampaignDetail() {
   const [failModal, setFailModal] = useState<string | null>(null)
   const [preview, setPreview]     = useState<AreaEnqueuePreview[] | null>(null)
   const [manualCtx, setManualCtx] = useState<{ phone?: string; body?: string; messageId?: string } | null>(null)
+  const [completeModal, setCompleteModal] = useState(false)
   const eventSourceRef            = useRef<EventSource | null>(null)
 
   const { data: campaign } = useQuery<Campaign>({
@@ -576,6 +703,18 @@ export default function CampaignDetail() {
       queryClient.invalidateQueries({ queryKey: ['campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['campaign', id] })
     },
+  })
+
+  const completeMutation = useMutation({
+    mutationFn: () =>
+      apiFetch(`/api/campaigns/${id}/complete`, { method: 'POST' }),
+    onSuccess: () => {
+      alert('Campaign marked as completed.')
+      setCompleteModal(false)
+      queryClient.invalidateQueries({ queryKey: ['campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['campaign', id] })
+    },
+    onError: (e) => alert(String(e)),
   })
 
   const topupMutation = useMutation({
@@ -678,6 +817,14 @@ export default function CampaignDetail() {
           onClose={() => setManualCtx(null)}
         />
       )}
+      {completeModal && campaign && (
+        <CompleteCampaignModal
+          campaignName={campaign.name}
+          onClose={() => setCompleteModal(false)}
+          onConfirm={() => completeMutation.mutate()}
+          loading={completeMutation.isPending}
+        />
+      )}
 
       <div className="space-y-6">
         {/* Header */}
@@ -752,6 +899,16 @@ export default function CampaignDetail() {
           )}
           {['RUNNING', 'PAUSED', 'DRAFT'].includes(campaign.status) && (
             <button type="button" onClick={() => actionMutation.mutate('cancel')} className="bg-destructive text-destructive-foreground text-sm px-4 py-2 rounded-md">Cancel</button>
+          )}
+          {['RUNNING', 'PAUSED'].includes(campaign.status) && (
+            <button
+              type="button"
+              onClick={() => setCompleteModal(true)}
+              disabled={completeMutation.isPending}
+              className="bg-blue-600 text-white text-sm px-4 py-2 rounded-md hover:bg-blue-700 disabled:opacity-50"
+            >
+              {completeMutation.isPending ? 'Completing…' : 'Mark Complete'}
+            </button>
           )}
           {campaign.failedCount > 0 && campaign.status !== 'CANCELLED' && (
             <button
