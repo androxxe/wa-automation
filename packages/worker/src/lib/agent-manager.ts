@@ -110,6 +110,13 @@ export class AgentManager {
       const status = this._mapBrowserStatus(agent.status)
       await this._setStatus(agentId, status)
       console.log(`[agent:${agentId}] started — status: ${status}`)
+
+      // Capture initial screenshot immediately after launch
+      const screenshot = await agent.screenshot()
+      if (screenshot) {
+        await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 30)
+        console.log(`[agent:${agentId}] initial screenshot captured (${screenshot.length} bytes)`)
+      }
     } catch (err) {
       await this._setStatus(agentId, 'ERROR')
       console.error(`[agent:${agentId}] start failed:`, err)
@@ -187,11 +194,21 @@ export class AgentManager {
         const status = this._mapBrowserStatus(agent.status)
         await this._setStatus(agentId, status)
 
-        // Publish screenshot for ONLINE agents
-        if (agent.status === 'connected') {
+        // Publish screenshot for all states except disconnected
+        // (show preview during loading, QR, and normal online operation)
+        if (agent.status !== 'disconnected') {
           const screenshot = await agent.screenshot()
-          if (screenshot) await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 30)
-          else            await this.redis.del(`agent:${agentId}:screenshot`)
+          if (screenshot) {
+            await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 30)
+            if (agent.status === 'qr' || agent.status === 'loading') {
+              console.log(`[agent:${agentId}] screenshot captured (${agent.status}, ${screenshot.length} bytes)`)
+            }
+          } else {
+            await this.redis.del(`agent:${agentId}:screenshot`)
+            if (agent.status === 'qr' || agent.status === 'loading') {
+              console.warn(`[agent:${agentId}] screenshot failed (${agent.status})`)
+            }
+          }
         }
 
         if (prev !== agent.status) {

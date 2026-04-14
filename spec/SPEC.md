@@ -542,6 +542,20 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 | `POST` | `/api/agents/:id/stop` | Send stop command via Redis pub/sub |
 | `GET` | `/api/agents/:id/events` | SSE stream — status changes for this agent |
 
+##### Screenshot Response Format
+```json
+{
+  "ok": true,
+  "data": {
+    "screenshot": "/9j/4AAQSkZJRgABAQAA..."  // base64-encoded JPEG, null if unavailable
+  }
+}
+```
+- Frontend displays via: `<img src={`data:image/jpeg;base64,${screenshot}`} />`
+- Updated every 15 seconds via polling in worker
+- Available for all agent states: STARTING, QR, ONLINE
+- Returns `null` for OFFLINE agents or when capture fails
+
 ### Browser / WhatsApp Session (aggregate)
 
 | Method | Route | Description |
@@ -708,6 +722,29 @@ await this.context.addInitScript(STEALTH_SCRIPT)
    a. Compose box appears  → return true  (registered)
    b. Popup appears        → dismiss popup, return false (not registered)
    c. Both timeout         → return true  (safe fallback — don't wrongly invalidate)
+```
+
+### Screenshot Capture Flow (`screenshot()`)
+
+Screenshots are captured continuously to provide real-time UI preview of agent browser state:
+
+```
+1. Called immediately after agent launches (initial capture, before polling)
+2. Called every 15 seconds during the status polling interval (for all states except OFFLINE)
+3. Returns base64-encoded JPEG (full page screenshot)
+
+Storage:
+  - Key: `agent:{agentId}:screenshot` (Redis)
+  - Expiry: 30 seconds (ensures stale images are discarded)
+  - Headless mode: Explicit viewport `{ width: 1920, height: 1080 }` required (null breaks headless rendering)
+  - Non-headless mode: Viewport = actual window size
+
+Response to UI:
+  - Via `GET /api/agents/:id/screenshot`
+  - Base64 JPEG displayed in web UI: `<img src="data:image/jpeg;base64,${screenshot}" />`
+  - Shows "No preview" placeholder if screenshot is null or agent is OFFLINE
+  
+Available for all agent states: STARTING (browser loading/QR visible), QR, ONLINE
 ```
 
 ### Delivery Status Detection
@@ -1196,14 +1233,24 @@ function randomBreakDuration(): number // random 3–8 min mid-session break
 
 ### `/agents` — Agent Manager
 - List of all registered agents with:
-  - Name, department assignment (or "Pool"), status badge, active jobs, messages sent today
-  - Live screenshot thumbnail (refreshes every 5s)
-  - **Start** button (OFFLINE) / **Restart** button (STARTING — stuck after browser closed) / **Retry** button (ERROR) / **Stop** button (ONLINE, QR)
-  - Edit button (name, phone, daily cap, break timing, typing speed, department)
-  - Delete button (only if OFFLINE)
+   - Name, department assignment (or "Pool"), status badge, active jobs, messages sent today
+   - Live screenshot thumbnail (refreshes every 5s, captured for **all agent states** including STARTING, QR, and ONLINE)
+   - **Start** button (OFFLINE) / **Restart** button (STARTING — stuck after browser closed) / **Retry** button (ERROR) / **Stop** button (ONLINE, QR)
+   - Edit button (name, phone, daily cap, break timing, typing speed, department)
+   - Delete button (only if OFFLINE)
 - **"Add Agent"** button → modal: name + phone number (required) + daily send cap + break settings + typing speed + optional department — all timing fields pre-filled with env defaults, editable per agent → creates `Agent` in DB + profile path auto-set to `{BROWSER_PROFILE_PATH}/{agentId}/`
 - **Edit button** on each agent card → modal with the same fields for updating name, phone, cap, timing, and department
 - Per-agent QR code prompt when WA Web needs re-authentication (screenshot shows QR — user scans)
+
+#### Live Screenshot Feature
+Screenshots are **captured continuously for all agent lifecycle states** to provide real-time UI preview:
+- **Initial capture**: Immediately after agent launches (before polling begins)
+- **Polling captures**: Every 15 seconds during the polling interval for continuous updates
+- **All states supported**: STARTING (browser loading/QR visible), QR, ONLINE
+- **Storage**: Screenshots stored in Redis with key `agent:{agentId}:screenshot`, 30-second expiry
+- **Encoding**: Base64-encoded JPEG, fetched via `GET /api/agents/:id/screenshot`
+- **Headless mode**: Explicit viewport `{ width: 1920, height: 1080 }` set when `BROWSER_HEADLESS=true`
+- **Frontend display**: Shows "No preview" placeholder when screenshot unavailable or agent OFFLINE
 
 ### `/import` — Import Contacts
 - Folder tree scanned from DATA_FOLDER: **Type (STIK / KARDUS) → Department → Area**

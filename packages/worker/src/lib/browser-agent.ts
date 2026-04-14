@@ -165,7 +165,7 @@ export class BrowserAgent {
         '--no-default-browser-check',
         '--disable-default-apps',
       ],
-      viewport:   null,
+      viewport:   HEADLESS ? { width: 1920, height: 1080 } : null,
       userAgent:  USER_AGENT,
       locale:     'id-ID',
       timezoneId: 'Asia/Jakarta',
@@ -207,7 +207,7 @@ export class BrowserAgent {
       if (this._status !== prev) {
         console.log(`[agent:${this.agentId}] status: ${prev} → ${this._status}`)
       }
-    }, 15000)
+    }, 5000)
   }
 
   // ─── Screenshot ───────────────────────────────────────────────────────────
@@ -223,7 +223,8 @@ export class BrowserAgent {
         ? await chatPanel.screenshot({ type: 'jpeg', quality: 60 })
         : await this.page.screenshot({ type: 'jpeg', quality: 60 })
       return buf.toString('base64')
-    } catch {
+    } catch (err) {
+      console.warn(`[agent:${this.agentId}] screenshot failed:`, err instanceof Error ? err.message : String(err))
       return null
     }
   }
