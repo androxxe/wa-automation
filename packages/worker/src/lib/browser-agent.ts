@@ -608,11 +608,34 @@ export class BrowserAgent {
 
           // Take the last incoming after the anchor (covers follow-up messages)
           const lastEl = incomingAfter[incomingAfter.length - 1]
-          return (
-            lastEl.querySelector('[data-testid="msg-text"]')?.textContent?.trim() ??
-            lastEl.querySelector('.copyable-text')?.textContent?.trim() ??
-            null
-          )
+          
+          // Extract clean reply text, removing quoted/forwarded blocks and timestamps
+          const copyableText = lastEl.querySelector('.copyable-text')
+          if (!copyableText) return null
+          
+          // Clone to avoid DOM mutations
+          const clone = copyableText.cloneNode(true) as Element
+          
+          // Remove quoted/forwarded message blocks
+          const quotedBlocks = clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2')
+          quotedBlocks.forEach((el) => { el.remove() })
+          
+          // Remove timestamp spans (they have consistent classes across all platforms)
+          const timestampSpans = clone.querySelectorAll('span.x1c4vz4f.x2lah0s')
+          timestampSpans.forEach((el) => { el.remove() })
+          
+          // Get remaining text
+          const text = clone.textContent?.trim() ?? ''
+          
+          // Extra safety: strip any remaining timestamp patterns like "HH:MM" or "HH:MM am/pm"
+          const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
+          
+          // Debug logging (optional, can be removed after verification)
+          if (quotedBlocks.length > 0 || timestampSpans.length > 0) {
+            console.debug(`[reply-extract] Removed ${quotedBlocks.length} quoted blocks, ${timestampSpans.length} timestamp spans`)
+          }
+          
+          return clean || null
         }, { expectedSentAtMs: sentAtMs, disableStaleGuard: options?.disableStaleGuard === true })
 
         if (lastIncoming === '__STALE__') {
