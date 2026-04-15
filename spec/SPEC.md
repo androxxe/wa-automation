@@ -616,6 +616,7 @@ defaultSendPerArea = ceil(defaultTargetRepliesPerArea / defaultExpectedReplyRate
 | `POST` | `/api/export/write` | Write response xlsx files to OUTPUT_FOLDER |
 | `POST` | `/api/export/report` | Regenerate CSV report(s). Body: `{ areaId? }` — omit to regenerate all |
 | `GET` | `/api/export/report-xlsx?campaignId=` | Download per-campaign XLSX — one sheet per area, screenshots in column E. Filename: `{Type}_{Bulan}_{YYYY-MM-DD}.xlsx` |
+| `GET` | `/api/export/report-xlsx-all` | Download all campaigns in a single XLSX file — one sheet per campaign with embedded screenshots. Sheet names include campaign name with timestamp (YYYYMMDD) to ensure uniqueness. Includes Summary sheet with global statistics. Filename: `laporan_semua_campaign_{YYYY-MM-DD}.xlsx` |
 
 ---
 

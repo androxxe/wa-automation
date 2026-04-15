@@ -284,7 +284,7 @@ function ExportDropdown({ campaignId, campaigns }: { campaignId: string; campaig
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 w-72 rounded-lg border bg-popover shadow-md z-20 p-1">
-          {/* Export all */}
+          {/* Export all responses */}
           <button
             type="button"
             className="w-full text-left text-sm px-3 py-2 rounded hover:bg-accent"
@@ -321,6 +321,12 @@ function ExportDropdown({ campaignId, campaigns }: { campaignId: string; campaig
             >
               {downloading ? 'Generating…' : 'Download XLSX'}
             </button>
+            <a
+              href="/export"
+              className="w-full text-sm px-3 py-1.5 rounded-md border text-center hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Advanced Export →
+            </a>
           </div>
         </div>
       )}

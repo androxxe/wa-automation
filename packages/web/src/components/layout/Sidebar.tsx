@@ -8,6 +8,7 @@ import {
   Settings,
   Bot,
   Flame,
+  Download,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
@@ -19,6 +20,7 @@ const nav = [
   { to: '/agents',    label: 'Agents',    icon: Bot },
   { to: '/warmer',    label: 'Warmer',    icon: Flame },
   { to: '/responses', label: 'Responses', icon: MessageSquareText },
+  { to: '/export',    label: 'Export',    icon: Download },
   { to: '/settings',  label: 'Settings',  icon: Settings },
 ]
 

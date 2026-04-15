@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { buildResponseWorkbook, writeOutputFiles } from '../lib/exporter'
 import { generateAreaReport, generateAllReports } from '../lib/report'
-import { buildCampaignReportXlsx } from '../lib/report-xlsx'
+import { buildCampaignReportXlsx, buildAllCampaignsReportXlsx, buildDepartmentReportXlsx } from '../lib/report-xlsx'
 
 const router: import('express').Router = Router()
 
@@ -81,6 +81,92 @@ router.get('/report-xlsx', async (req, res) => {
     const buffer   = await buildCampaignReportXlsx(campaignId)
     const date     = new Date().toISOString().slice(0, 10)
     const filename = `laporan_${campaignId}_${date}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// GET /api/export/report-xlsx-all — XLSX with all campaigns, one sheet per campaign
+router.get('/report-xlsx-all', async (req, res) => {
+  try {
+    const buffer   = await buildAllCampaignsReportXlsx()
+    const date     = new Date().toISOString().slice(0, 10)
+    const filename = `laporan_semua_campaign_${date}.xlsx`
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// GET /api/export/report-xlsx-filtered — XLSX with filtered campaigns
+router.get('/report-xlsx-filtered', async (req, res) => {
+  const { bulan, campaignType } = req.query as Record<string, string>
+  try {
+    const buffer   = await buildAllCampaignsReportXlsx({ bulan, campaignType })
+    const date     = new Date().toISOString().slice(0, 10)
+    let filename   = 'laporan_'
+    if (bulan && campaignType) {
+      filename += `${bulan}_${campaignType}_${date}.xlsx`
+    } else if (bulan) {
+      filename += `${bulan}_${date}.xlsx`
+    } else if (campaignType) {
+      filename += `${campaignType}_${date}.xlsx`
+    } else {
+      filename += `semua_campaign_${date}.xlsx`
+    }
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// GET /api/export/report-xlsx-dept — XLSX organized by department with filtering
+router.get('/report-xlsx-dept', async (req, res) => {
+  const { bulan, campaignType, categories, statuses, jawabans } = req.query as Record<string, string | string[]>
+
+  try {
+    // Parse filter arrays from query parameters
+    const categoryArray = categories
+      ? (typeof categories === 'string' ? [categories] : categories)
+      : undefined
+
+    const statusArray = statuses
+      ? (typeof statuses === 'string' ? [statuses] : statuses)
+      : undefined
+
+    const jawabanArray = jawabans
+      ? (typeof jawabans === 'string' ? [jawabans] : jawabans).map((j) => {
+        if (j === 'null') return null
+        return parseInt(j, 10) as 0 | 1 | null
+      })
+      : undefined
+
+    const buffer = await buildDepartmentReportXlsx({
+      bulan: bulan as string | undefined,
+      campaignType: campaignType as string | undefined,
+      categories: categoryArray as string[] | undefined,
+      statuses: statusArray as ('valid' | 'invalid' | 'pending')[] | undefined,
+      jawabans: jawabanArray as (0 | 1 | null)[] | undefined,
+    })
+
+    const date = new Date().toISOString().slice(0, 10)
+    let filename = 'laporan_departemen_'
+    if (bulan && campaignType) {
+      filename += `${bulan}_${campaignType}_${date}.xlsx`
+    } else if (bulan) {
+      filename += `${bulan}_${date}.xlsx`
+    } else if (campaignType) {
+      filename += `${campaignType}_${date}.xlsx`
+    } else {
+      filename += `${date}.xlsx`
+    }
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
     res.send(buffer)
