@@ -161,12 +161,45 @@ router.get('/:id', async (req, res) => {
     })
     if (!campaign) { res.status(404).json({ ok: false, error: 'Campaign not found' }); return }
 
-    const [cancelledCount, expiredCount] = await Promise.all([
-      db.message.count({ where: { campaignId: campaign.id, status: 'CANCELLED' } }),
-      db.message.count({ where: { campaignId: campaign.id, status: 'EXPIRED' } }),
-    ])
+    // Get all message status counts in parallel
+    const statusCounts = await db.message.groupBy({
+      by:    ['status'],
+      where: { campaignId: campaign.id },
+      _count: { id: true },
+    })
 
-    res.json({ ok: true, data: { ...campaign, cancelledCount, expiredCount } })
+    // Get reply count
+    const replyCount = await db.message.count({
+      where: { campaignId: campaign.id, reply: { isNot: null } },
+    })
+
+    // Get total count
+    const totalCount = await db.message.count({
+      where: { campaignId: campaign.id },
+    })
+
+    // Build count map from status counts
+    const countMap: Record<string, number> = {
+      totalCount,
+      replyCount,
+      sentCount: 0,
+      deliveredCount: 0,
+      readCount: 0,
+      failedCount: 0,
+      cancelledCount: 0,
+      expiredCount: 0,
+    }
+
+    for (const row of statusCounts) {
+      if (row.status === 'SENT') countMap.sentCount = row._count.id
+      if (row.status === 'DELIVERED') countMap.deliveredCount = row._count.id
+      if (row.status === 'READ') countMap.readCount = row._count.id
+      if (row.status === 'FAILED') countMap.failedCount = row._count.id
+      if (row.status === 'CANCELLED') countMap.cancelledCount = row._count.id
+      if (row.status === 'EXPIRED') countMap.expiredCount = row._count.id
+    }
+
+    res.json({ ok: true, data: { ...campaign, ...countMap } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
@@ -811,6 +844,74 @@ router.get('/:id/events', (req, res) => {
   res.flushHeaders()
   const keepAlive = setInterval(() => res.write(': ping\n\n'), 15000)
   req.on('close', () => clearInterval(keepAlive))
+})
+
+// ─── PUT /api/campaigns/:id/messages/:messageId/reassign-agent ─────────────────
+// Reassign a FAILED message to a different agent and re-queue it.
+// Body: { agentId?: number } — if not provided, will auto-pick an available agent
+
+router.put('/:id/messages/:messageId/reassign-agent', async (req, res) => {
+  const { agentId } = req.body as { agentId?: number }
+  try {
+    const message = await db.message.findUnique({
+      where: { id: req.params.messageId },
+    })
+    if (!message || message.campaignId !== req.params.id) {
+      res.status(404).json({ ok: false, error: 'Message not found' }); return
+    }
+    if (message.status !== 'FAILED') {
+      res.status(400).json({ ok: false, error: `Cannot reassign a message with status ${message.status}` })
+      return
+    }
+
+    // Validate agent if provided
+    if (agentId !== undefined) {
+      const agent = await db.agent.findUnique({ where: { id: agentId } })
+      if (!agent) {
+        res.status(400).json({ ok: false, error: `Agent ${agentId} not found` })
+        return
+      }
+      if (agent.validationOnly) {
+        res.status(400).json({ ok: false, error: `Agent ${agent.name} is validation-only and cannot send messages` })
+        return
+      }
+    }
+
+    // Update message: clear failed reason, clear agent (force reassignment), reset to QUEUED
+    await db.message.update({
+      where: { id: req.params.messageId },
+      data: {
+        status:     'QUEUED',
+        agentId:    agentId || null, // null means auto-pick on execution
+        failedAt:   null,
+        failReason: null,
+      },
+    })
+
+    // Adjust failedCount
+    await db.$executeRaw`
+      UPDATE Campaign
+      SET failedCount = GREATEST(failedCount - 1, 0)
+      WHERE id = ${req.params.id}
+    `
+
+    // Re-enqueue the job
+    const job = await messageQueue.add(
+      `msg:${message.id}`,
+      {
+        messageId:  message.id,
+        campaignId: req.params.id,
+        contactId:  message.contactId,
+        phone:      message.phone,
+        body:       message.body,
+      } satisfies import('@aice/shared').MessageJob,
+      { jobId: `msg:${message.id}` },
+    )
+
+    res.json({ ok: true, data: { messageId: message.id, jobId: job.id } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
 })
 
 // ─── GET /api/campaigns/:id/messages ─────────────────────────────────────────
