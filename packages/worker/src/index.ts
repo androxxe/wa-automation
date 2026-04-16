@@ -114,14 +114,17 @@ const worker = new Worker<MessageJob>(
       // Filter: exclude agents in warm mode, validation-only mode, OR actively in a RUNNING warm session.
       // warmMode and validationOnly are stored in DB (not in-memory BrowserAgent), so we query each cycle.
       // Agents that flip warmMode=false mid-session are still blocked via the session check.
-      const [excludedModeAgents, runningSessionAgents] = await Promise.all([
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        db.agent.findMany({ where: { OR: [{ warmMode: true }, { validationOnly: true } as any] }, select: { id: true } }),
-        db.warmSessionAgent.findMany({
-          where: { session: { status: 'RUNNING' } },
-          select: { agentId: true },
-        }),
-      ])
+       const [excludedModeAgents, runningSessionAgents] = await Promise.all([
+         (async () => {
+           const warmAgents = await db.agent.findMany({ where: { warmMode: true }, select: { id: true } })
+           const validationAgents = await db.agent.findMany({ where: { validationOnly: true }, select: { id: true } })
+           return [...warmAgents, ...validationAgents]
+         })(),
+         db.warmSessionAgent.findMany({
+           where: { session: { status: 'RUNNING' } },
+           select: { agentId: true },
+         }),
+       ])
       const excludedAgentIds = new Set([
         ...excludedModeAgents.map((a) => a.id),
         ...runningSessionAgents.map((a) => a.agentId),
@@ -478,7 +481,7 @@ async function handleReply(params: {
     orderBy: { sentAt: 'desc' },
   })
 
-  let latestRepliedMessage: any = null
+  let latestRepliedMessage: Awaited<ReturnType<typeof db.message.findFirst>> = null
   if (unrepliedMessages.length === 0 && allowUpdateExisting) {
     latestRepliedMessage = await db.message.findFirst({
       where: {

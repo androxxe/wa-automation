@@ -82,10 +82,10 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
-      cell.font      = { bold: true, color: { argb: 'FF1F2937' } }
-      cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
+      cell.font      = { bold: true, color: { argb: 'FFFFFFFF' } }
+      cell.fill      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } }
       cell.alignment = { vertical: 'middle', horizontal: 'center' }
-      cell.border    = { bottom: { style: 'medium', color: { argb: 'FFD1D5DB' } } }
+      cell.border    = { bottom: { style: 'medium', color: { argb: 'FF059669' } } }
     })
 
     let rowNo = 1
@@ -98,7 +98,6 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
       // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
       const jawaban      = hasReply ? ((reply!.jawaban ?? 0) as 0 | 1) : null
       const jawabanLabel = jawaban === 1 ? 1 : jawaban === 0 ? 0 : ''
-      const jawabanColor = jawaban === 1 ? 'FFD1FAE5' : jawaban === 0 ? 'FFFEE2E2' : 'FFFFFFFF'
       const kategori     = reply?.claudeCategory ?? ''
       const isInvalid    = reply?.claudeCategory === 'invalid'
       const statusLabel  = isInvalid ? '⚠ Invalid' : (hasReply ? 'Valid' : '')
@@ -187,26 +186,38 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         }
       }
 
-      if (hasImg) {
-        try {
-          const ext       = path.extname(absPath).toLowerCase().replace('.', '')
-          const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-          // col 12 = column M (0-indexed), row = excelRowIdx - 1 (0-indexed)
-          sheet.addImage(imageId, {
-            tl:     { col: 12, row: excelRowIdx - 1 },
-            ext:    { width: IMG_W, height: IMG_H },
-            editAs: 'oneCell',
-          })
-        } catch {
-          dataRow.getCell(13).value     = absPath
-          dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-          dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
-        }
-      }
+       if (hasImg) {
+         try {
+           const ext       = path.extname(absPath).toLowerCase().replace('.', '')
+           const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
+           // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
+           // eslint-disable-next-line @typescript-eslint/no-explicit-any
+           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+           // col 12 = column M (0-indexed), row = excelRowIdx - 1 (0-indexed)
+           sheet.addImage(imageId, {
+             tl:     { col: 12, row: excelRowIdx - 1 },
+             ext:    { width: IMG_W, height: IMG_H },
+             editAs: 'oneCell',
+           })
+         } catch {
+           dataRow.getCell(13).value     = absPath
+           dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+               dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+            }
+         }
 
-      dataRow.commit()
+        // Add black borders to all cells in the row
+        for (let c = 1; c <= 13; c++) {
+          const cell = dataRow.getCell(c)
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+          }
+        }
+
+        dataRow.commit()
       rowNo++
       totalRows++
     }
@@ -282,10 +293,10 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
-      cell.font = { bold: true, color: { argb: 'FF1F2937' } }
-      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } }
       cell.alignment = { vertical: 'middle', horizontal: 'center' }
-      cell.border = { bottom: { style: 'medium', color: { argb: 'FFD1D5DB' } } }
+      cell.border = { bottom: { style: 'medium', color: { argb: 'FF059669' } } }
     })
 
     let campaignTotalRows = 0
@@ -407,21 +418,33 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
           }
         }
 
-        if (hasImg) {
-          try {
-            const ext = path.extname(absPath).toLowerCase().replace('.', '')
-            const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-            sheet.addImage(imageId, {
-              tl: { col: 12, row: excelRowIdx - 1 },
-              ext: { width: IMG_W, height: IMG_H },
-              editAs: 'oneCell',
-            })
-          } catch {
-            dataRow.getCell(13).value = absPath
-            dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-            dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+         if (hasImg) {
+           try {
+             const ext = path.extname(absPath).toLowerCase().replace('.', '')
+             const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
+             // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+             const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+             sheet.addImage(imageId, {
+               tl: { col: 12, row: excelRowIdx - 1 },
+               ext: { width: IMG_W, height: IMG_H },
+               editAs: 'oneCell',
+             })
+             } catch {
+              dataRow.getCell(13).value = absPath
+              dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
+              dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+            }
+          }
+
+        // Add black borders to all cells in the row
+        for (let c = 1; c <= 13; c++) {
+          const cell = dataRow.getCell(c)
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
           }
         }
 
@@ -503,10 +526,10 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
                   status: { in: ['SENT', 'DELIVERED', 'READ'] },
                 },
                 include: {
-                  reply: true,
-                  agent: { select: { phoneNumber: true } },
-                  campaign: { select: { id: true, name: true, bulan: true, campaignType: true } },
-                },
+                   reply: true,
+                   agent: { select: { phoneNumber: true } },
+                   campaign: { select: { id: true, name: true, bulan: true, campaignType: true, template: true } },
+                 },
                 orderBy: { sentAt: 'desc' },
                 take: 1,
               },
@@ -520,10 +543,25 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
   })
 
   // Group messages by campaign
-  const campaignsByDept = new Map<string, Map<string, { campaign: any; rows: any[] }>>()
+  type CampaignRowData = {
+    contact: (typeof departments)[number]['areas'][number]['contacts'][number]
+    area: (typeof departments)[number]['areas'][number]
+    message: (typeof departments)[number]['areas'][number]['contacts'][number]['messages'][number]
+    reply: (typeof departments)[number]['areas'][number]['contacts'][number]['messages'][number]['reply']
+    hasReply: boolean
+    jawaban: 0 | 1 | null
+    jawabanLabel: 0 | 1 | ''
+  }
+  
+  type CampaignDataMap = {
+    campaign: (typeof departments)[number]['areas'][number]['contacts'][number]['messages'][number]['campaign']
+    rows: CampaignRowData[]
+  }
+  
+  const campaignsByDept = new Map<string, Map<string, CampaignDataMap>>()
 
   for (const dept of departments) {
-    const campaignMap = new Map<string, { campaign: any; rows: any[] }>()
+    const campaignMap = new Map<string, CampaignDataMap>()
 
     for (const area of dept.areas) {
       for (const contact of area.contacts) {
@@ -584,12 +622,13 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
     const sheet = workbook.addWorksheet(sheetName)
 
     sheet.columns = [
-      { key: 'market', width: 12 },
       { key: 'no', width: 5 },
+      { key: 'market', width: 12 },
       { key: 'storeName', width: 28 },
       { key: 'phone', width: 20 },
+      { key: 'ownerName', width: 28 },
       { key: 'agentPhone', width: 18 },
-      { key: 'jawaban', width: 14 },
+      { key: 'jawaban', width: 40 },
       { key: 'kategori', width: 14 },
       { key: 'status', width: 12 },
       { key: 'dikirimPada', width: 20 },
@@ -618,20 +657,15 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
       }
       isFirstCampaign = false
 
-      // Campaign title row
-      const titleRow = sheet.addRow([`Campaign: ${campaign.name}`, campaign.bulan, campaign.campaignType])
-      titleRow.eachCell((cell) => {
-        cell.font = { bold: true, size: 12 }
-      })
-
       // Header row with dynamic jawaban column name
       const headers = [
-        'Market',
         'No',
+        'Market',
         'Nama Toko',
         'No HP',
+        'Pemilik Toko',
         'Agent Phone',
-        `Produk ${campaign.bulan} Terjual`,
+        `${campaign.template.replaceAll('{{bulan}}', campaign.bulan)} (ya=1, tidak=0)`,
         'Kategori',
         'Status',
         'Dikirim pada',
@@ -640,17 +674,23 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         'Screenshot',
       ]
       const headerRow = sheet.addRow(headers)
-      headerRow.height = 22
+      headerRow.height = 102
       headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: 'FF1F2937' } }
-        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
-        cell.alignment = { vertical: 'middle', horizontal: 'center' }
-        cell.border = { bottom: { style: 'medium', color: { argb: 'FFD1D5DB' } } }
+        cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } }
+        cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true }
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FF000000' } },
+          bottom: { style: 'thin', color: { argb: 'FF000000' } },
+          left: { style: 'thin', color: { argb: 'FF000000' } },
+          right: { style: 'thin', color: { argb: 'FF000000' } },
+        }
       })
 
       let campaignRowNo = 1
       let campaignInvalidCount = 0
       let sheetRowIndex = sheet.rowCount + 1 // Track current sheet row
+      let firstDataRowNum = 0 // Track first data row number for formula
 
       for (const rowData of rows) {
         const { contact, area, message, reply, hasReply, jawaban, jawabanLabel } = rowData
@@ -674,10 +714,11 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         const hasImg = absPath !== null && fs.existsSync(absPath)
 
         const dataRow = sheet.addRow([
-          area.name,
           campaignRowNo,
+          area.name,
           contact.storeName,
-          contact.phoneNorm,
+          contact.phoneNorm.replaceAll("+", ""),
+          contact.storeName,
           message?.agent?.phoneNumber ?? '',
           jawabanLabel,
           reply?.claudeCategory ?? '',
@@ -687,27 +728,48 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           rawResponse,
           '',
         ])
+        
+        // Save first data row number for formula calculation
+        if (firstDataRowNum === 0) {
+          firstDataRowNum = dataRow.number
+        }
+        
         dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
-        dataRow.getCell(1).alignment = { vertical: 'middle' }
-        dataRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(3).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(4).alignment = { vertical: 'middle' }
-        dataRow.getCell(4).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(5).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(5).font = { color: { argb: 'FF6B7280' } }
+        const borderStyle = {
+          top: { style: 'thin' as const, color: { argb: 'FF000000' } },
+          bottom: { style: 'thin' as const, color: { argb: 'FF000000' } },
+          left: { style: 'thin' as const, color: { argb: 'FF000000' } },
+          right: { style: 'thin' as const, color: { argb: 'FF000000' } },
+        }
 
-        // Jawaban cell (col 6)
-        const jawabanCell = dataRow.getCell(6)
+        dataRow.getCell(1).alignment = { vertical: 'middle' }
+        dataRow.getCell(1).border = borderStyle
+        dataRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' }
+        dataRow.getCell(2).border = borderStyle
+        dataRow.getCell(3).alignment = { vertical: 'middle', wrapText: true }
+        dataRow.getCell(3).border = borderStyle
+         dataRow.getCell(4).alignment = { vertical: 'middle' }
+        dataRow.getCell(4).font = { color: { argb: 'FF000000' } }
+        dataRow.getCell(4).border = borderStyle
+        dataRow.getCell(5).alignment = { vertical: 'middle', wrapText: true }
+        dataRow.getCell(5).border = borderStyle
+        dataRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' }
+        dataRow.getCell(6).font = { color: { argb: 'FF6B7280' } }
+        dataRow.getCell(6).border = borderStyle
+
+        // Jawaban cell (col 7)
+        const jawabanCell = dataRow.getCell(7)
         jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        jawabanCell.border = borderStyle
         if (hasReply) {
-          jawabanCell.font = { bold: true, color: { argb: jawaban === 1 ? 'FF065F46' : 'FF991B1B' } }
+          jawabanCell.font = { bold: true, color: { argb: 'FF000000' } }
         } else {
           jawabanCell.font = { italic: true, color: { argb: 'FF9CA3AF' } }
           jawabanCell.value = 'Pending'
         }
 
-        // Kategori cell (col 7)
+        // Kategori cell (col 8)
         const kategoriColors: Record<string, string> = {
           confirmed: 'FF6EE7B7',
           denied: 'FFFCA5A5',
@@ -716,16 +778,18 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           invalid: 'FFFBBF24',
           other: 'FFBFDBFE',
         }
-        const kategoriCell = dataRow.getCell(7)
+        const kategoriCell = dataRow.getCell(8)
         kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        kategoriCell.border = borderStyle
         if (reply?.claudeCategory) {
           kategoriCell.font = { color: { argb: 'FF374151' } }
           kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[reply.claudeCategory] ?? 'FFFFFFFF' } }
         }
 
-        // Status cell (col 8)
-        const statusCell = dataRow.getCell(8)
+        // Status cell (col 9)
+        const statusCell = dataRow.getCell(9)
         statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        statusCell.border = borderStyle
         if (isInvalid) {
           statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
           statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
@@ -734,45 +798,86 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
         }
 
-        dataRow.getCell(9).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(9).font = { color: { argb: 'FF6B7280' } }
         dataRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'center' }
         dataRow.getCell(10).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(11).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(11).font = { color: { argb: 'FF374151' } }
+        dataRow.getCell(10).border = borderStyle
+        dataRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' }
+        dataRow.getCell(11).font = { color: { argb: 'FF6B7280' } }
+        dataRow.getCell(11).border = borderStyle
+        dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
+        dataRow.getCell(12).font = { color: { argb: 'FF374151' } }
+        dataRow.getCell(12).border = borderStyle
+        dataRow.getCell(13).border = borderStyle
 
-        if (campaignRowNo % 2 === 0) {
-          for (let c = 1; c <= 5; c++) {
-            const cell = dataRow.getCell(c)
-            if (!(cell.fill as ExcelJS.FillPattern)?.fgColor) {
-              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
-            }
-          }
-        }
-
-        if (hasImg) {
-          try {
-            const ext = path.extname(absPath).toLowerCase().replace('.', '')
-            const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
-            sheet.addImage(imageId, {
-              tl: { col: 11, row: sheetRowIndex - 1 },
-              ext: { width: IMG_W, height: IMG_H },
-              editAs: 'oneCell',
-            })
-          } catch {
-            dataRow.getCell(12).value = absPath
-            dataRow.getCell(12).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-            dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
-          }
-        }
+         if (hasImg) {
+           try {
+             const ext = path.extname(absPath).toLowerCase().replace('.', '')
+             const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
+             // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
+             // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+              sheet.addImage(imageId, {
+                tl: { col: 12, row: sheetRowIndex - 1 },
+                ext: { width: IMG_W, height: IMG_H },
+                editAs: 'oneCell',
+              })
+            } catch {
+              dataRow.getCell(13).value = absPath
+              dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
+              dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+           }
+         }
 
         dataRow.commit()
         campaignRowNo++
         deptTotalRows++
         globalTotalRows++
         sheetRowIndex++ // Increment row index
+      }
+
+      // Add Pencapaian (Achievement) summary row after each campaign table
+      // Pencapaian row - starts at column 1 (Market/Area)
+      const lastDataRowNum = sheet.rowCount
+      const pencapaianRow = sheet.addRow([
+        'Pencapaian',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+      ])
+      pencapaianRow.height = 20
+
+      // Set the formula in cell G (column 7) - Jawaban column
+      const formulaCell = pencapaianRow.getCell(7)
+      formulaCell.value = { formula: `COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},1)/(COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},1)+COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},0))` }
+
+      // Merge columns B:E for "Pencapaian" label spanning
+      sheet.mergeCells(`A${pencapaianRow.number}:E${pencapaianRow.number}`)
+
+       // Style the Pencapaian row
+      pencapaianRow.getCell(1).font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
+      pencapaianRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
+      formulaCell.font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
+      formulaCell.alignment = { vertical: 'middle', horizontal: 'center' }
+      formulaCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } }
+      formulaCell.numFmt = '0%'
+
+      // Add black borders to all cells in Pencapaian row
+      for (let c = 1; c <= 13; c++) {
+        const cell = pencapaianRow.getCell(c)
+        cell.border = {
+          top: { style: 'thin', color: { argb: 'FF000000' } },
+          bottom: { style: 'thin', color: { argb: 'FF000000' } },
+          left: { style: 'thin', color: { argb: 'FF000000' } },
+          right: { style: 'thin', color: { argb: 'FF000000' } },
+        }
       }
 
       deptTotalInvalidReplies += campaignInvalidCount
@@ -801,8 +906,8 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
 
   const headerRow = summary.addRow(['Department', 'Campaigns', 'Total Rows', 'Valid', 'Invalid'])
   headerRow.eachCell((cell) => {
-    cell.font = { bold: true }
-    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE5E7EB' } }
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' } }
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10B981' } }
   })
 
   summaryData.forEach((d) => {

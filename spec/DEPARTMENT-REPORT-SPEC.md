@@ -190,32 +190,80 @@ Excel Workbook
 
 ```
 [Campaign 1 Header Row]
-  Column Headers (bold, gray background)
+  Column Headers (bold, green background - #10B981)
   
 [Campaign 1 Data Rows]
   Row 1: Contact data
   Row 2: Contact data
   ...
-  
+
+[Empty Row Separator]
+
+[Campaign 1 Pencapaian (Achievement) Row]
+  Label: "Pencapaian" (merged columns A:E)
+  Jawaban Column: Percentage of "Ya" responses (e.g., "95%")
+  Formula: (Count of jawaban=1 / Total jawaban responses) × 100
+
 [Empty Row Separator]
 
 [Campaign 2 Header Row]
-  Column Headers (bold, gray background)
+  Column Headers (bold, green background - #10B981)
   
 [Campaign 2 Data Rows]
   Row 1: Contact data
   Row 2: Contact data
   ...
+
+[Empty Row Separator]
+
+[Campaign 2 Pencapaian (Achievement) Row]
+  Label: "Pencapaian" (merged columns A:E)
+  Jawaban Column: Percentage of "Ya" responses
   
 [Empty Row Separator]
 
 [Campaign 3 Header Row]
-  Column Headers (bold, gray background)
+  Column Headers (bold, green background - #10B981)
   
 [Campaign 3 Data Rows]
   Row 1: Contact data
   ...
+  
+[Campaign 3 Pencapaian (Achievement) Row]
+  Label: "Pencapaian"
+  Jawaban Column: Percentage
 ```
+
+## Pencapaian (Achievement) Summary Row
+
+After each campaign's data rows, a "Pencapaian" summary row is added:
+
+### Structure
+- **Merged Cells:** Columns A through E contain the "Pencapaian" label (merged), centered
+- **Jawaban Column (F):** Shows the percentage calculation
+- **Styling:**
+  - Font: Bold, size 11, green color (#10B981)
+  - Background: Yellow (#FEF3C7) for the percentage cell
+  - Empty separating row before and after
+
+### Calculation
+**Jawaban Percentage Formula:**
+```
+Percentage = (Count of jawaban = 1) / (Count of jawaban = 1 + Count of jawaban = 0) × 100
+```
+
+**Example:**
+- If jawaban=1 count is 19 and jawaban=0 count is 1:
+  - Total = 19 + 1 = 20
+  - Percentage = (19 / 20) × 100 = 95%
+  - Displayed as: "95%"
+
+### Jawaban Values Included in Calculation
+- **jawaban = 1** ("Ya"): Customer confirmed positive response
+- **jawaban = 0** ("Tidak"): Customer confirmed negative response
+- **jawaban = null**: Excluded (unclear responses not counted)
+
+**Note:** Contacts without a reply (no reply message) are NOT included in the Jawaban percentage calculation.
 
 ### Column Headers (Per Campaign Table)
 
@@ -608,11 +656,11 @@ headers = [
 - Borders: None or light border
 
 **Header Row (per campaign):**
-- Font: Bold, color: `FF1F2937`, size: 10
-- Fill: Gray (`FFE5E7EB`)
+- Font: Bold, white color (`FFFFFFFF`), size: 10
+- Fill: Green (`FF10B981`) - Updated from gray
 - Alignment: Center, vertical middle
 - Height: 22pt
-- Border: Bottom medium, color: `FFD1D5DB`
+- Border: Bottom medium, color: `FF059669` - Updated to match green
 
 **Data Rows:**
 - Jawaban cell: Bold green (1) or bold red (0), no fill
@@ -625,6 +673,14 @@ headers = [
 - Height: 6pt
 - No content
 - No styling
+
+**Pencapaian (Achievement) Row:**
+- Font: Bold, green (`FF10B981`), size: 11
+- First cell (A): Merged across columns A:E with "Pencapaian" label, centered
+- Jawaban column (F): Shows percentage, bold, green text with yellow background (`FFFEF3C7`)
+- Alignment: Center, vertical middle
+- Height: 20pt
+- Styling: Prominent to stand out from data rows
 
 ### Image Handling
 - Embedded screenshots in column 12 (Screenshot)

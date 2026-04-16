@@ -26,8 +26,7 @@ export class AgentManager {
     }
 
     for (const row of dbAgents) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
+      this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, row.validationOnly)
     }
 
     // Use psubscribe so NEW agents created via the UI after startup are also handled.
@@ -45,13 +44,12 @@ export class AgentManager {
         if (!this.agents.has(agentId)) {
           console.log(`[agent-manager] unknown agent ${agentId} — loading from DB`)
           const row = await db.agent.findUnique({ where: { id: agentId } })
-          if (!row) {
-            console.error(`[agent-manager] agent ${agentId} not found in DB, ignoring command`)
-            return
-          }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
-        }
+           if (!row) {
+             console.error(`[agent-manager] agent ${agentId} not found in DB, ignoring command`)
+             return
+           }
+           this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, row.validationOnly)
+         }
 
         if (cmd === 'start') this.startAgent(agentId).catch(console.error)
         if (cmd === 'stop')  this.stopAgent(agentId).catch(console.error)
@@ -89,12 +87,11 @@ export class AgentManager {
     let agent = this.agents.get(agentId)
 
     // Lazy-load if not registered yet (e.g. created via API after startup)
-    if (!agent) {
-      const row = await db.agent.findUnique({ where: { id: agentId } })
-      if (!row) throw new Error(`Agent ${agentId} not found in DB`)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, (row as any).validationOnly)
-    }
+     if (!agent) {
+       const row = await db.agent.findUnique({ where: { id: agentId } })
+       if (!row) throw new Error(`Agent ${agentId} not found in DB`)
+       agent = this._register(row.id, row.profilePath, row.dailySendCap, row.breakEvery, row.breakMinMs, row.breakMaxMs, row.typeDelayMinMs, row.typeDelayMaxMs, row.validationOnly)
+     }
 
     // If the agent has a dead/stale context (e.g. browser was closed externally
     // while status was stuck at STARTING), force-close it before relaunching.
