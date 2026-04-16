@@ -129,16 +129,12 @@ router.get('/report-xlsx-filtered', async (req, res) => {
 
 // GET /api/export/report-xlsx-dept — XLSX organized by department with filtering
 router.get('/report-xlsx-dept', async (req, res) => {
-  const { bulan, campaignType, categories, statuses, jawabans } = req.query as Record<string, string | string[]>
+  const { bulan, campaignType, categories, jawabans } = req.query as Record<string, string | string[]>
 
   try {
     // Parse filter arrays from query parameters
     const categoryArray = categories
       ? (typeof categories === 'string' ? [categories] : categories)
-      : undefined
-
-    const statusArray = statuses
-      ? (typeof statuses === 'string' ? [statuses] : statuses)
       : undefined
 
     const jawabanArray = jawabans
@@ -152,7 +148,6 @@ router.get('/report-xlsx-dept', async (req, res) => {
       bulan: bulan as string | undefined,
       campaignType: campaignType as string | undefined,
       categories: categoryArray as string[] | undefined,
-      statuses: statusArray as ('valid' | 'invalid' | 'pending')[] | undefined,
       jawabans: jawabanArray as (0 | 1 | null)[] | undefined,
     })
 

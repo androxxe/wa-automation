@@ -20,11 +20,10 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: 'Other',
   '': 'No Reply',
 }
-const STATUSES = ['valid', 'invalid', 'pending']
 const JAWABANS = ['1', '0', 'null']
 const JAWABAN_LABELS: Record<string, string> = {
-  '1': '1 (Ya)',
-  '0': '0 (Tidak)',
+  '1': 'Ya (1)',
+  '0': 'Tidak (0)',
   'null': 'Tidak Jelas',
 }
 
@@ -33,9 +32,6 @@ export default function Export() {
   const [selectedType, setSelectedType] = useState<string>('')
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(
     new Set(CATEGORIES)
-  )
-  const [selectedStatuses, setSelectedStatuses] = useState<Set<string>>(
-    new Set(STATUSES)
   )
   const [selectedJawabans, setSelectedJawabans] = useState<Set<string>>(
     new Set(JAWABANS)
@@ -69,16 +65,6 @@ export default function Export() {
     setSelectedCategories(newSet)
   }
 
-  const toggleStatus = (status: string) => {
-    const newSet = new Set(selectedStatuses)
-    if (newSet.has(status)) {
-      newSet.delete(status)
-    } else {
-      newSet.add(status)
-    }
-    setSelectedStatuses(newSet)
-  }
-
   const toggleJawaban = (jawaban: string) => {
     const newSet = new Set(selectedJawabans)
     if (newSet.has(jawaban)) {
@@ -100,13 +86,6 @@ export default function Export() {
       if (selectedCategories.size > 0 && selectedCategories.size < CATEGORIES.length) {
         selectedCategories.forEach((cat) => {
           params.append('categories', cat)
-        })
-      }
-
-      // Add status filters
-      if (selectedStatuses.size > 0 && selectedStatuses.size < STATUSES.length) {
-        selectedStatuses.forEach((status) => {
-          params.append('statuses', status)
         })
       }
 
@@ -255,7 +234,7 @@ export default function Export() {
           <div>
             <p className="text-sm font-medium">Claude Category (Optional)</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Select which categories to include in the report
+              Select which response categories to include in the report
             </p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -273,35 +252,12 @@ export default function Export() {
           </div>
         </div>
 
-        {/* Status Filter */}
-        <div className="rounded-lg border bg-card p-6 space-y-3">
-          <div>
-            <p className="text-sm font-medium">Reply Status (Optional)</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              Select which reply statuses to include
-            </p>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {STATUSES.map((status) => (
-              <label key={status} className="flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={selectedStatuses.has(status)}
-                  onChange={() => toggleStatus(status)}
-                  className="w-4 h-4 rounded"
-                />
-                <span className="text-sm capitalize">{status}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
         {/* Jawaban Filter */}
         <div className="rounded-lg border bg-card p-6 space-y-3">
           <div>
             <p className="text-sm font-medium">Jawaban Value (Optional)</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Select which jawaban values to include
+              Select which jawaban values to include (customer responses)
             </p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -393,12 +349,12 @@ export default function Export() {
             <>
               <li>Each department gets its own sheet in the Excel file</li>
               <li>Multiple campaigns appear in each department sheet (separated by empty row)</li>
-              <li>Filtered by selected categories, statuses, and jawaban values</li>
+              <li>Filtered by selected Claude categories and jawaban values</li>
             </>
           )}
           <li>All screenshots are embedded in the file</li>
           <li>Summary sheet shows global statistics</li>
-          <li>Data includes: store name, phone, area, department, message, reply, category, status</li>
+          <li>Data includes: store name, phone, area, department, message, reply, category</li>
         </ul>
       </div>
     </div>

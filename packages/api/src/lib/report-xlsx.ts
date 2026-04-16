@@ -471,13 +471,12 @@ interface DepartmentReportFilters {
   bulan?: string
   campaignType?: string
   categories?: string[] // claude categories to include
-  statuses?: ('valid' | 'invalid' | 'pending')[] // reply statuses
   jawabans?: (0 | 1 | null)[] // jawaban values (0, 1, null=Tidak Jelas)
 }
 
 /**
  * Build an XLSX workbook organized by Department with Campaigns inside each sheet.
- * Supports comprehensive filtering by category, status, and jawaban.
+ * Supports comprehensive filtering by category and jawaban.
  *
  * Structure:
  * - One sheet per department (alphabetically ordered)
@@ -535,23 +534,12 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         const reply = msg.reply
         const hasReply = reply != null
 
-        // Determine status
-        let status: 'valid' | 'invalid' | 'pending'
-        if (!hasReply) {
-          status = 'pending'
-        } else if (reply.claudeCategory === 'invalid') {
-          status = 'invalid'
-        } else {
-          status = 'valid'
-        }
-
         // Apply filters
         const categoryMatches = !filters?.categories || filters.categories.includes(reply?.claudeCategory || '')
-        const statusMatches = !filters?.statuses || filters.statuses.includes(status)
         const jawabanValue = (reply?.jawaban ?? null) as 0 | 1 | null
         const jawabanMatches = !filters?.jawabans || filters.jawabans.includes(jawabanValue)
 
-        if (!categoryMatches || !statusMatches || !jawabanMatches) continue
+        if (!categoryMatches || !jawabanMatches) continue
 
         // Add to campaign map
         const campaignKey = campaign.id
@@ -570,7 +558,6 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           hasReply,
           jawaban,
           jawabanLabel,
-          status,
         })
       }
     }
@@ -666,8 +653,8 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
       let sheetRowIndex = sheet.rowCount + 1 // Track current sheet row
 
       for (const rowData of rows) {
-        const { contact, area, message, reply, hasReply, jawaban, jawabanLabel, status } = rowData
-        const isInvalid = status === 'invalid'
+        const { contact, area, message, reply, hasReply, jawaban, jawabanLabel } = rowData
+        const isInvalid = reply?.claudeCategory === 'invalid'
 
         if (isInvalid) {
           campaignInvalidCount++
@@ -694,7 +681,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           message?.agent?.phoneNumber ?? '',
           jawabanLabel,
           reply?.claudeCategory ?? '',
-          status === 'pending' ? '' : (status === 'invalid' ? '⚠ Invalid' : 'Valid'),
+          !hasReply ? '' : (isInvalid ? '⚠ Invalid' : 'Valid'),
           dikirimPada,
           dibalasPada,
           rawResponse,
