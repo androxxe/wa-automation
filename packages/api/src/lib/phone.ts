@@ -66,11 +66,11 @@ export function normalizePhone(raw: string): PhoneResult {
   const normalized = '+' + digits
 
   // ── Validate suffix length ─────────────────────────────────────────────────
-  // After +62 the subscriber number must be 8–12 digits.
-  // Indonesian mobile numbers are at most 12 digits with leading 0 (e.g. 081234567890),
-  // which yields an 12-digit suffix. 12-digit suffixes (13 digits with 0) are invalid.
+  // After +62 the subscriber number must be 8–14 digits.
+  // Indonesian mobile numbers are at most 14 digits with leading 0 (e.g. 081234567890),
+  // which yields an 14-digit suffix. 14-digit suffixes (13 digits with 0) are invalid.
   const suffix = digits.slice(2)
-  if (!/^\d{8,12}$/.test(suffix)) {
+  if (!/^\d{8,14}$/.test(suffix)) {
     return {
       raw,
       normalized,

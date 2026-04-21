@@ -91,10 +91,19 @@ function scanAreas(deptPath: string, contactType: ContactType): AreaFile[] {
 
 /**
  * Parse a single xlsx file. Returns headers, 5 sample rows, and total row count.
+ * Tries to find the most relevant sheet: prefers "Sheet1" if it exists,
+ * otherwise selects the sheet with the most data that isn't empty.
  */
 export function parseSheet(filePath: string): ParsedSheet {
   const workbook = XLSX.readFile(filePath)
-  const sheet    = workbook.Sheets[workbook.SheetNames[0]]
+  
+  // Try to find Sheet1 first, as it often contains the actual data
+  let sheetName = workbook.SheetNames[0]
+  if (workbook.SheetNames.includes('Sheet1')) {
+    sheetName = 'Sheet1'
+  }
+  
+  const sheet    = workbook.Sheets[sheetName]
   const rows     = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     raw:    false,
     defval: '',
@@ -111,13 +120,21 @@ export function parseSheet(filePath: string): ParsedSheet {
 
 /**
  * Parse a full sheet applying a confirmed column mapping.
+ * Prefers "Sheet1" if it exists, otherwise uses the first sheet.
  */
 export function parseSheetWithMapping(
   filePath: string,
   mapping: Record<string, string>,
 ): Record<string, unknown>[] {
   const workbook = XLSX.readFile(filePath)
-  const sheet    = workbook.Sheets[workbook.SheetNames[0]]
+  
+  // Try to find Sheet1 first, as it often contains the actual data
+  let sheetName = workbook.SheetNames[0]
+  if (workbook.SheetNames.includes('Sheet1')) {
+    sheetName = 'Sheet1'
+  }
+  
+  const sheet    = workbook.Sheets[sheetName]
   const rows     = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
     raw:    false,
     defval: '',
