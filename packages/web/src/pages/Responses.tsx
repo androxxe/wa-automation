@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
-import type { ReplyCategory } from '@aice/shared'
+import type { AppConfigData, ReplyCategory } from '@aice/shared'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -417,13 +417,19 @@ export default function Responses() {
     onError: (e) => alert(String(e)),
   })
 
+  const { data: config } = useQuery<AppConfigData>({
+    queryKey: ['config'],
+    queryFn:  () => apiFetch<AppConfigData>('/api/config'),
+  })
+  const modelName = config?.llmModelName ?? 'AI'
+
   return (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Responses</h2>
-          <p className="text-muted-foreground">Incoming replies analyzed by Claude</p>
+          <p className="text-muted-foreground">Incoming replies analyzed by {modelName}</p>
         </div>
         <ExportDropdown campaignId={filterCampaignId} campaigns={campaigns} />
       </div>
@@ -532,7 +538,7 @@ export default function Responses() {
                   </p>
                 </td>
 
-                {/* Claude Summary */}
+                {/* AI Summary */}
                 <td className="px-3 py-2.5 max-w-[200px]">
                   {r.claudeSummary ? (
                     <p className="text-xs text-muted-foreground italic leading-snug" title={r.claudeSummary}>

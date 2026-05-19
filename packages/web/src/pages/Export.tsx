@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import type { AppConfigData } from '@aice/shared'
 import { apiFetch } from '@/lib/utils'
 
 interface Campaign {
@@ -28,6 +29,12 @@ const JAWABAN_LABELS: Record<string, string> = {
 }
 
 export default function Export() {
+  const { data: config } = useQuery<AppConfigData>({
+    queryKey: ['config'],
+    queryFn:  () => apiFetch<AppConfigData>('/api/config'),
+  })
+  const modelName = config?.llmModelName ?? 'AI'
+
   const [selectedMonth, setSelectedMonth] = useState<string>('')
   const [selectedType, setSelectedType] = useState<string>('')
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(
@@ -232,7 +239,7 @@ export default function Export() {
         {/* Category Filter */}
         <div className="rounded-lg border bg-card p-6 space-y-3">
           <div>
-            <p className="text-sm font-medium">Claude Category (Optional)</p>
+            <p className="text-sm font-medium">{modelName} Category (Optional)</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               Select which response categories to include in the report
             </p>
@@ -349,7 +356,7 @@ export default function Export() {
             <>
               <li>Each department gets its own sheet in the Excel file</li>
               <li>Multiple campaigns appear in each department sheet (separated by empty row)</li>
-              <li>Filtered by selected Claude categories and jawaban values</li>
+              <li>Filtered by selected {modelName.toLocaleLowerCase()} categories and jawaban values</li>
             </>
           )}
           <li>All screenshots are embedded in the file</li>

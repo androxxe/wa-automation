@@ -86,7 +86,7 @@ function printResults(checks: Check[]): number {
   return failures
 }
 
-type Provider = 'anthropic' | 'openai' | 'gemini'
+type Provider = 'anthropic' | 'openai' | 'gemini' | 'opencode'
 const PROVIDER: Provider = (process.env.LLM_PROVIDER?.toLowerCase() ?? 'anthropic') as Provider
 
 export async function validateStartup(): Promise<void> {
@@ -116,6 +116,11 @@ export async function validateStartup(): Promise<void> {
     envChecks.unshift(
       { label: 'LLM_PROVIDER', result: { pass: true } },
       { label: 'GOOGLE_API_KEY', result: checkGeminiKey() },
+    )
+  } else if (PROVIDER === 'opencode') {
+    envChecks.unshift(
+      { label: 'LLM_PROVIDER', result: { pass: true } },
+      { label: 'OPCODE_API_KEY (present)', result: checkEnvVar('OPCODE_API_KEY') },
     )
   } else {
     envChecks.unshift(

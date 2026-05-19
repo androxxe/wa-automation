@@ -1,7 +1,7 @@
 // ─── Contact / Campaign types ─────────────────────────────────────────────────
 
-export type ContactType  = 'STIK' | 'KARDUS'
-export type CampaignType = 'STIK' | 'KARDUS'
+export type ContactType  = 'STIK' | 'KARDUS' | 'YOYIC'
+export type CampaignType = 'STIK' | 'KARDUS' | 'YOYIC'
 
 // ─── Campaign ─────────────────────────────────────────────────────────────────
 
@@ -273,4 +273,6 @@ export interface AppConfigData {
   replyPollEnabled:         boolean
   sendEnabled:              boolean
   replyPollConcurrency:     number
+  // LLM model display name — read-only from env vars
+  llmModelName:            string
 }

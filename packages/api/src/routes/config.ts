@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { db } from '../lib/db'
+import { getModelDisplayName } from '../lib/llm'
 
 const router: import('express').Router = Router()
 
@@ -39,6 +40,8 @@ function envConfig() {
     replyBatchSize:           parseInt(process.env.REPLY_BATCH_SIZE            ?? '30',    10),
     replyRepollCooldownMs:    parseInt(process.env.REPLY_REPOLL_COOLDOWN_MS    ?? '600000', 10),
     phoneCheckConcurrency:    parseInt(process.env.PHONE_CHECK_CONCURRENCY     ?? '3',     10),
+    // LLM model name for UI display
+    llmModelName:            getModelDisplayName(),
   }
 }
 

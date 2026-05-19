@@ -20,7 +20,7 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 | Browser Automation | playwright | latest | Controls N real visible Chromium windows |
 | Anti-Detection | Custom stealth init script | — | Removes headless/automation fingerprints via `addInitScript` |
 | Excel Parsing | xlsx (SheetJS) | latest | Read `.xlsx`, inconsistent headers |
-| AI | @anthropic-ai/sdk / @google/generative-ai | latest | Multi-provider: Anthropic (default) or Gemini. Controlled via `LLM_PROVIDER` env var. Header mapping, reply analysis, message variation |
+| AI | openai / @anthropic-ai/sdk / @google/generative-ai | latest | Multi-provider: opencode (DeepSeek), Anthropic, OpenAI, or Gemini. Controlled via `LLM_PROVIDER` env var. Header mapping, reply analysis, message variation |
 | Queue | bullmq + ioredis | latest | Durable rate-limited message queue |
 | Database | Prisma + MySQL | latest | Requires running MySQL instance |
 | Realtime | Server-Sent Events (SSE) | — | Express native, no socket.io |
@@ -62,12 +62,20 @@ whatsapp-automation/
 
 ```env
 # ─── LLM Provider ─────────────────────────────────────────────────────────────
-# Options: anthropic, openai, gemini (default: anthropic if not set)
-LLM_PROVIDER=gemini
+# Options: opencode, anthropic, openai, gemini (default: anthropic if not set)
+LLM_PROVIDER=opencode
+
+# ─── OpenCode Go (used when LLM_PROVIDER=opencode) ────────────────────────────
+OPCODE_API_KEY=your-opencode-go-api-key
+OPCODE_MODEL=deepseek-v4-flash
 
 # ─── Anthropic (used when LLM_PROVIDER=anthropic) ─────────────────────────────
 ANTHROPIC_API_KEY=sk-ant-...
 CLAUDE_MODEL=claude-4.5-haiku
+
+# ─── OpenAI (used when LLM_PROVIDER=openai) ───────────────────────────────────
+OPENAI_API_KEY=sk-proj-...
+OPENAI_MODEL=gpt-4o-mini
 
 # ─── Google Gemini (used when LLM_PROVIDER=gemini) ────────────────────────────
 GOOGLE_API_KEY=your-api-key
