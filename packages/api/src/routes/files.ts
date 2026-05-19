@@ -101,39 +101,43 @@ router.post('/import', async (req, res) => {
     let imported = 0, invalid = 0, duplicates = 0
 
     for (const row of rows) {
-      const rawPhone = String(row.phone ?? '').trim()
-      if (!rawPhone) { invalid++; continue }
+      const rawPhones = String(row.phone ?? '').trim()
+      if (!rawPhones) { invalid++; continue }
 
-      const { normalized, valid } = normalizePhone(rawPhone)
+      const phones = rawPhones.split('/').map((s) => s.trim()).filter(Boolean)
 
-      const contactData = {
-        seqNo:         row.seq_no    ? String(row.seq_no)    : null,
-        storeName:     String(row.store_name ?? ''),
-        freezerId:     row.freezer_id ? String(row.freezer_id) : null,
-        phoneRaw:      rawPhone,
-        contactType:   contactType as ContactType,
-        exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
-        awardCount:    row.award_count    ? Number(row.award_count)    : null,
-        totalCount:    row.total_count    ? Number(row.total_count)    : null,
-      }
+      for (const rawPhone of phones) {
+        const { normalized, valid } = normalizePhone(rawPhone)
 
-      try {
-        await db.contact.upsert({
-          where: { areaId_phoneNorm: { areaId: area.id, phoneNorm: normalized } },
-          update: { ...contactData, phoneValid: valid, waChecked: !valid },
-          create: {
-            ...contactData,
-            phoneNorm:    normalized,
-            phoneValid:   valid,
-            waChecked:    !valid,
-            areaId:       area.id,
-            departmentId: department.id,
-          },
-        })
-        if (valid) imported++; else invalid++
-      } catch (e: unknown) {
-        if (e instanceof Error && e.message.includes('Unique constraint')) duplicates++
-        else invalid++
+        const contactData = {
+          seqNo:         row.seq_no    ? String(row.seq_no)    : null,
+          storeName:     String(row.store_name ?? ''),
+          freezerId:     row.freezer_id ? String(row.freezer_id) : null,
+          phoneRaw:      rawPhone,
+          contactType:   contactType as ContactType,
+          exchangeCount: row.exchange_count ? Number(row.exchange_count) : null,
+          awardCount:    row.award_count    ? Number(row.award_count)    : null,
+          totalCount:    row.total_count    ? Number(row.total_count)    : null,
+        }
+
+        try {
+          await db.contact.upsert({
+            where: { areaId_phoneNorm: { areaId: area.id, phoneNorm: normalized } },
+            update: { ...contactData, phoneValid: valid, waChecked: !valid },
+            create: {
+              ...contactData,
+              phoneNorm:    normalized,
+              phoneValid:   valid,
+              waChecked:    !valid,
+              areaId:       area.id,
+              departmentId: department.id,
+            },
+          })
+          if (valid) imported++; else invalid++
+        } catch (e: unknown) {
+          if (e instanceof Error && e.message.includes('Unique constraint')) duplicates++
+          else invalid++
+        }
       }
     }
 
