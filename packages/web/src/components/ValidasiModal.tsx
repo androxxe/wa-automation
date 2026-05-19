@@ -45,6 +45,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   // Group areas by contactType
   const stikAreas   = useMemo(() => areas.filter((a) => a.contactType === 'STIK'), [areas])
   const kardusAreas = useMemo(() => areas.filter((a) => a.contactType === 'KARDUS'), [areas])
+  const yoyicAreas  = useMemo(() => areas.filter((a) => a.contactType === 'YOYIC'), [areas])
 
   // Filter by search
   const filteredStik   = useMemo(() =>
@@ -54,6 +55,10 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const filteredKardus = useMemo(() =>
     search ? kardusAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : kardusAreas,
     [kardusAreas, search],
+  )
+  const filteredYoyic  = useMemo(() =>
+    search ? yoyicAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : yoyicAreas,
+    [yoyicAreas, search],
   )
 
   // Reset state when modal opens
@@ -259,6 +264,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
             <div className="overflow-y-auto flex-1 min-h-0 max-h-[40vh] space-y-4 pr-1">
               {renderGroup('STIK', stikAreas, filteredStik)}
               {renderGroup('KARDUS', kardusAreas, filteredKardus)}
+              {renderGroup('YOYIC', yoyicAreas, filteredYoyic)}
             </div>
 
             {/* Summary */}

@@ -3,6 +3,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import ValidasiModal from '@/components/ValidasiModal'
 
+const TYPE_BADGE: Record<string, string> = {
+  STIK:   'bg-blue-100 text-blue-700',
+  KARDUS: 'bg-orange-100 text-orange-700',
+  YOYIC:  'bg-green-100 text-green-700',
+}
+
 interface Contact {
   id: string
   seqNo: string | null
@@ -135,7 +141,7 @@ function AreaPicker({
               >
                 {a.name}
                 <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-medium ${
-                  a.contactType === 'STIK' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                  TYPE_BADGE[a.contactType] ?? 'bg-gray-100 text-gray-700'
                 }`}>
                   {a.contactType}
                 </span>
@@ -287,6 +293,7 @@ export default function Contacts() {
           <option value="">Semua Tipe</option>
           <option value="STIK">STIK</option>
           <option value="KARDUS">KARDUS</option>
+          <option value="YOYIC">YOYIC</option>
         </select>
 
         {/* Area searchable combobox */}

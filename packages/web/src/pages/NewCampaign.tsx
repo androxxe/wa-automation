@@ -221,7 +221,7 @@ export default function NewCampaign() {
         <div className="space-y-2">
           <p className="text-sm font-medium">Campaign type</p>
           <div className="flex gap-3">
-            {(["STIK", "KARDUS"] as CampaignType[]).map((t) => (
+            {(["STIK", "KARDUS", "YOYIC"] as CampaignType[]).map((t) => (
               <label key={t} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"

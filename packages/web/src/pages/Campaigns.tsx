@@ -4,6 +4,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { CampaignStatus } from '@aice/shared'
 
+const TYPE_BADGE: Record<string, string> = {
+  STIK:   'bg-blue-100 text-blue-700',
+  KARDUS: 'bg-orange-100 text-orange-700',
+  YOYIC:  'bg-green-100 text-green-700',
+}
+
 interface Campaign {
   id: string
   name: string
@@ -149,7 +155,7 @@ export default function Campaigns() {
                   </td>
                   <td className="px-4 py-2.5">
                     <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      c.campaignType === 'STIK' ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'
+                      TYPE_BADGE[c.campaignType] ?? 'bg-gray-100 text-gray-700'
                     }`}>
                       {c.campaignType}
                     </span>

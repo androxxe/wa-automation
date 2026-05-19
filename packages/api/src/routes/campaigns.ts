@@ -113,7 +113,7 @@ const CreateCampaign = z.object({
   name:                    z.string().min(1),
   template:                z.string().min(1),
   bulan:                   z.string().min(1),
-  campaignType:            z.enum(['STIK', 'KARDUS']),
+  campaignType:            z.enum(['STIK', 'KARDUS', 'YOYIC']),
   areaIds:                 z.array(z.string()).min(1),
   targetRepliesPerArea:    z.number().int().min(1).optional(),
   expectedReplyRate:       z.number().min(0.01).max(1).optional(),
