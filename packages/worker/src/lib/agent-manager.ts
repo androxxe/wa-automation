@@ -196,7 +196,7 @@ export class AgentManager {
         if (agent.status !== 'disconnected') {
           const screenshot = await agent.screenshot()
           if (screenshot) {
-            await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 30)
+            await this.redis.set(`agent:${agentId}:screenshot`, screenshot, 'EX', 60)
             if (agent.status === 'qr' || agent.status === 'loading') {
               console.log(`[agent:${agentId}] screenshot captured (${agent.status}, ${screenshot.length} bytes)`)
             }
@@ -212,7 +212,7 @@ export class AgentManager {
           console.log(`[agent:${agentId}] status changed: ${prev} → ${agent.status}`)
         }
       }
-    }, 15000)
+    }, 30000)
   }
 
   // ─── Shutdown ────────────────────────────────────────────────────────────
