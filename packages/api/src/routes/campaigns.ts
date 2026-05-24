@@ -431,6 +431,63 @@ router.post('/:id/cancel', async (req, res) => {
   }
 })
 
+// ─── POST /api/campaigns/complete-by-filter ──────────────────────────────────
+// Find RUNNING/PAUSED campaigns by campaignType + bulan, then hit
+// /api/campaigns/:id/complete for each one internally.
+
+router.post('/complete-by-filter', async (req, res) => {
+  try {
+    const schema = z.object({
+      campaignType: z.string().min(1),
+      bulan:        z.string().min(1),
+    })
+    const parsed = schema.safeParse(req.body)
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: parsed.error.message })
+      return
+    }
+
+    const { campaignType, bulan } = parsed.data
+
+    const campaigns = await db.campaign.findMany({
+      where: {
+        campaignType,
+        bulan,
+        status: { in: ['RUNNING', 'PAUSED'] },
+      },
+      select: { id: true, name: true },
+    })
+
+    if (campaigns.length === 0) {
+      res.status(404).json({ ok: false, error: `No RUNNING/PAUSED campaigns found for type=${campaignType} bulan=${bulan}` })
+      return
+    }
+
+    const PORT = process.env.PORT ?? 3001
+    const results: Array<{ id: string; name: string; ok: boolean; error?: string }> = []
+
+    for (const c of campaigns) {
+      try {
+        const r = await fetch(`http://localhost:${PORT}/api/campaigns/${c.id}/complete`, { method: 'POST' })
+        const body = await r.json()
+        results.push({ id: c.id, name: c.name, ok: body.ok, error: body.error })
+      } catch (e) {
+        results.push({ id: c.id, name: c.name, ok: false, error: String(e) })
+      }
+    }
+
+    const completed = results.filter((r) => r.ok)
+    const failed = results.filter((r) => !r.ok)
+
+    res.json({
+      ok: completed.length > 0,
+      data: { total: campaigns.length, completed: completed.length, failed: failed.length, results },
+    })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // ─── POST /api/campaigns/:id/complete ────────────────────────────────────────
 // Manually mark a campaign as COMPLETED.
 // Only allowed for RUNNING or PAUSED campaigns.
@@ -775,7 +832,7 @@ router.post('/unexpire-all', async (_req, res) => {
       where: {
         status: 'EXPIRED',
         reply:  null,
-        campaign: { status: { notIn: ['CANCELLED', 'DRAFT'] } },
+        campaign: { status: 'RUNNING' },
       },
       data: { status: 'SENT' },
     })

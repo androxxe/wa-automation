@@ -719,14 +719,11 @@ function startReplyPolling() {
       const pollConcurrency = (appConfig as Record<string, unknown>)?.replyPollConcurrency as number | undefined
         ?? REPLY_POLL_CONCURRENCY_DEFAULT
 
-      // 1. Expire old unreplied messages first (shrinks the pool permanently)
-      await expireOldMessages()
-
-      // 2. Get unreplied phones grouped by sending agent
+      // 1. Get unreplied phones grouped by sending agent
       const byAgent = await getUnrepliedPhonesByAgent()
       if (byAgent.size === 0) return
 
-      // 3. Each connected agent polls its own sent phones — with LIMITED concurrency
+      // 2. Each connected agent polls its own sent phones — with LIMITED concurrency
       const allAgents = agentManager.getAllAgents()
       let polledAny = false
 
@@ -768,12 +765,15 @@ function startReplyPolling() {
         await runWithConcurrency(pollFns, pollConcurrency)
       }
 
-      // 5. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
+      // 3. Clean up lastPolledAt entries older than 2x cooldown (no longer relevant)
       const now = Date.now()
       const staleThreshold = now - REPLY_REPOLL_COOLDOWN * 2
       for (const [phone, ts] of lastPolledAt) {
         if (ts < staleThreshold) lastPolledAt.delete(phone)
       }
+
+      // 4. Expire after polling — messages get one last check before being removed
+      await expireOldMessages()
 
       if (polledAny) console.log('[poll] done')
     } catch (err) {

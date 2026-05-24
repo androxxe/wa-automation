@@ -16,7 +16,8 @@
     "db:migrate:prod": "dotenv -e ../../.env.prod -- prisma migrate deploy --schema=prisma/schema.prisma",
     "db:fresh": "dotenv -e ../../.env.dev -- tsx ../../scripts/prod-guard.ts prisma migrate reset --schema=prisma/schema.prisma",
     "test:analyze": "tsx --env-file=../../.env.dev src/lib/test-analyze.ts",
-    "import:csv": "dotenv -e ../../.env.prod -- tsx src/scripts/import-csv.ts"
+    "import:csv": "dotenv -e ../../.env.prod -- tsx src/scripts/import-csv.ts",
+    "fix:msg-status": "tsx --env-file=../../.env.prod src/scripts/fix-message-status.ts"
   },
   "dependencies": {
     "@aice/shared": "workspace:*",
