@@ -23,6 +23,11 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
     `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} toko bapak/ibu sudah dapat Yoyic bubuk atau botol dari aice? Terimakasih`,
     `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah mendapatkan Yoyic bubuk atau botol dari aice? Mohon konfirmasinya, terima kasih.`,
   ],
+  CRISPY_BALLS: [
+    `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} atau 3 toko bapak/ibu mendapatkan 2pcs Crispy Balls gratis dari aice? Terimakasih`,
+    `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} atau 3 toko bapak/ibu sudah dapat 2pcs Crispy Balls gratis dari aice? Terimakasih`,
+    `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} atau 3 sudah mendapatkan 2pcs Crispy Balls gratis dari aice? Mohon konfirmasinya, terima kasih.`,
+  ],
 }
 
 function pickTemplate(type: string): string {
@@ -30,7 +35,7 @@ function pickTemplate(type: string): string {
   return pool[Math.floor(Math.random() * pool.length)]
 }
 
-type CampaignType = "STIK" | "KARDUS" | "YOYIC"
+type CampaignType = "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS"
 
 interface AreaItem {
   id: string
@@ -48,6 +53,7 @@ const TYPE_BADGE: Record<string, string> = {
   STIK: "bg-blue-100 text-blue-700",
   KARDUS: "bg-orange-100 text-orange-700",
   YOYIC: "bg-green-100 text-green-700",
+  CRISPY_BALLS: "bg-purple-100 text-purple-700",
 }
 
 export default function NewCampaign() {
@@ -221,7 +227,9 @@ export default function NewCampaign() {
         <div className="space-y-2">
           <p className="text-sm font-medium">Campaign type</p>
           <div className="flex gap-3">
-            {(["STIK", "KARDUS", "YOYIC"] as CampaignType[]).map((t) => (
+            {(
+              ["STIK", "KARDUS", "YOYIC", "CRISPY_BALLS"] as CampaignType[]
+            ).map((t) => (
               <label key={t} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"

@@ -1,7 +1,7 @@
 // ─── Contact / Campaign types ─────────────────────────────────────────────────
 
-export type ContactType  = 'STIK' | 'KARDUS' | 'YOYIC'
-export type CampaignType = 'STIK' | 'KARDUS' | 'YOYIC'
+export type ContactType  = 'STIK' | 'KARDUS' | 'YOYIC' | 'CRISPY_BALLS'
+export type CampaignType = 'STIK' | 'KARDUS' | 'YOYIC' | 'CRISPY_BALLS'
 
 // ─── Campaign ─────────────────────────────────────────────────────────────────
 

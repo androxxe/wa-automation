@@ -125,6 +125,8 @@ Department Summary Table:
 Campaign Details (listing only campaigns that have matching rows):
   Campaign A — Januari — STIK (X rows after filtering)
   Campaign B — Februari — KARDUS (Y rows after filtering)
+  Campaign C — Maret — YOYIC (Z rows after filtering)
+  Campaign D — April — CRISPY_BALLS (W rows after filtering)
 ```
 
 ### Empty Results Handling
@@ -340,7 +342,7 @@ Location: `packages/api/src/lib/report-xlsx.ts`
 interface ExportFilters {
   // Campaign filters
   bulan?: string                    // e.g., "Januari"
-  campaignType?: string             // e.g., "STIK" | "KARDUS"
+  campaignType?: string             // e.g., "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS"
   
   // Data row filters
   categories?: string[]             // e.g., ["confirmed", "denied", "invalid", "question", "unclear", "other", ""]
@@ -452,6 +454,9 @@ GET /api/export/report-xlsx-dept
 GET /api/export/report-xlsx-dept?bulan=Januari&campaignType=STIK
   → January STIK campaigns only
 
+GET /api/export/report-xlsx-dept?bulan=Maret&campaignType=YOYIC
+  → March YOYIC campaigns only
+
 GET /api/export/report-xlsx-dept?categories=confirmed,denied
   → Only confirmed and denied replies
 
@@ -474,8 +479,8 @@ Content-Disposition: attachment; filename="laporan_per_department_{YYYY-MM-DD}.x
 **Filename Generation:**
 - No filters: `laporan_per_department_2025-04-15.xlsx`
 - Month only: `laporan_per_department_Januari_2025-04-15.xlsx`
-- Type only: `laporan_per_department_STIK_2025-04-15.xlsx`
-- Both: `laporan_per_department_Januari_STIK_2025-04-15.xlsx`
+- Type only: `laporan_per_department_STIK_2025-04-15.xlsx` (or `YOYIC`, `CRISPY_BALLS`, etc.)
+- Both: `laporan_per_department_Januari_STIK_2025-04-15.xlsx` (or `Januari_YOYIC`, `April_CRISPY_BALLS`, etc.)
 - Data filters don't affect filename (implied in content)
 
 ### Frontend Update

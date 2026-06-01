@@ -5,7 +5,7 @@ import type { ContactTypeTree, DepartmentTree, AreaFile, ParsedSheet, ContactTyp
 
 const DATA_FOLDER = process.env.DATA_FOLDER ?? ''
 
-const VALID_TYPES: ContactType[] = ['STIK', 'KARDUS', 'YOYIC']
+const VALID_TYPES: ContactType[] = ['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']
 
 /**
  * Scan DATA_FOLDER with 3-level structure: Type → Department → Area.xlsx

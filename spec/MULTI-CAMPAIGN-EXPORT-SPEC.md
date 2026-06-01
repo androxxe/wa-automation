@@ -46,7 +46,7 @@ export async function buildAllCampaignsReportXlsx(): Promise<Buffer>
 
 - **Sheet naming:** Uses campaign name with timestamp appended to ensure uniqueness
   - Format: `{campaignName}_{YYYYMMDD}` (truncated to 31 characters, Excel's sheet name limit)
-  - Example: `STIK Januar_20250415`, `KARDUS Januar_20250415`, `STIK Februar_20250415`
+  - Example: `STIK Januar_20250415`, `KARDUS Januar_20250415`, `YOYIC Maret_20250415`, `CRISPY_BALLS April_20250415`, `STIK Februar_20250415`
   - Timestamp is the export date, ensuring no collisions even with identical campaign names
 - **Data structure:** Identical to `buildCampaignReportXlsx()` for consistency
 - **Row ordering:** Contacts ordered by `seqNo` then `storeName` within each area
@@ -234,7 +234,7 @@ Each campaign sheet contains:
 ## Future Enhancements
 
 1. **Filtered export** — export only campaigns from specific date range
-2. **Campaign type filter** — export only STIK or KARDUS campaigns
+2. **Campaign type filter** — export only STIK, KARDUS, YOYIC, or CRISPY_BALLS campaigns
 3. **Selective sheet export** — choose which campaigns to include
 4. **Custom formatting** — allow users to customize sheet names, column order
 5. **Batch scheduling** — schedule exports to run daily/weekly

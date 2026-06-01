@@ -49,7 +49,7 @@ const ImportBody = z.object({
   filePath:       z.string(),
   departmentName: z.string(),
   areaName:       z.string(),
-  contactType:    z.enum(['STIK', 'KARDUS', 'YOYIC']),
+  contactType:    z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
   mapping: z.object({
     phone:          z.string().nullable(),
     store_name:     z.string().nullable(),

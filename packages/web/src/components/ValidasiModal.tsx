@@ -43,9 +43,10 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const areas     = data?.areas ?? []
 
   // Group areas by contactType
-  const stikAreas   = useMemo(() => areas.filter((a) => a.contactType === 'STIK'), [areas])
-  const kardusAreas = useMemo(() => areas.filter((a) => a.contactType === 'KARDUS'), [areas])
-  const yoyicAreas  = useMemo(() => areas.filter((a) => a.contactType === 'YOYIC'), [areas])
+  const stikAreas         = useMemo(() => areas.filter((a) => a.contactType === 'STIK'), [areas])
+  const kardusAreas       = useMemo(() => areas.filter((a) => a.contactType === 'KARDUS'), [areas])
+  const yoyicAreas        = useMemo(() => areas.filter((a) => a.contactType === 'YOYIC'), [areas])
+  const crispyBallsAreas  = useMemo(() => areas.filter((a) => a.contactType === 'CRISPY_BALLS'), [areas])
 
   // Filter by search
   const filteredStik   = useMemo(() =>
@@ -59,6 +60,10 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const filteredYoyic  = useMemo(() =>
     search ? yoyicAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : yoyicAreas,
     [yoyicAreas, search],
+  )
+  const filteredCrispyBalls = useMemo(() =>
+    search ? crispyBallsAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : crispyBallsAreas,
+    [crispyBallsAreas, search],
   )
 
   // Reset state when modal opens
@@ -265,6 +270,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
               {renderGroup('STIK', stikAreas, filteredStik)}
               {renderGroup('KARDUS', kardusAreas, filteredKardus)}
               {renderGroup('YOYIC', yoyicAreas, filteredYoyic)}
+              {renderGroup('CRISPY_BALLS', crispyBallsAreas, filteredCrispyBalls)}
             </div>
 
             {/* Summary */}

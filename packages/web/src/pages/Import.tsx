@@ -14,9 +14,10 @@ interface ImportState {
 }
 
 const TYPE_BADGE: Record<string, string> = {
-  STIK:   'bg-blue-100 text-blue-700',
-  KARDUS: 'bg-orange-100 text-orange-700',
-  YOYIC:  'bg-green-100 text-green-700',
+  STIK:          'bg-blue-100 text-blue-700',
+  KARDUS:        'bg-orange-100 text-orange-700',
+  YOYIC:         'bg-green-100 text-green-700',
+  CRISPY_BALLS:  'bg-purple-100 text-purple-700',
 }
 
 export default function Import() {

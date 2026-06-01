@@ -163,16 +163,23 @@ data/
 │   ├── Department 2/
 │   │   └── ...
 │   └── ...
-└── KARDUS/
+├── KARDUS/
+│   ├── Department 1/
+│   │   ├── Aceh Barat.xlsx
+│   │   └── ...
+│   └── ...
+├── YOYIC/
+│   ├── Department 1/
+│   │   └── ...
+│   └── ...
+└── CRISPY_BALLS/
     ├── Department 1/
-    │   ├── Aceh Barat.xlsx
     │   └── ...
     └── ...
-```
 
-The top-level subfolder name (`STIK` / `KARDUS`) is the **contact type**. The folder scanner reads it as the type and passes it through to the import flow. All contacts imported from a type subfolder are tagged with that `contactType`.
+The top-level subfolder name (`STIK` / `KARDUS` / `YOYIC` / `CRISPY_BALLS`) is the **contact type**. The folder scanner reads it as the type and passes it through to the import flow. All contacts imported from a type subfolder are tagged with that `contactType`.
 
-> Additional types can be supported in the future by adding new top-level subfolders — no code changes required beyond updating the allowed-values list.
+> Additional types can be supported in the future by adding new top-level subfolders — no code changes required beyond updating the allowed-values list (currently: `STIK`, `KARDUS`, `YOYIC`, `CRISPY_BALLS`).
 
 ### Excel File Format (sample)
 
@@ -217,12 +224,12 @@ Indonesian mobile numbers are normalized to E.164 format for WhatsApp. All forma
 
 ---
 
-## Duplicate Phone Numbers (STIK × KARDUS)
+## Duplicate Phone Numbers (same phone, multiple types)
 
-The same phone number can appear in both the STIK and KARDUS import files for the same area. This is expected — a store owner may exchange both product types. The system handles duplicates at three points:
+The same phone number can appear in multiple contact type import files for the same area (STIK, KARDUS, YOYIC, CRISPY_BALLS, etc.). This is expected — a store owner may exchange multiple product types. The system handles duplicates at three points:
 
 ### At import
-`Area.contactType` differentiates the two records. `Contact.@@unique([areaId, phoneNorm])` — since the STIK area and KARDUS area have different `areaId`s, the same phone imports cleanly as two independent Contact records with no conflict.
+`Area.contactType` differentiates the records. `Contact.@@unique([areaId, phoneNorm])` — since areas of different types have different `areaId`s, the same phone imports cleanly as independent Contact records with no conflict.
 
 ### At WA registration check
 `POST /api/contacts/validate-wa` deduplicates by `phoneNorm` before enqueuing jobs — one Playwright navigation per unique phone, never two. The worker writes the result with `updateMany({ where: { phoneNorm } })`, so both the STIK and KARDUS contact records are updated in a single DB write.
@@ -309,7 +316,7 @@ Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi ai
 Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi aice pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran kupon Kardus ke distributor?
 ```
 
-> The templates differ in phrasing (not just a word swap), so two separate defaults are used rather than a single `{{tipe}}` variable. Switching campaign type in the create form updates the template automatically — unless the user has already manually edited it.
+> **YOYIC** and **CRISPY_BALLS** default templates are TBD — user to provide. Follow the same pattern: greeting → intent → month-specific confirmation question with the product name.
 
 ### Available Variables
 
@@ -319,7 +326,7 @@ Halo bapak/ibu mitra aice {{area}} toko {{nama_toko}}, saya dari tim inspeksi ai
 | `{{bulan}}` | Campaign-level static field (user sets once, e.g. `"12"` or `"Desember"`) |
 | `{{department}}` | Department name |
 | `{{area}}` | Area / market name |
-| `{{tipe}}` | Campaign type, title-cased — `"Stik"` or `"Kardus"` |
+| `{{tipe}}` | Campaign type, title-cased — `"Stik"`, `"Kardus"`, `"Yoyic"`, or `"Crispy Balls"` |
 
 ### Message Variation (Claude Job 3)
 
@@ -379,18 +386,9 @@ model Department {
 model Area {
   id            String         @id @default(cuid())
   name          String
-  contactType   String         // "STIK" | "KARDUS" — inferred from DATA_FOLDER top-level subfolder
-  fileName      String
-  filePath      String         @db.VarChar(500)
-  columnMapping Json?                          // Claude-mapped column keys
-  departmentId  String
-  department    Department     @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  contacts      Contact[]
-  campaigns     CampaignArea[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  contactType   String         // "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS" — inferred from DATA_FOLDER top-level subfolder
 
-  @@unique([departmentId, name, contactType])  // Aceh Barat STIK ≠ Aceh Barat KARDUS
+  @@unique([departmentId, name, contactType])  // Aceh Barat STIK ≠ Aceh Barat KARDUS (same market, different type = different area)
 }
 
 model Contact {
@@ -400,7 +398,7 @@ model Contact {
   freezerId     String?
   phoneRaw      String
   phoneNorm     String
-  contactType   String     // "STIK" | "KARDUS" — denormalized from area.contactType for fast filtering
+  contactType   String     // "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS" — denormalized from area.contactType for fast filtering
   phoneValid    Boolean    @default(true)   // false = bad format OR not on WA
   waChecked     Boolean    @default(false)  // true = has been validated against WA Web
   exchangeCount Int?
@@ -426,7 +424,7 @@ model Campaign {
   bulan          String
   status         String         @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED
 
-  campaignType          String  // "STIK" | "KARDUS" — determines which contacts are enqueued
+  campaignType          String  // "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS" — determines which contacts are enqueued
 
   // Send targeting — null means "use global AppConfig default at enqueue time"
   targetRepliesPerArea  Int?    // desired replies per area (e.g. 20)
@@ -852,11 +850,11 @@ Claude handles all informal Indonesian variations: "iya", "betul", "sudah", "ada
 
 Written to `OUTPUT_FOLDER/{Type}/{Department Name}/{Area Name}_{Bulan}_{YYYY-MM-DD}.csv`
 
-- `{Type}` = "STIK" or "KARDUS" (from `area.contactType`)
+- `{Type}` = `area.contactType` — "STIK", "KARDUS", "YOYIC", or "CRISPY_BALLS"
 - `{Bulan}` = campaign's `bulan` value (e.g. "Januari" or "01") — scopes the report to one month
 - Date suffix shows when the file was last generated. Same date = overwritten. New date = new file alongside previous ones.
 
-Because a market (area) can appear in both STIK and KARDUS campaigns and in multiple months, **each combination is a separate file**. The `generateAreaReport` function signature becomes `generateAreaReport(areaId, bulan, campaignType)`.
+Because a market (area) can appear in multiple campaign types (STIK, KARDUS, YOYIC, CRISPY_BALLS) and in multiple months, **each combination is a separate file**. The `generateAreaReport` function signature becomes `generateAreaReport(areaId, bulan, campaignType)`.
 
 ```csv
 Nama Toko,Nomor HP Toko,Department,Area,Agent Phone,Jawaban,Screenshot
@@ -1262,8 +1260,8 @@ Screenshots are **captured continuously for all agent lifecycle states** to prov
 - **Frontend display**: Shows "No preview" placeholder when screenshot unavailable or agent OFFLINE
 
 ### `/import` — Import Contacts
-- Folder tree scanned from DATA_FOLDER: **Type (STIK / KARDUS) → Department → Area**
-- Each area node shows its `contactType` badge (e.g. `[STIK]`)
+- Folder tree scanned from DATA_FOLDER: **Type (STIK / KARDUS / YOYIC / CRISPY_BALLS) → Department → Area**
+- Each area node shows its `contactType` badge (e.g. `[STIK]`, `[KARDUS]`, `[YOYIC]`, `[CRISPY_BALLS]`)
 - Per-area: import button → shows parsed headers
 - Claude suggests column mapping → user reviews + confirms
 - `contactType` is passed automatically in the import body (read from the folder path — no manual selection needed)
@@ -1272,7 +1270,7 @@ Screenshots are **captured continuously for all agent lifecycle states** to prov
 ### `/contacts` — Contact Browser
 - Filter by status: **Semua / Belum dicek / Terdaftar / Tidak valid**
 - **"Validasi WA"** button — opens a multi-area selection modal:
-  - Shows **all areas** grouped by type (STIK / KARDUS)
+  - Shows **all areas** grouped by type (STIK / KARDUS / YOYIC / CRISPY_BALLS)
   - **Never-validated areas** (`validated = 0`): checked by default, showing unchecked count
   - **Areas with any validated phones** (`validated > 0`, partial or full): **unchecked by default**, muted style + green checkmark. Shows "N dicek" for fully validated, or "N dicek · M belum" for partially validated. Below that, shows registered/invalid breakdown (e.g. "85 terdaftar / 16 tidak valid"). Can be selected to validate remaining or re-check all.
   - "Pilih Semua / Hapus Semua" toggle per group (includes validated areas)
@@ -1296,12 +1294,12 @@ Screenshots are **captured continuously for all agent lifecycle states** to prov
 - Stats cards for currently shown rows: `Shown`, `Running`, `Paused`, `In Queue`, `Failed`, `Replies`
 - Progress bar: `sent/total`
 - Queue/failed visibility per row via `Queue / Failed` column (`Q {pending+queued} / F {failed}`)
-- **Already Replied** column — shows `alreadyRepliedCount` (unique contacts who replied for that `bulan` + `campaignType`, capped at `targetRepliesPerArea` per area — excess replies beyond target are ignored) alongside the bulan and type label (e.g. "42 Desember · STIK"). Helps the user see useful reply coverage across all campaigns for the same month + type.
+- **Already Replied** column — shows `alreadyRepliedCount` (unique contacts who replied for that `bulan` + `campaignType`, capped at `targetRepliesPerArea` per area — excess replies beyond target are ignored) alongside the bulan and type label (e.g. "42 Desember · STIK", "15 Januari · YOYIC"). Helps the user see useful reply coverage across all campaigns for the same month + type.
 - Actions: View, Cancel
 
 ### `/campaigns/new` — Create Campaign
 1. Name + `{{bulan}}` field
-2. **Campaign type** — radio button: `STIK` / `KARDUS`. Selecting a type filters the area tree in step 3 to only show areas of that type.
+2. **Campaign type** — radio button: `STIK` / `KARDUS` / `YOYIC` / `CRISPY_BALLS`. Selecting a type filters the area tree in step 3 to only show areas of that type.
 3. Message template editor
 4. Select target areas — **Department → Area tree** filtered to the selected campaign type (collapsible, per-area checkboxes with dept-level select-all)
 5. Selected area count shown live

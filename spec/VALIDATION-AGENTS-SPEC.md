@@ -138,6 +138,8 @@ Response:
   "areas": [
     { "areaId": "clx...", "name": "Aceh Barat", "contactType": "STIK", "unchecked": 80, "validated": 120, "registered": 100, "invalid": 20, "total": 200 },
     { "areaId": "clx...", "name": "Aceh Barat", "contactType": "KARDUS", "unchecked": 0, "validated": 45, "registered": 40, "invalid": 5, "total": 45 },
+    { "areaId": "clx...", "name": "Aceh Barat", "contactType": "YOYIC", "unchecked": 55, "validated": 0, "registered": 0, "invalid": 0, "total": 55 },
+    { "areaId": "clx...", "name": "Banda Aceh", "contactType": "CRISPY_BALLS", "unchecked": 30, "validated": 0, "registered": 0, "invalid": 0, "total": 30 },
     ...
   ]
 }
@@ -203,7 +205,7 @@ interface ValidasiModalProps {
 
 Behaviour:
 - On mount (when `open = true`): fetches `GET /api/contacts/validate-wa/count`.
-- Shows **all areas** grouped by **contact type** (STIK section, KARDUS section).
+- Shows **all areas** grouped by **contact type** (STIK section, KARDUS section, YOYIC section, CRISPY_BALLS section).
 - Each area has a checkbox. All areas are interactive (never disabled).
 - **Default selection:** Only areas that have **never been validated**
   (`validated === 0` and `unchecked > 0`) are **checked by default**. Areas
@@ -217,7 +219,7 @@ Behaviour:
   validated count is shown (e.g. `✓ 60 dicek`). Below the checked count, a
   second line shows the registered/invalid breakdown:
   `40 terdaftar / 5 tidak valid`.
-- Each group (STIK/KARDUS) has a "Pilih Semua / Hapus Semua" toggle (selects
+- Each group (STIK/KARDUS/YOYIC/CRISPY_BALLS) has a "Pilih Semua / Hapus Semua" toggle (selects
   all areas in that group, including validated ones).
 - Search input filters areas by name across both groups.
 - "Limit per area" number input (default: 60) with "Tanpa limit per area" checkbox.
@@ -237,22 +239,30 @@ Behaviour:
 │                                             │
 │  [🔍 Cari area...]                          │
 │                                             │
-│  ── STIK ─── [Pilih Semua] ──────────────── │
-│  ☑ Aceh Barat          80  (never validated) │
-│  ☑ Aceh Timur          45  (never validated) │
-│  ☐ Tanjung Pinang   ✓60 dicek · 40 belum    │
-│                     50 terdaftar / 10 invalid │
-│  ☐ Banda Aceh       ✓ 50 dicek              │
-│                     40 terdaftar / 10 invalid │
-│  ...                                        │
-│                                             │
-│  ── KARDUS ── [Pilih Semua] ─────────────── │
-│  ☑ Aceh Barat          120 (never validated) │
-│  ☐ Medan            ✓20 dicek · 30 belum    │
-│                     18 terdaftar / 2 invalid  │
-│  ☐ Surabaya         ✓ 80 dicek              │
-│                     70 terdaftar / 10 invalid │
-│  ...                                        │
+ │  ── STIK ─── [Pilih Semua] ──────────────── │
+ │  ☑ Aceh Barat          80  (never validated) │
+ │  ☑ Aceh Timur          45  (never validated) │
+ │  ☐ Tanjung Pinang   ✓60 dicek · 40 belum    │
+ │                     50 terdaftar / 10 invalid │
+ │  ☐ Banda Aceh       ✓ 50 dicek              │
+ │                     40 terdaftar / 10 invalid │
+ │  ...                                        │
+ │                                             │
+ │  ── KARDUS ── [Pilih Semua] ─────────────── │
+ │  ☑ Aceh Barat          120 (never validated) │
+ │  ☐ Medan            ✓20 dicek · 30 belum    │
+ │                     18 terdaftar / 2 invalid  │
+ │  ☐ Surabaya         ✓ 80 dicek              │
+ │                     70 terdaftar / 10 invalid │
+ │  ...                                        │
+ │                                             │
+ │  ── YOYIC ── [Pilih Semua] ──────────────── │
+ │  ☑ Aceh Barat          55  (never validated) │
+ │  ...                                        │
+ │                                             │
+ │  ── CRISPY_BALLS ─ [Pilih Semua] ────────── │
+ │  ☑ Banda Aceh          30  (never validated) │
+ │  ...                                        │
 │                                             │
 │  Total: 325 nomor dari 3 area               │
 │                                             │
@@ -285,7 +295,7 @@ File: `packages/web/src/pages/Contacts.tsx`
 | 6 | `api` | Update `GET /api/contacts/validate-wa/count` to return per-area breakdown |
 | 7 | `api` | Add `areaIds[]` + `limitPerArea` param support to `POST /api/contacts/validate-wa` |
 | 8 | `web` | Add `validationOnly` toggle + badge to `Agents.tsx` |
-| 9 | `web` | Redesign `ValidasiModal.tsx` with multi-area checkboxes grouped by STIK/KARDUS |
+| 9 | `web` | Redesign `ValidasiModal.tsx` with multi-area checkboxes grouped by contact type (STIK/KARDUS/YOYIC/CRISPY_BALLS) |
 | 10 | `web` | Update `Contacts.tsx` to pass `areaIds` + `limitPerArea` from modal to mutation |
 
 ---
