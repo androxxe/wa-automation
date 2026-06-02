@@ -17,7 +17,8 @@
     "db:fresh": "dotenv -e ../../.env.dev -- tsx ../../scripts/prod-guard.ts prisma migrate reset --schema=prisma/schema.prisma",
     "test:analyze": "tsx --env-file=../../.env.dev src/lib/test-analyze.ts",
     "import:csv": "dotenv -e ../../.env.prod -- tsx src/scripts/import-csv.ts",
-    "fix:msg-status": "tsx --env-file=../../.env.prod src/scripts/fix-message-status.ts"
+    "reanalyze:replies:prod": "tsx --env-file=../../.env.prod src/scripts/reanalyze-replies.ts",
+    "reanalyze:replies:dev": "tsx --env-file=../../.env.dev src/scripts/reanalyze-replies.ts"
   },
   "dependencies": {
     "@aice/shared": "workspace:*",
