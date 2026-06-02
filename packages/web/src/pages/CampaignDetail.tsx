@@ -666,6 +666,14 @@ interface Campaign {
   areas:        CampaignArea[]
 }
 
+interface MessageMetadata {
+  pollDiagnostics?: Array<{ detectedAt: string; reason: string; phone: string }>
+  staleDetectionCount?: number
+  reanalyzedBy?: string
+  reanalyzedAt?: string
+  [key: string]: unknown
+}
+
 interface Message {
   id:         string
   phone:      string
@@ -673,7 +681,7 @@ interface Message {
   sentAt:     string | null
   failReason: string | null
   contact:    { storeName: string }
-  reply:      { 
+  reply:      {
     id: string
     body: string
     claudeCategory: string | null
@@ -682,6 +690,7 @@ interface Message {
   } | null
   agent:      { name: string } | null
   body?:      string
+  metadata:   MessageMetadata | null
 }
 
 interface AgentSummary {
@@ -708,6 +717,21 @@ const MSG_STATUS_COLORS: Record<string, string> = {
   QUEUED:    'bg-purple-100 text-purple-700',
   PENDING:   'bg-gray-100 text-gray-500',
   EXPIRED:   'bg-orange-100 text-orange-600',
+}
+
+const REASON_LABELS: Record<string, string> = {
+  NO_OUTGOING:       'No outgoing message in chat DOM',
+  STALE_ANCHOR:      'Anchor element became stale',
+  FINGERPRINT_MISSING: 'Message fingerprint missing after retries',
+}
+
+function MetadataCell({ metadata }: { metadata: MessageMetadata | null }) {
+  if (!metadata) return <span className="text-muted-foreground/40 text-xs">—</span>
+  return (
+    <pre className="text-[10px] font-mono whitespace-pre-wrap break-all w-96 max-h-48 overflow-auto bg-muted/30 rounded p-2">
+      {JSON.stringify(metadata, null, 2)}
+    </pre>
+  )
 }
 
 export default function CampaignDetail() {
@@ -1125,6 +1149,7 @@ export default function CampaignDetail() {
                 {['Store', 'Phone', 'Agent', 'Status', 'Sent At', 'Reply'].map((h) => (
                   <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
                 ))}
+                <th className="px-4 py-2.5 text-left font-medium w-32">Metadata</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -1266,6 +1291,9 @@ export default function CampaignDetail() {
                       </div>
                     ) : '—'}
                    </td>
+                  <td className="px-4 py-2.5 align-top">
+                    <MetadataCell metadata={m.metadata} />
+                  </td>
                 </tr>
               ))}
             </tbody>

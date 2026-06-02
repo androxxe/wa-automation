@@ -73,6 +73,7 @@ router.get('/', async (req, res) => {
               sentAt:     true,
               body:       true,
               campaignId: true,
+              metadata:   true,
               campaign: {
                 select: { id: true, name: true, bulan: true, campaignType: true },
               },

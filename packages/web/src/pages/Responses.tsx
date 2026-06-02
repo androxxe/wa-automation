@@ -5,6 +5,14 @@ import type { AppConfigData, ReplyCategory } from '@aice/shared'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+interface MessageMetadata {
+  pollDiagnostics?: Array<{ detectedAt: string; reason: string; phone: string }>
+  staleDetectionCount?: number
+  reanalyzedBy?: string
+  reanalyzedAt?: string
+  [key: string]: unknown
+}
+
 interface Reply {
   id:              string
   body:            string
@@ -20,6 +28,7 @@ interface Reply {
     sentAt:     string | null
     body:       string
     campaignId: string
+    metadata:   MessageMetadata | null
     campaign:   { id: string; name: string; bulan: string; campaignType: string }
     contact: {
       storeName:  string
@@ -86,6 +95,21 @@ const JAWABAN_OPTIONS: { value: string; label: string }[] = [
   { value: '0',    label: 'Tidak' },
   { value: 'null', label: 'Tidak Jelas' },
 ]
+
+const REASON_LABELS: Record<string, string> = {
+  NO_OUTGOING:         'No outgoing message in chat DOM',
+  STALE_ANCHOR:        'Anchor element became stale',
+  FINGERPRINT_MISSING: 'Message fingerprint missing after retries',
+}
+
+function MetadataCell({ metadata }: { metadata: MessageMetadata | null }) {
+  if (!metadata) return <span className="text-muted-foreground/40 text-xs">—</span>
+  return (
+    <pre className="text-[10px] font-mono whitespace-pre-wrap break-all w-96 max-h-48 overflow-auto bg-muted/30 rounded p-2">
+      {JSON.stringify(metadata, null, 2)}
+    </pre>
+  )
+}
 
 // ─── Screenshot Modal ─────────────────────────────────────────────────────────
 
@@ -490,12 +514,13 @@ export default function Responses() {
               {['Campaign', 'Store', 'Phone', 'Area / Dept', 'Message Sent', 'Reply', 'Summary', 'Jawaban', 'Category', 'Time', 'Screenshot', 'Update'].map((h) => (
                 <th key={h} className="px-3 py-2.5 text-left font-medium whitespace-nowrap">{h}</th>
               ))}
+              <th className="px-3 py-2.5 text-left font-medium whitespace-nowrap w-32">Metadata</th>
             </tr>
           </thead>
           <tbody className="divide-y">
             {replies.length === 0 && !repliesQuery.isFetching && (
               <tr>
-                <td colSpan={12} className="px-4 py-10 text-center text-muted-foreground">
+                <td colSpan={13} className="px-4 py-10 text-center text-muted-foreground">
                   No replies yet
                 </td>
               </tr>
@@ -657,6 +682,10 @@ export default function Responses() {
                   >
                     {updateReplyMutation.isPending ? 'Saving…' : 'Save'}
                   </button>
+                </td>
+                {/* Metadata */}
+                <td className="px-3 py-2.5 align-top">
+                  <MetadataCell metadata={r.message.metadata} />
                 </td>
               </tr>
             ))}
