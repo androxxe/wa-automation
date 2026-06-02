@@ -1,4 +1,5 @@
 import { Worker, Queue, DelayedError, type Job } from 'bullmq'
+import type { Prisma } from '@prisma/client'
 import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
@@ -378,7 +379,8 @@ async function expireOldMessages(): Promise<number> {
 
 // Returns Map<agentId, Map<phone, sentAt>> — grouped by sending agent so each agent
 // only polls replies for conversations it owns. Batched and prioritised per agent.
-async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date>>> {
+type PollPhoneInfo = { sentAt: Date; body: string }
+async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, PollPhoneInfo>>> {
   const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const messages = await db.message.findMany({
     where:  {
@@ -392,30 +394,32 @@ async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date
         ],
       },
     },
-    select: { phone: true, sentAt: true, agentId: true },
+    select: { phone: true, sentAt: true, agentId: true, body: true },
   })
 
-  // Group by agentId, deduplicating by phone within each agent (keep MOST RECENT sentAt)
-  const byAgent = new Map<number, Map<string, Date>>()
+  // Group by agentId, deduplicating by phone within each agent (keep MOST RECENT sentAt + body)
+  const byAgent = new Map<number, Map<string, PollPhoneInfo>>()
   for (const m of messages) {
     const agentId = m.agentId!
     if (!byAgent.has(agentId)) byAgent.set(agentId, new Map())
     const agentMap = byAgent.get(agentId)!
     const ts = m.sentAt ?? new Date(0)
     const existing = agentMap.get(m.phone)
-    if (!existing || ts > existing) agentMap.set(m.phone, ts)
+    if (!existing || ts > existing.sentAt) {
+      agentMap.set(m.phone, { sentAt: ts, body: m.body })
+    }
   }
 
   // Apply prioritisation + batching per agent
-  const result = new Map<number, Map<string, Date>>()
+  const result = new Map<number, Map<string, PollPhoneInfo>>()
   const now = Date.now()
 
   for (const [agentId, phoneMap] of byAgent) {
     // Filter: only include phones whose adaptive poll interval has elapsed
-    const duePhones = [...phoneMap.entries()].filter(([phone, sentAt]) => {
+    const duePhones = [...phoneMap.entries()].filter(([phone, info]) => {
       const lastPoll = lastPolledAt.get(phone) ?? 0
       const elapsed  = now - lastPoll
-      const interval = pollIntervalForMessage(sentAt)
+      const interval = pollIntervalForMessage(info.sentAt)
       const cooldown = Math.max(interval, PHONE_POLL_COOLDOWN)
       return elapsed >= cooldown
     })
@@ -429,12 +433,12 @@ async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Date
 
       if (aInCooldown !== bInCooldown) return aInCooldown ? 1 : -1
       if (aLastPoll !== bLastPoll) return aLastPoll - bLastPoll
-      return b[1].getTime() - a[1].getTime()
+      return b[1].sentAt.getTime() - a[1].sentAt.getTime()
     })
 
-    const batched = new Map<string, Date>()
-    for (const [phone, sentAt] of entries.slice(0, REPLY_BATCH_SIZE)) {
-      batched.set(phone, sentAt)
+    const batched = new Map<string, PollPhoneInfo>()
+    for (const [phone, info] of entries.slice(0, REPLY_BATCH_SIZE)) {
+      batched.set(phone, info)
     }
 
     const skipped = phoneMap.size - duePhones.length
@@ -640,10 +644,15 @@ async function handleReply(params: {
   }
 }
 
-// Called when pollReplies detects that the expected outgoing message is absent from
-// WhatsApp's chat DOM (stale anchor). The message was marked SENT in the DB but was
-// never actually delivered. Mark it FAILED so the user can see and retry it.
-async function handleStaleMessage(phone: string): Promise<void> {
+// Called when pollReplies could not verify our outgoing message in the WhatsApp chat DOM.
+// We do NOT change Message.status to FAILED — false positives are possible (lazy load,
+// race condition, fingerprint mismatch). Instead, we append a diagnostic entry to
+// Message.metadata.pollDiagnostics and bump staleDetectionCount. Operators can inspect
+// the metadata in the DB / future UI to decide whether to manually retry.
+async function handleStaleMessage(
+  phone: string,
+  reason: 'NO_OUTGOING' | 'STALE_ANCHOR' | 'FINGERPRINT_MISSING',
+): Promise<void> {
   const replyWindowCutoff = new Date(Date.now() - REPLY_WINDOW_DAYS * 24 * 60 * 60 * 1000)
   const staleMessages = await db.message.findMany({
     where: {
@@ -657,28 +666,46 @@ async function handleStaleMessage(phone: string): Promise<void> {
         ],
       },
     },
-    select: { id: true, campaignId: true, sentAt: true },
+    select: { id: true, campaignId: true, sentAt: true, metadata: true },
     orderBy: { sentAt: 'desc' },
   })
 
   if (staleMessages.length === 0) return
 
+  const detectedAt = new Date()
+
   for (const msg of staleMessages) {
-    await db.message.update({
-      where: { id: msg.id },
-      data: {
-        status:     'FAILED',
-        failedAt:   new Date(),
-        failReason: 'WhatsApp delivery not confirmed — message absent from chat during reply poll. Retry to resend.',
-      },
-    }).catch((e) => console.warn(`[worker] handleStaleMessage update failed for msg ${msg.id}:`, e))
+    type MessageMetadata = {
+      pollDiagnostics?: Prisma.InputJsonValue[]
+      staleDetectionCount?: number
+      [key: string]: Prisma.InputJsonValue | undefined
+    }
+    const existing = (msg.metadata ?? {}) as MessageMetadata
+    const entry: Prisma.InputJsonObject = {
+      detectedAt:    detectedAt.toISOString(),
+      reason,
+      phone,
+    }
+    const nextDiagnostics: Prisma.InputJsonValue[] = [...(existing.pollDiagnostics ?? []), entry]
+    const nextCount        = (existing.staleDetectionCount ?? 0) + 1
+    const nextMetadata: Prisma.InputJsonObject = {
+      ...existing,
+      pollDiagnostics:     nextDiagnostics,
+      staleDetectionCount: nextCount,
+    }
 
-    await db.campaign.update({
-      where: { id: msg.campaignId },
-      data:  { failedCount: { increment: 1 } },
-    }).catch(() => {})
+    await db.$transaction(async (tx) => {
+      await tx.message.update({
+        where: { id: msg.id },
+        data:  { metadata: nextMetadata },
+      })
+    }).catch((e) => {
+      console.warn(`[worker] handleStaleMessage metadata update failed for msg ${msg.id}:`, e)
+    })
 
-    console.warn(`[worker] marked msg:${msg.id} (phone:${phone}) as FAILED — stale delivery`)
+    console.warn(
+      `[worker] logged stale detection #${nextCount} for msg:${msg.id} (phone:${phone}, reason:${reason}) — not changing status`,
+    )
   }
 }
 
@@ -1003,7 +1030,7 @@ async function startManualPollListener(): Promise<void> {
   sub.on('message', (_channel, message) => {
     try {
       const { byAgent } = JSON.parse(message) as {
-        byAgent: Record<string, Record<string, string | { sentAt: string; mode?: 'unreplied' | 'fallback_latest' }>>
+        byAgent: Record<string, Record<string, string | { sentAt: string; mode?: 'unreplied' | 'fallback_latest'; body?: string }>>
       }
 
       // Process in background — don't block the subscriber
@@ -1019,17 +1046,17 @@ async function startManualPollListener(): Promise<void> {
             continue
           }
 
-          // Build the Map<string, Date> that pollReplies expects, plus per-phone mode.
-          const phonesMap = new Map<string, Date>()
+          // Build the Map<string, PollPhoneInfo> that pollReplies expects, plus per-phone mode.
+          const phonesMap = new Map<string, PollPhoneInfo>()
           const modeByPhone = new Map<string, 'unreplied' | 'fallback_latest'>()
           for (const [phone, meta] of Object.entries(phoneEntries)) {
             if (typeof meta === 'string') {
-              phonesMap.set(phone, new Date(meta))
+              phonesMap.set(phone, { sentAt: new Date(meta), body: '' })
               modeByPhone.set(phone, 'unreplied')
               continue
             }
 
-            phonesMap.set(phone, new Date(meta.sentAt))
+            phonesMap.set(phone, { sentAt: new Date(meta.sentAt), body: meta.body ?? '' })
             modeByPhone.set(phone, meta.mode === 'fallback_latest' ? 'fallback_latest' : 'unreplied')
           }
 

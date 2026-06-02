@@ -160,6 +160,7 @@ model Message {
   readAt      DateTime?
   failedAt    DateTime?
   failReason  String?   @db.Text
+  metadata    Json?     // pollDiagnostics, retry history, etc. — append-only diagnostic log
   reply       Reply?
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt

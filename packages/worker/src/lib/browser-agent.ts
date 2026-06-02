@@ -455,8 +455,8 @@ export class BrowserAgent {
 
   async pollReplies(
     onReply:  (params: { phone: string; text: string; screenshotPath: string | null }) => Promise<void>,
-    sentPhones: Map<string, Date>,
-    onStale?: (phone: string) => Promise<void>,
+    sentPhones: Map<string, { sentAt: Date; body?: string }>,
+    onStale?: (phone: string, reason: 'NO_OUTGOING' | 'STALE_ANCHOR' | 'FINGERPRINT_MISSING') => Promise<void>,
     options?: { disableStaleGuard?: boolean },
   ): Promise<void> {
     // Lock is acquired PER PHONE instead of for the entire batch.
@@ -469,7 +469,7 @@ export class BrowserAgent {
     const POLL_INTER_VISIT_MAX = parseInt(process.env.POLL_INTER_VISIT_DELAY_MAX_MS ?? '45000', 10)
     let visitIndex = 0
 
-    for (const [phone, sentAt] of sentPhones) {
+    for (const [phone, sentInfo] of sentPhones) {
       // Yield to pending send jobs — if a send job is waiting, abort the rest
       // of this poll batch so the agent can process the message first.
       if (this.activeJobCount > 0) {
@@ -499,6 +499,12 @@ export class BrowserAgent {
         }
       }
       visitIndex++
+
+      const sentAt    = sentInfo.sentAt
+      const body      = sentInfo.body
+      const fingerprint = body
+        ? body.replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 30)
+        : null
 
       await this._withBrowserLock(async () => {
         const page = this.page!
@@ -540,115 +546,171 @@ export class BrowserAgent {
         //   [campaign] You: "Apakah benar..."  ← anchor (last .message-out)
         //   [reply] Contact: "Iya sudah"   ← ✓ captured
         //
-        // Staleness guard: if the anchor's date is >2 days before the expected sentAt,
-        // our latest Bulan-2 message never appeared in WhatsApp (silent delivery failure).
-        // In that case we must NOT fire handleReply — doing so would attribute the old
-        // Bulan-1 reply (R1, which sits after M1 in the DOM) to the Bulan-2 message (M2).
-        const lastIncoming = await page.evaluate((payload: { expectedSentAtMs: number; disableStaleGuard: boolean }): string | null | '__STALE__' => {
-          const { expectedSentAtMs, disableStaleGuard } = payload
-          // Collect all top-level message rows in DOM order
-          const rows = Array.from(document.querySelectorAll(
-            '[data-id], .message-in, .message-out',
-          ))
+        // Fingerprint-based anchor (preferred): locate the bubble whose text matches the
+        // stored body fingerprint. This is robust against:
+        //   - WhatsApp Web lazy-loading (newer bubble not yet in DOM at scroll-top)
+        //   - Browser locale mismatch breaking the id-ID date format check
+        //   - Older conversation history containing prior outgoing messages
+        //
+        // Retry with scroll-to-bottom: WA Web virtualises the chat list, so the latest
+        // bubble may be below the rendered viewport. We scroll the chat panel down,
+        // wait briefly, and re-query the DOM up to FINGERPRINT_RETRY_MAX times.
+        //
+        // Fallback: if no body fingerprint is available (older call sites), use the
+        // legacy "last .message-out" anchor + date staleness guard, but never return
+        // STALE here — we leave that decision to the caller via NO_OUTGOING.
+        const FINGERPRINT_RETRY_MAX = 3
+        const FINGERPRINT_RETRY_WAIT_MS = 1500
 
-          // Find the index of the last OUTGOING message (our sent campaign message)
-          let anchorIdx = -1
-          rows.forEach((el, idx) => {
-            if (el.classList.contains('message-out') || el.querySelector('.message-out')) {
-              anchorIdx = idx
+        type PollResult =
+          | { kind: 'reply'; text: string }
+          | { kind: 'no_reply' }
+          | { kind: 'stale'; reason: 'NO_OUTGOING' | 'STALE_ANCHOR' | 'FINGERPRINT_MISSING' }
+
+        const runOnce = async (): Promise<PollResult> => {
+          return page.evaluate((payload: {
+            expectedSentAtMs: number
+            disableStaleGuard: boolean
+            fingerprint: string | null
+          }): PollResult => {
+            const { expectedSentAtMs, disableStaleGuard, fingerprint } = payload
+            const rows = Array.from(document.querySelectorAll(
+              '[data-id], .message-in, .message-out',
+            ))
+
+            // ── Fingerprint-based anchor (preferred path) ─────────────────────
+            if (fingerprint) {
+              let fpIdx = -1
+              for (let i = rows.length - 1; i >= 0; i--) {
+                const el = rows[i]
+                if (!(el.classList.contains('message-out') || el.querySelector('.message-out'))) continue
+                const txt = (el.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
+                if (txt.includes(fingerprint)) {
+                  fpIdx = i
+                  break
+                }
+              }
+              if (fpIdx === -1) {
+                // No outgoing bubble matches the fingerprint we sent.
+                // Two possibilities:
+                //   (a) DOM hasn't rendered it yet (lazy load / scroll position)
+                //   (b) The message was not actually delivered
+                // The caller will retry with scroll; only after exhausting retries
+                // do we report FINGERPRINT_MISSING.
+                return { kind: 'stale', reason: 'FINGERPRINT_MISSING' }
+              }
+
+              const incomingAfter = rows
+                .slice(fpIdx + 1)
+                .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
+              if (incomingAfter.length === 0) return { kind: 'no_reply' }
+              const lastEl = incomingAfter[incomingAfter.length - 1]
+              const copyableText = lastEl.querySelector('.copyable-text')
+              if (!copyableText) return { kind: 'no_reply' }
+              const clone = copyableText.cloneNode(true) as Element
+              clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2').forEach((e) => e.remove())
+              clone.querySelectorAll('span.x1c4vz4f.x2lah0s').forEach((e) => e.remove())
+              const text = clone.textContent?.trim() ?? ''
+              const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
+              return { kind: 'reply', text: clean }
             }
-          })
 
-          // No outgoing message in view — our message may not have loaded yet, skip
-          if (anchorIdx === -1) return null
+            // ── Legacy fallback: last .message-out + date guard ───────────────
+            let anchorIdx = -1
+            rows.forEach((el, idx) => {
+              if (el.classList.contains('message-out') || el.querySelector('.message-out')) {
+                anchorIdx = idx
+              }
+            })
+            if (anchorIdx === -1) return { kind: 'stale', reason: 'NO_OUTGOING' }
 
-          // ── Staleness guard ──────────────────────────────────────────────────
-          // Read the anchor's timestamp from data-pre-plain-text (e.g. "[14.30, 01/02/2026] ").
-          // If the anchor message is from >2 days before expectedSentAt it means our
-          // latest message (M2) never appeared in the DOM — we are anchored to an older
-          // message (M1 from Bulan 1). Skip to prevent R1 being attributed to M2.
-          const anchorEl = rows[anchorIdx]
-          const outEl    = anchorEl.classList.contains('message-out')
-            ? anchorEl
-            : anchorEl.querySelector('.message-out') ?? anchorEl
-          const preText  = outEl.querySelector?.('.copyable-text[data-pre-plain-text]')
-            ?.getAttribute('data-pre-plain-text') ?? null
+            const anchorEl = rows[anchorIdx]
+            const outEl    = anchorEl.classList.contains('message-out')
+              ? anchorEl
+              : anchorEl.querySelector('.message-out') ?? anchorEl
+            const preText  = outEl.querySelector?.('.copyable-text[data-pre-plain-text]')
+              ?.getAttribute('data-pre-plain-text') ?? null
 
-          if (preText && !disableStaleGuard) {
-            // Format (id-ID locale): "[H.MM, DD/MM/YYYY] "
-            const dm = preText.match(/,\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/)
-            if (dm) {
-              const day    = parseInt(dm[1], 10)
-              const month  = parseInt(dm[2], 10)
-              const year   = parseInt(dm[3], 10)
-              const anchorDayMs  = Date.UTC(year, month - 1, day)
-              const expectedDay  = new Date(expectedSentAtMs)
-              const expectedDayMs = Date.UTC(
-                expectedDay.getUTCFullYear(),
-                expectedDay.getUTCMonth(),
-                expectedDay.getUTCDate(),
-              )
-              const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000
-              if (expectedDayMs - anchorDayMs > TWO_DAYS_MS) {
-                // Anchor is from a previous campaign — our latest message (M2) is missing
-                // from WhatsApp. Signal the caller so it can mark M2 as FAILED for retry.
-                return '__STALE__'
+            if (preText && !disableStaleGuard) {
+              const dm = preText.match(/,\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/)
+              if (dm) {
+                const day    = parseInt(dm[1], 10)
+                const month  = parseInt(dm[2], 10)
+                const year   = parseInt(dm[3], 10)
+                const anchorDayMs  = Date.UTC(year, month - 1, day)
+                const expectedDay  = new Date(expectedSentAtMs)
+                const expectedDayMs = Date.UTC(
+                  expectedDay.getUTCFullYear(),
+                  expectedDay.getUTCMonth(),
+                  expectedDay.getUTCDate(),
+                )
+                const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000
+                if (expectedDayMs - anchorDayMs > TWO_DAYS_MS) {
+                  return { kind: 'stale', reason: 'STALE_ANCHOR' }
+                }
               }
             }
+
+            const incomingAfter = rows
+              .slice(anchorIdx + 1)
+              .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
+            if (incomingAfter.length === 0) return { kind: 'no_reply' }
+            const lastEl = incomingAfter[incomingAfter.length - 1]
+            const copyableText = lastEl.querySelector('.copyable-text')
+            if (!copyableText) return { kind: 'no_reply' }
+            const clone = copyableText.cloneNode(true) as Element
+            clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2').forEach((e) => e.remove())
+            clone.querySelectorAll('span.x1c4vz4f.x2lah0s').forEach((e) => e.remove())
+            const text = clone.textContent?.trim() ?? ''
+            const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
+            return { kind: 'reply', text: clean }
+          }, { expectedSentAtMs: sentAtMs, disableStaleGuard: options?.disableStaleGuard === true, fingerprint })
+        }
+
+        // Scroll the chat panel to the bottom so any lazy-loaded bubbles render
+        const scrollToBottom = async (): Promise<void> => {
+          await page.evaluate(() => {
+            const scrollables = [
+              document.querySelector('#main .copyable-area')?.parentElement,
+              document.querySelector('#main [data-testid="conversation-panel-messages"]'),
+              document.querySelector('#main'),
+            ].filter(Boolean) as Element[]
+            for (const el of scrollables) {
+              el.scrollTo?.({ top: el.scrollHeight, behavior: 'instant' as ScrollBehavior })
+              if ('scrollTop' in el) (el as HTMLElement).scrollTop = (el as HTMLElement).scrollHeight
+            }
+          }).catch(() => {})
+        }
+
+        let result: PollResult
+        if (fingerprint) {
+          result = await runOnce()
+          let attempt = 1
+          while (result.kind === 'stale' && result.reason === 'FINGERPRINT_MISSING' && attempt < FINGERPRINT_RETRY_MAX) {
+            await scrollToBottom()
+            await page.waitForTimeout(FINGERPRINT_RETRY_WAIT_MS)
+            result = await runOnce()
+            attempt++
           }
-          // ────────────────────────────────────────────────────────────────────
+        } else {
+          result = await runOnce()
+        }
 
-          // Collect incoming messages strictly after the anchor
-          const incomingAfter = rows
-            .slice(anchorIdx + 1)
-            .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
-
-          // No incoming message after our send — contact hasn't replied yet
-          if (incomingAfter.length === 0) return null
-
-          // Take the last incoming after the anchor (covers follow-up messages)
-          const lastEl = incomingAfter[incomingAfter.length - 1]
-          
-          // Extract clean reply text, removing quoted/forwarded blocks and timestamps
-          const copyableText = lastEl.querySelector('.copyable-text')
-          if (!copyableText) return null
-          
-          // Clone to avoid DOM mutations
-          const clone = copyableText.cloneNode(true) as Element
-          
-          // Remove quoted/forwarded message blocks
-          const quotedBlocks = clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2')
-          quotedBlocks.forEach((el) => { el.remove() })
-          
-          // Remove timestamp spans (they have consistent classes across all platforms)
-          const timestampSpans = clone.querySelectorAll('span.x1c4vz4f.x2lah0s')
-          timestampSpans.forEach((el) => { el.remove() })
-          
-          // Get remaining text
-          const text = clone.textContent?.trim() ?? ''
-          
-          // Extra safety: strip any remaining timestamp patterns like "HH:MM" or "HH:MM am/pm"
-          const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
-          
-          // Debug logging (optional, can be removed after verification)
-          if (quotedBlocks.length > 0 || timestampSpans.length > 0) {
-            console.debug(`[reply-extract] Removed ${quotedBlocks.length} quoted blocks, ${timestampSpans.length} timestamp spans`)
-          }
-          
-          return clean || null
-        }, { expectedSentAtMs: sentAtMs, disableStaleGuard: options?.disableStaleGuard === true })
-
-        if (lastIncoming === '__STALE__') {
-          console.warn(`[agent:${this.agentId}] stale anchor for ${phone} — latest message absent from WhatsApp chat, marking FAILED for retry`)
-          await onStale?.(phone)
+        if (result.kind === 'stale') {
+          console.warn(
+            `[agent:${this.agentId}] ${result.reason} for ${phone}` +
+            (fingerprint ? ' — fingerprint not in DOM after retries; logging to metadata' : ' — no outgoing message in view'),
+          )
+          await onStale?.(phone, result.reason)
           return
         }
 
-        if (!lastIncoming) {
+        if (result.kind === 'no_reply') {
           console.log(`[agent:${this.agentId}] no reply after sent message for ${phone}`)
           return
         }
 
+        const lastIncoming = result.text
         console.log(`[agent:${this.agentId}] reply from ${phone}: "${lastIncoming.slice(0, 40)}${lastIncoming.length > 40 ? '…' : ''}"`)
         const screenshotPath = await this._saveReplyScreenshot(phone)
         await onReply({ phone, text: lastIncoming, screenshotPath })

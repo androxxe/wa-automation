@@ -274,7 +274,7 @@ router.post('/poll-manual', async (req, res) => {
         reply:   null,
         agentId: { not: null },
       },
-      select: { phone: true, sentAt: true, createdAt: true, agentId: true },
+      select: { phone: true, sentAt: true, createdAt: true, agentId: true, body: true },
     })
 
     type ManualPollAnchor = {
@@ -282,6 +282,7 @@ router.post('/poll-manual', async (req, res) => {
       sentAt: Date
       agentId: number
       mode: 'unreplied' | 'fallback_latest'
+      body: string
     }
 
     const selectedByPhone = new Map<string, ManualPollAnchor>()
@@ -296,6 +297,7 @@ router.post('/poll-manual', async (req, res) => {
           sentAt: ts,
           agentId: m.agentId!,
           mode: 'unreplied',
+          body: m.body,
         })
       }
     }
@@ -313,7 +315,7 @@ router.post('/poll-manual', async (req, res) => {
           status:  { in: ['SENT', 'DELIVERED', 'READ', 'EXPIRED', 'FAILED'] },
           agentId: { not: null },
         },
-        select: { phone: true, sentAt: true, createdAt: true, agentId: true },
+        select: { phone: true, sentAt: true, createdAt: true, agentId: true, body: true },
       })
 
       for (const m of fallbackMessages) {
@@ -325,6 +327,7 @@ router.post('/poll-manual', async (req, res) => {
             sentAt: ts,
             agentId: m.agentId!,
             mode: 'fallback_latest',
+            body: m.body,
           })
         }
       }
@@ -350,15 +353,16 @@ router.post('/poll-manual', async (req, res) => {
 
     if (byAgent.size > 0) {
       // Serialize for Redis:
-      // { byAgent: { [agentId]: { [phone]: { sentAt, mode } } } }
-      const payload: Record<string, Record<string, { sentAt: string; mode: 'unreplied' | 'fallback_latest' }>> = {}
+      // { byAgent: { [agentId]: { [phone]: { sentAt, mode, body } } } }
+      const payload: Record<string, Record<string, { sentAt: string; mode: 'unreplied' | 'fallback_latest'; body: string }>> = {}
       for (const [agentId, phoneMap] of byAgent) {
         payload[String(agentId)] = {}
         for (const phone of phoneMap.keys()) {
           const selected = selectedByPhone.get(phone)
           const mode = selected?.mode ?? 'unreplied'
           const sentAt = phoneMap.get(phone) ?? new Date(0).toISOString()
-          payload[String(agentId)][phone] = { sentAt, mode }
+          const body   = selected?.body ?? ''
+          payload[String(agentId)][phone] = { sentAt, mode, body }
           queued.push({ phone, agentId, mode })
         }
       }
