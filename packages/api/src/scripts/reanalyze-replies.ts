@@ -17,7 +17,7 @@ const db = new PrismaClient()
 
 const STUB_SUMMARY = "Auto-skipped (DISABLE_REPLY_ANALYSIS is set)"
 const SCRIPT_NAME = "bulk-script"
-const DEFAULT_BATCH = 50
+const DEFAULT_BATCH = 20
 const OPENCODE_URL = "https://opencode.ai/zen/go/v1"
 
 // ─── CLI flags ────────────────────────────────────────────────────────────────
@@ -74,27 +74,36 @@ async function callOpencode(prompt: string): Promise<string> {
     throw new Error("OPCODE_API_KEY is not set")
   }
   const model = process.env.OPCODE_MODEL ?? "deepseek-v4-flash"
+  const url = `${OPENCODE_URL}/chat/completions`
 
-  const res = await fetch(`${OPENCODE_URL}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPCODE_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 16384,
-      temperature: 0,
-      messages: [
-        {
-          role: "system",
-          content:
-            "Output only the exact requested JSON array. No reasoning, no markdown, no code blocks.",
-        },
-        { role: "user", content: prompt },
-      ],
-    }),
-  })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPCODE_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 16384,
+        temperature: 0,
+        messages: [
+          {
+            role: "system",
+            content:
+              "Output only the exact requested JSON array. No reasoning, no markdown, no code blocks.",
+          },
+          { role: "user", content: prompt },
+        ],
+      }),
+    })
+  } catch (err) {
+    const code = (err as { code?: string }).code
+    const msg = err instanceof Error ? err.message : String(err)
+    const detail = code ? `(${code})` : ""
+    throw new Error(`Network error calling ${url}: ${msg} ${detail}`.trim())
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => "")
