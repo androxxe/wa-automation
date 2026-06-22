@@ -30,6 +30,7 @@ export default function NewReply() {
   const [photoBase64, setPhotoBase64] = useState('')
   const [photoName, setPhotoName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
   const [lookupResult, setLookupResult] = useState<UnrepliedPhone | null>(null)
   const [lookupPending, setLookupPending] = useState(false)
@@ -68,7 +69,16 @@ export default function NewReply() {
       queryClient.invalidateQueries({ queryKey: ['replies'] })
       setError(null)
       if (data.count > 0) {
-        navigate(`/responses?campaignId=${selectedPhone?.campaignId ?? ''}`)
+        setSuccess(`Reply recorded for ${selectedPhone?.campaignName ?? phone} (${data.count} message(s))`)
+        setPhone('')
+        setBody('')
+        setCategory('')
+        setPhotoBase64('')
+        setPhotoName('')
+        setLookupResult(null)
+        setLookupError(null)
+        setJawaban(1)
+        if (fileRef.current) fileRef.current.value = ''
       } else {
         setError('No replies created — message may already have a reply')
       }
@@ -107,6 +117,21 @@ export default function NewReply() {
       <h2 className="text-lg font-semibold mb-6">New Reply</h2>
 
       <form onSubmit={handleSubmit} className="space-y-5">
+        {/* Success */}
+        {success && (
+          <div className="rounded-md bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700 flex items-center justify-between">
+            <span>{success}</span>
+            <button type="button" onClick={() => setSuccess(null)} className="text-green-500 hover:text-green-700 text-lg leading-none">&times;</button>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
         {/* Phone input */}
         <div className="space-y-1.5">
           <label className="text-sm font-medium">
@@ -116,7 +141,7 @@ export default function NewReply() {
             <input
               type="text"
               value={phone}
-              onChange={(e) => { setPhone(e.target.value); setLookupResult(null); setLookupError(null) }}
+              onChange={(e) => { setPhone(e.target.value); setLookupResult(null); setLookupError(null); setSuccess(null) }}
               onBlur={() => lookupPhone(phone)}
               placeholder="+6289673681925"
               className="flex-1 border rounded-md px-3 py-2 text-sm bg-background font-mono"
@@ -241,13 +266,6 @@ export default function NewReply() {
             />
           )}
         </div>
-
-        {/* Error */}
-        {error && (
-          <div className="rounded-md bg-destructive/10 border border-destructive/30 px-3 py-2 text-sm text-destructive">
-            {error}
-          </div>
-        )}
 
         {/* Submit */}
         <div className="flex gap-3 pt-2">
