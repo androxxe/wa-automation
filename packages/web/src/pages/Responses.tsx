@@ -386,10 +386,12 @@ function StatsBar({ stats }: { stats: RepliesResponse['stats'] }) {
 
 export default function Responses() {
   const queryClient = useQueryClient()
-  const [filterCampaignId, setFilterCampaignId] = useState('')
-  const [filterCategory,   setFilterCategory]   = useState('')
-  const [filterJawaban,    setFilterJawaban]     = useState('')
-  const [page,             setPage]              = useState(1)
+  const [filterCampaignId,   setFilterCampaignId]   = useState('')
+  const [filterCampaignType, setFilterCampaignType] = useState('')
+  const [filterBulan,        setFilterBulan]        = useState('')
+  const [filterCategory,     setFilterCategory]     = useState('')
+  const [filterJawaban,      setFilterJawaban]       = useState('')
+  const [page,               setPage]                = useState(1)
   const [screenshot,       setScreenshot]        = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, { category: string; jawaban: string }>>({})
 
@@ -404,12 +406,14 @@ export default function Responses() {
   })
 
   const repliesQuery = useQuery<RepliesResponse>({
-    queryKey: ['replies', filterCampaignId, filterCategory, filterJawaban, page],
+    queryKey: ['replies', filterCampaignId, filterCampaignType, filterBulan, filterCategory, filterJawaban, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: '50' })
-      if (filterCampaignId) params.set('campaignId', filterCampaignId)
-      if (filterCategory)   params.set('category',   filterCategory)
-      if (filterJawaban)    params.set('jawaban',     filterJawaban)
+      if (filterCampaignId)   params.set('campaignId',   filterCampaignId)
+      if (filterCampaignType) params.set('campaignType', filterCampaignType)
+      if (filterBulan)        params.set('bulan',        filterBulan)
+      if (filterCategory)     params.set('category',     filterCategory)
+      if (filterJawaban)      params.set('jawaban',      filterJawaban)
       return apiFetch<RepliesResponse>(`/api/replies?${params}`)
     },
     placeholderData: (prev) => prev,
@@ -447,6 +451,9 @@ export default function Responses() {
   })
   const modelName = config?.llmModelName ?? 'AI'
 
+  const uniqueTypes = [...new Set(campaigns.map((c) => c.campaignType))].sort()
+  const uniqueBulans = [...new Set(campaigns.map((c) => c.bulan))].sort()
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -472,6 +479,28 @@ export default function Responses() {
         />
 
         <select
+          value={filterCampaignType}
+          onChange={(e) => updateFilter(setFilterCampaignType)(e.target.value)}
+          className="text-sm rounded-md border bg-background px-3 py-1.5"
+        >
+          <option value="">All Types</option>
+          {uniqueTypes.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+
+        <select
+          value={filterBulan}
+          onChange={(e) => updateFilter(setFilterBulan)(e.target.value)}
+          className="text-sm rounded-md border bg-background px-3 py-1.5"
+        >
+          <option value="">All Months</option>
+          {uniqueBulans.map((b) => (
+            <option key={b} value={b}>{b}</option>
+          ))}
+        </select>
+
+        <select
           value={filterCategory}
           onChange={(e) => updateFilter(setFilterCategory)(e.target.value)}
           className="text-sm rounded-md border bg-background px-3 py-1.5"
@@ -491,10 +520,10 @@ export default function Responses() {
           ))}
         </select>
 
-        {(filterCampaignId || filterCategory || filterJawaban) && (
+        {(filterCampaignId || filterCampaignType || filterBulan || filterCategory || filterJawaban) && (
           <button
             type="button"
-            onClick={() => { setFilterCampaignId(''); setFilterCategory(''); setFilterJawaban(''); setPage(1) }}
+            onClick={() => { setFilterCampaignId(''); setFilterCampaignType(''); setFilterBulan(''); setFilterCategory(''); setFilterJawaban(''); setPage(1) }}
             className="text-xs text-muted-foreground hover:text-foreground underline"
           >
             Clear filters
