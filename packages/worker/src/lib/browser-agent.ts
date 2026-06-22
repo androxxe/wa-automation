@@ -574,16 +574,14 @@ export class BrowserAgent {
             fingerprint: string | null
           }): PollResult => {
             const { expectedSentAtMs, disableStaleGuard, fingerprint } = payload
-            const rows = Array.from(document.querySelectorAll(
-              '[data-id], .message-in, .message-out',
-            ))
+            const rows = Array.from(document.querySelectorAll('[data-id]'))
 
             // ── Fingerprint-based anchor (preferred path) ─────────────────────
             if (fingerprint) {
               let fpIdx = -1
               for (let i = rows.length - 1; i >= 0; i--) {
                 const el = rows[i]
-                if (!(el.classList.contains('message-out') || el.querySelector('.message-out'))) continue
+                if (!el.querySelector('[data-icon="tail-out"]')) continue
                 const txt = (el.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase()
                 if (txt.includes(fingerprint)) {
                   fpIdx = i
@@ -602,7 +600,7 @@ export class BrowserAgent {
 
               const incomingAfter = rows
                 .slice(fpIdx + 1)
-                .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
+                .filter((el) => el.querySelector('[data-icon="tail-in"]'))
               if (incomingAfter.length === 0) return { kind: 'no_reply' }
               const lastEl = incomingAfter[incomingAfter.length - 1]
               const copyableText = lastEl.querySelector('.copyable-text')
@@ -618,17 +616,14 @@ export class BrowserAgent {
             // ── Legacy fallback: last .message-out + date guard ───────────────
             let anchorIdx = -1
             rows.forEach((el, idx) => {
-              if (el.classList.contains('message-out') || el.querySelector('.message-out')) {
+              if (el.querySelector('[data-icon="tail-out"]')) {
                 anchorIdx = idx
               }
             })
             if (anchorIdx === -1) return { kind: 'stale', reason: 'NO_OUTGOING' }
 
             const anchorEl = rows[anchorIdx]
-            const outEl    = anchorEl.classList.contains('message-out')
-              ? anchorEl
-              : anchorEl.querySelector('.message-out') ?? anchorEl
-            const preText  = outEl.querySelector?.('.copyable-text[data-pre-plain-text]')
+            const preText  = anchorEl.querySelector?.('.copyable-text[data-pre-plain-text]')
               ?.getAttribute('data-pre-plain-text') ?? null
 
             if (preText && !disableStaleGuard) {
@@ -653,7 +648,7 @@ export class BrowserAgent {
 
             const incomingAfter = rows
               .slice(anchorIdx + 1)
-              .filter((el) => el.classList.contains('message-in') || el.querySelector('.message-in'))
+              .filter((el) => el.querySelector('[data-icon="tail-in"]'))
             if (incomingAfter.length === 0) return { kind: 'no_reply' }
             const lastEl = incomingAfter[incomingAfter.length - 1]
             const copyableText = lastEl.querySelector('.copyable-text')
