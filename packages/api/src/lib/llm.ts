@@ -4,6 +4,15 @@ import * as gemini from './gemini'
 import * as openai from './openai'
 import * as opencode from './opencode'
 
+export interface ImageExtractionResult {
+  phone:     string
+  text:      string
+  category:  string
+  sentiment: string
+  summary:   string
+  jawaban:   number | null
+}
+
 type Provider = 'anthropic' | 'openai' | 'gemini' | 'opencode'
 
 const PROVIDER: Provider = (process.env.LLM_PROVIDER?.toLowerCase() ?? 'anthropic') as Provider
@@ -104,4 +113,14 @@ export async function analyzeReply(
 
 export async function varyMessage(renderedMessage: string): Promise<string> {
   return getProvider().varyMessage(renderedMessage)
+}
+
+export async function extractReplyFromImage(
+  photoBase64: string,
+  mimeType: string = 'image/jpeg',
+): Promise<ImageExtractionResult> {
+  if (!('extractReplyFromImage' in getProvider())) {
+    throw new Error(`Image extraction not supported by ${PROVIDER} provider`)
+  }
+  return (getProvider() as unknown as { extractReplyFromImage: typeof opencode.extractReplyFromImage }).extractReplyFromImage(photoBase64, mimeType)
 }

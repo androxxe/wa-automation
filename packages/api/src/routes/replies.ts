@@ -640,6 +640,10 @@ router.post('/', async (req, res) => {
       if (!reply) continue
       created.push(reply.id)
 
+      const existingMeta = (msg.metadata && typeof msg.metadata === 'object' ? { ...(msg.metadata as Record<string, unknown>) } : {}) as Record<string, unknown>
+      existingMeta.replySource = source
+      await db.message.update({ where: { id: msg.id }, data: { metadata: existingMeta as any } }).catch(() => {})
+
       if (msg.status !== 'READ') {
         await db.message.update({ where: { id: msg.id }, data: { status: 'READ', readAt: new Date() } })
         await db.campaign.update({ where: { id: msg.campaignId }, data: { readCount: { increment: 1 } } })

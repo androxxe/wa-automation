@@ -84,6 +84,125 @@ async function runChat(
   }
 }
 
+// ─── Vision API (image → text + analysis) ──────────────────────────────────────
+
+interface ImageExtractionResult {
+  phone:    string
+  text:     string
+  category: string
+  sentiment: string
+  summary:  string
+  jawaban:  number | null
+}
+
+async function runImageChat(
+  systemPrompt: string,
+  userText: string,
+  photoBase64: string,
+  mimeType: string,
+): Promise<string> {
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 8192,
+          temperature: 0,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: userText },
+                { type: 'image_url', image_url: { url: `data:${mimeType};base64,${photoBase64}` } },
+              ],
+            },
+          ],
+        }),
+      })
+
+      const body = await res.json() as { choices?: { message?: { content?: string } }[] }
+      console.error('[opencode] image response:', JSON.stringify(body).slice(0, 1000))
+
+      if (!res.ok) {
+        const status = (body as unknown as { error?: { code?: string } }).error?.code === 'rate_limit_exceeded' ? 429 : res.status
+        throw Object.assign(new Error(JSON.stringify(body).slice(0, 500)), { status })
+      }
+
+      const text = body.choices?.[0]?.message?.content
+      if (!text) {
+        console.error('[opencode] empty image content — full response:', JSON.stringify(body).slice(0, 2000))
+        throw new Error('OpenCode returned empty response for image')
+      }
+      return text
+    } catch (err: unknown) {
+      lastErr = err
+      const status = (err as { status?: number }).status
+      if ((status === 429 || (status && status >= 500 && status < 600)) && attempt < 2) {
+        const delay = attempt === 0 ? 5000 : 15000
+        console.warn(`[opencode] image attempt ${attempt + 1} got ${status}, retrying in ${delay / 1000}s…`)
+        await new Promise((r) => setTimeout(r, delay))
+        continue
+      }
+      break
+    }
+  }
+  return handleApiError(lastErr, 'runImageChat')
+}
+
+export async function extractReplyFromImage(
+  photoBase64: string,
+  mimeType: string,
+): Promise<ImageExtractionResult> {
+  const system = 'You are a precise assistant. Extract information from the WhatsApp chat screenshot. Output only the exact requested JSON. Do not include any reasoning, explanation, code blocks, or markdown formatting.'
+
+  const user = `This is a WhatsApp chat screenshot from a shop owner replying to a campaign message. The longer multi-line message is the campaign question. We need the SHORT REPLY from the shop owner (usually a short response like "yaa", "sudah", "belum", "tidak", "oke", etc.).
+
+1. Phone number — look for "+62..." or "08..." in the chat header
+2. Reply text — the SHORT reply message from the shop owner, NOT the long campaign question. Only extract text, skip emojis and images
+3. Classify the reply based on what the campaign question asks about:
+   - "confirmed" if they say yes/iya/betul/sudah/ada/oke/siap
+   - "denied" if they say no/tidak/belum/ngga/gak/blm/ndak
+   - "question" if they ask a question
+   - "unclear" if ambiguous
+   - "other" if off-topic
+4. Sentiment: "positive" | "neutral" | "negative"
+5. Summary: one short sentence in Indonesian summarising the reply
+6. Jawaban: 1 (confirmed/yes), 0 (denied/no), or null (unclear)
+
+Return ONLY this JSON:
+{
+  "phone": "+6289673681925",
+  "text": "yaa",
+  "category": "confirmed",
+  "sentiment": "positive",
+  "summary": "Toko mengkonfirmasi sudah menerima item",
+  "jawaban": 1
+}`
+
+  const raw = await runImageChat(system, user, photoBase64, mimeType)
+  console.log('[opencode] extractReplyFromImage raw:', raw)
+
+  const json = raw.match(/\{[\s\S]*\}/)?.[0]
+  if (!json) throw new Error('OpenCode did not return valid JSON for image extraction')
+
+  const parsed = JSON.parse(json)
+  return {
+    phone:    parsed.phone    ?? '',
+    text:     parsed.text     ?? '',
+    category: parsed.category ?? 'unclear',
+    sentiment: parsed.sentiment ?? 'neutral',
+    summary:  parsed.summary  ?? '',
+    jawaban:  typeof parsed.jawaban === 'number' ? parsed.jawaban : null,
+  }
+}
+
 export async function mapHeaders(
   headers: string[],
   sampleRows: Record<string, unknown>[],

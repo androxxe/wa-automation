@@ -15,7 +15,7 @@ A full-stack web application for managing bulk WhatsApp messaging campaigns targ
 | Browser automation | Playwright + playwright-extra (stealth) |
 | Queue | BullMQ + Redis |
 | Database | Prisma + MySQL |
-| AI | Anthropic Claude (header mapping, reply analysis, message variation) |
+| AI | OpenCode (DeepSeek V4, Kimi K2.5) / Anthropic Claude / Google Gemini / OpenAI |
 | Excel | SheetJS (xlsx) |
 | Monorepo | pnpm workspaces |
 
@@ -70,7 +70,8 @@ Edit `.env` and fill in:
 | `DATABASE_URL` | MySQL connection string |
 | `REDIS_URL` | Redis connection string |
 | `DATA_FOLDER` | Absolute path to folder containing `Department 1..9` xlsx files |
-| `OUTPUT_FOLDER` | Absolute path where response xlsx files will be written |
+| `OUTPUT_FOLDER` | Absolute path where response xlsx files and screenshots are saved |
+| `MANUAL_PHOTOS_FOLDER` | Path to folder for batch screenshot processing (default: `data-input-dev/manual-photos/`) |
 
 ### 3. Create the database
 
@@ -207,6 +208,67 @@ Toko ABC,+628121234567,1,/path/to/output/screenshots/628121234567_2026-03-14.jpg
 Toko XYZ,+628121234568,0,
 ```
 The `Screenshot` column is a file path to a `.jpg` — open it in any image viewer. Images can't be embedded in CSV files.
+
+### Step 6 — Manual replies (banned agents / unreachable via Web)
+
+When agents are banned from WhatsApp Web but the phone still works, use the manual reply system:
+
+**New Reply page** (`/replies/new`):
+1. Enter phone number → click **Lookup** to verify the phone has unreplied messages
+2. Type the reply text manually (what the recipient wrote)
+3. Set **Jawaban** (Ya/Tidak) and **Category**
+4. Upload a **screenshot** of the WhatsApp reply from the phone as proof
+5. Click **Submit Reply** — creates Reply records with fan-out to all matching campaigns
+
+**Batch Photo Processing** (CLI — for bulk screenshots):
+1. Screenshot reply chats on the banned phone (power + volume)
+2. Transfer images to `MANUAL_PHOTOS_FOLDER` (default: `data-input-dev/manual-photos/`)
+3. Run the CLI:
+
+```bash
+# Dry run — see what the AI extracts without writing to DB
+pnpm process:photos -- --batch 10
+
+# Live — create Reply records and move files to processed/
+pnpm process:photos -- --live --batch 10
+
+# Process all images in the folder
+pnpm process:photos -- --live
+```
+
+The AI (DeepSeek V4 via OpenCode) extracts:
+- Phone number from the chat header
+- Reply text from the last incoming message
+- Jawaban (Ya/Tidak), category, sentiment, and summary in Indonesian
+
+Processed images are moved to `processed/` subfolder. Errors stay in place for retry.
+
+**Dry run example output:**
+```
+━━━ Batch Photo Processor ━━━
+Mode:   DRY RUN (no writes)
+Batch:  3
+
+File                                            Phone            Text       Jawaban  Category
+WhatsApp ... 22.54.18.jpeg      +6281249425599    Sdh         Ya       confirmed
+WhatsApp ... 22.54.19 (1).jpeg  +6281233465219    Iya benar   Ya       confirmed
+
+✓ 2 processed  ✗ 0 failed  (3 total)
+```
+
+### Reply Webhook (optional automation)
+
+For automated reply capture from non-banned agents, post to `POST /api/replies`:
+
+```json
+{
+  "phone": "+6289673681925",
+  "body": "Yaa",
+  "source": "webhook"
+}
+```
+
+The endpoint finds unreplied messages for the phone, auto-runs AI analysis, creates Reply records, and updates campaign counters — same as browser-polled replies.
 
 ---
 

@@ -18,7 +18,9 @@
     "test:analyze": "tsx --env-file=../../.env.dev src/lib/test-analyze.ts",
     "import:csv": "dotenv -e ../../.env.prod -- tsx src/scripts/import-csv.ts",
     "reanalyze:replies:prod": "tsx --env-file=../../.env.prod src/scripts/reanalyze-replies.ts",
-    "reanalyze:replies:dev": "tsx --env-file=../../.env.dev src/scripts/reanalyze-replies.ts"
+    "reanalyze:replies:dev": "tsx --env-file=../../.env.dev src/scripts/reanalyze-replies.ts",
+    "process:photos": "tsx --env-file=../../.env.dev src/scripts/process-manual-photos.ts",
+    "process:photos:prod": "tsx --env-file=../../.env.prod src/scripts/process-manual-photos.ts"
   },
   "dependencies": {
     "@aice/shared": "workspace:*",

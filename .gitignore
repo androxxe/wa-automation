@@ -60,3 +60,6 @@ data-output-dev/
 dump.rdb
 redis/data/
 redis/data-dev/
+
+data-input-dev/
+data-input/

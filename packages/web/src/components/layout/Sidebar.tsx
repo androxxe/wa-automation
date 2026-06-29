@@ -20,9 +20,9 @@ const nav = [
   { to: '/campaigns', label: 'Campaigns', icon: Megaphone },
   { to: '/agents',    label: 'Agents',    icon: Bot },
   { to: '/warmer',    label: 'Warmer',    icon: Flame },
-  { to: '/responses',  label: 'Responses',  icon: MessageSquareText },
-  { to: '/replies/new', label: 'New Reply',  icon: MessageSquarePlus },
-  { to: '/export',     label: 'Export',     icon: Download },
+  { to: '/responses',      label: 'Responses',      icon: MessageSquareText },
+  { to: '/replies/new',     label: 'New Reply',      icon: MessageSquarePlus },
+  { to: '/export',         label: 'Export',         icon: Download },
   { to: '/settings',  label: 'Settings',  icon: Settings },
 ]
 
