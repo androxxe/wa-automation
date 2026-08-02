@@ -8,6 +8,13 @@ const HEADLESS = process.env.BROWSER_HEADLESS === 'true'
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
+const QR_SELECTORS = [
+  'canvas[aria-label="Scan this QR code to link a device!"]',
+  '[data-testid="link-device-qr-code"]',
+  '[data-testid="qrcode"]',
+  'canvas[aria-label="QR code"]',
+].join(', ')
+
 const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   window.chrome = { runtime: {} };
@@ -34,6 +41,12 @@ export class BrowserAgent {
   readonly typeDelayMaxMs: number
   /** If true, this agent is reserved exclusively for phone-check (validation) jobs. */
   readonly validationOnly: boolean
+
+  /**
+   * Optional publisher for cropped QR screenshots (wired by AgentManager to Redis).
+   * Called whenever a fresh QR crop is captured while status is 'qr'.
+   */
+  qrPublisher: ((b64: string) => Promise<void>) | null = null
 
   private context:       BrowserContext | null = null
   private page:          Page | null           = null
@@ -121,10 +134,7 @@ export class BrowserAgent {
       if (connected) return 'connected'
 
       const qr = await this.page
-        .waitForSelector(
-          'canvas[aria-label="Scan this QR code to link a device"], [data-testid="qrcode"], canvas[aria-label="QR code"]',
-          { timeout: 8000 },
-        )
+        .waitForSelector(QR_SELECTORS, { timeout: 8000 })
         .then(() => true)
         .catch(() => false)
       if (qr) return 'qr'
@@ -195,6 +205,7 @@ export class BrowserAgent {
     this._status = await this._detectStatus()
     console.log(`[agent:${this.agentId}] initial status: ${this._status}`)
 
+    this._publishQr()
     this._startPolling()
   }
 
@@ -207,6 +218,10 @@ export class BrowserAgent {
       if (this._status !== prev) {
         console.log(`[agent:${this.agentId}] status: ${prev} → ${this._status}`)
       }
+      // Auto-reload expired QR, then publish a fresh crop.
+      // QR codes expire in ~30-60s; the stale overlay is "Select to reload QR code".
+      await this._refreshQrIfStale()
+      this._publishQr()
     }, 5000)
   }
 
@@ -226,6 +241,64 @@ export class BrowserAgent {
     } catch (err) {
       console.warn(`[agent:${this.agentId}] screenshot failed:`, err instanceof Error ? err.message : String(err))
       return null
+    }
+  }
+
+  // ─── QR screenshot ─────────────────────────────────────────────────────────
+
+  /**
+   * Crop just the WhatsApp QR canvas at full quality (PNG) so it can be scanned
+   * from the web UI. Returns null when no QR is on screen.
+   */
+  async qrScreenshot(): Promise<string | null> {
+    if (!this.page) return null
+    try {
+      const qr = await this.page.waitForSelector(QR_SELECTORS, { timeout: 5000 }).catch(() => null)
+      if (!qr) return null
+      const buf = await qr.screenshot({ type: 'png' })
+      return buf.toString('base64')
+    } catch (err) {
+      console.warn(`[agent:${this.agentId}] qr screenshot failed:`, err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+
+  /** Capture QR crop and push it via qrPublisher (fire-and-forget). */
+  private _publishQr() {
+    if (!this.qrPublisher || this._status !== 'qr') return
+    this.qrScreenshot()
+      .then((b64) => { if (b64) return this.qrPublisher!(b64) })
+      .catch(() => {})
+  }
+
+  /**
+   * Detect the expired-QR overlay ("Select to reload QR code") and click it to
+   * regenerate a fresh QR. No-op when the QR is still valid.
+   */
+  private async _refreshQrIfStale(): Promise<void> {
+    const page = this.page
+    if (!page) return
+    try {
+      const stale = await page
+        .getByText(/Select to reload QR code/i)
+        .first()
+        .isVisible({ timeout: 1500 })
+        .catch(() => false)
+      if (!stale) return
+
+      console.log(`[agent:${this.agentId}] QR expired — clicking reload`)
+      // Prefer the QR container button (cursor: pointer); fall back to the text node.
+      await page
+        .locator('[data-testid="link-device-qr-code"]')
+        .first()
+        .click({ timeout: 3000 })
+        .catch(async () => {
+          await page.getByText(/Select to reload QR code/i).first().click({ timeout: 3000 }).catch(() => {})
+        })
+      // Wait for the new QR to render before the next crop
+      await page.waitForTimeout(3000)
+    } catch (err) {
+      console.warn(`[agent:${this.agentId}] qr refresh failed:`, err instanceof Error ? err.message : String(err))
     }
   }
 

@@ -11,6 +11,8 @@ const PROFILES_DIR =
 
 const redisKey = (agentId: number) => `agent:${agentId}:status`
 
+const qrRedisKey = (agentId: number) => `agent:${agentId}:qr`
+
 export class AgentManager {
   private agents = new Map<number, BrowserAgent>()
   private redis!: IORedis
@@ -120,6 +122,10 @@ export class AgentManager {
       typeDelayMaxMs,
       validationOnly,
     )
+    // Wire QR screenshot publishing to Redis (BrowserAgent polls QR every 5s while on screen)
+    agent.qrPublisher = async (b64: string) => {
+      await this.redis.set(qrRedisKey(agentId), b64, "EX", 30)
+    }
     this.agents.set(agentId, agent)
     const label = agent.validationOnly ? " [VALIDATION ONLY]" : ""
     console.log(
@@ -194,6 +200,7 @@ export class AgentManager {
     console.log(`[agent:${agentId}] stopping…`)
     await agent.close()
     await this._setStatus(agentId, "OFFLINE")
+    await this.redis.del(qrRedisKey(agentId))
     console.log(`[agent:${agentId}] stopped`)
   }
 
@@ -295,6 +302,15 @@ export class AgentManager {
             `[agent:${agentId}] status changed: ${prev} → ${agent.status}`,
           )
         }
+
+        // QR crop fallback — refresh every poll cycle while QR visible;
+        // clear stale QR key once the agent leaves the qr state.
+        if (agent.status === "qr") {
+          const qr = await agent.qrScreenshot()
+          if (qr) await this.redis.set(qrRedisKey(agentId), qr, "EX", 30)
+        } else {
+          await this.redis.del(qrRedisKey(agentId))
+        }
       }
     }, 60000)
   }
@@ -305,6 +321,7 @@ export class AgentManager {
     for (const [agentId, agent] of this.agents.entries()) {
       await agent.close()
       await this._setStatus(agentId, "OFFLINE")
+      await this.redis.del(qrRedisKey(agentId))
     }
   }
 

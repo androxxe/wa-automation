@@ -45,6 +45,7 @@ export default function Agents() {
   const [form, setForm]         = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '' })
   const [editing, setEditing]   = useState<Agent | null>(null)
   const [editForm, setEditForm] = useState({ name: '', phoneNumber: '', departmentId: '', dailySendCap: '', breakEvery: '', breakMinMs: '', breakMaxMs: '', typeDelayMin: '', typeDelayMax: '', warmMode: false, validationOnly: false })
+  const [qrAgent, setQrAgent]   = useState<Agent | null>(null)
 
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
@@ -72,6 +73,21 @@ export default function Agents() {
     queryFn:        () => apiFetch<Agent[]>('/api/agents'),
     refetchInterval: 5000,
   })
+
+  // Poll the cropped QR code every 5s while the scan modal is open
+  const { data: qrData } = useQuery<{ qr: string | null }>({
+    queryKey:       ['agent-qr', qrAgent?.id],
+    queryFn:        () => apiFetch<{ qr: string | null }>(`/api/agents/${qrAgent!.id}/qr`),
+    enabled:        qrAgent !== null,
+    refetchInterval: 5000,
+  })
+
+  // Auto-close the QR modal once the agent connects
+  useEffect(() => {
+    if (qrAgent && agents.some((a) => a.id === qrAgent.id && a.status === 'ONLINE')) {
+      setQrAgent(null)
+    }
+  }, [agents, qrAgent])
 
   const { data: departments = [] } = useQuery<Department[]>({
     queryKey: ['departments'],
@@ -285,9 +301,37 @@ export default function Agents() {
     </div>
   )
 
+  // ─── QR scan modal ──────────────────────────────────────────────────────────
+  const QrModal = qrAgent && (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      <button type="button" aria-label="Close" className="absolute inset-0 bg-black/60" onClick={() => setQrAgent(null)} />
+      <div className="relative bg-background rounded-lg shadow-lg border w-full max-w-md mx-4 p-6 space-y-4">
+        <h3 className="font-semibold">Scan QR — {qrAgent.name}</h3>
+        <div className="mx-auto w-72 h-72 rounded-md border bg-white flex items-center justify-center overflow-hidden">
+          {qrData?.qr ? (
+            <img src={`data:image/png;base64,${qrData.qr}`} alt="WhatsApp QR code" className="w-full h-full object-contain" />
+          ) : (
+            <span className="text-sm text-muted-foreground animate-pulse">Waiting for QR…</span>
+          )}
+        </div>
+        <ol className="text-sm text-muted-foreground space-y-1 list-decimal list-inside">
+          <li>Open WhatsApp on your phone</li>
+          <li>Settings → Linked Devices → Link a Device</li>
+          <li>Scan the QR above</li>
+        </ol>
+        <div className="flex justify-end">
+          <button type="button" onClick={() => setQrAgent(null)} className="border text-sm px-4 py-2 rounded-md">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+
   return (
     <div className="space-y-6">
       {EditModal}
+      {QrModal}
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Agents</h2>
@@ -409,7 +453,8 @@ export default function Agents() {
                   <img
                     src={`data:image/jpeg;base64,${agent.screenshot}`}
                     alt={`${agent.name} preview`}
-                    className="w-full h-full object-cover"
+                    onClick={() => ['QR', 'STARTING'].includes(agent.status) && setQrAgent(agent)}
+                    className={`w-full h-full object-cover ${['QR', 'STARTING'].includes(agent.status) ? 'cursor-pointer hover:opacity-80' : ''}`}
                   />
                 ) : (
                   <span className="text-xs text-muted-foreground">No preview</span>
@@ -473,14 +518,25 @@ export default function Agents() {
                     <span className="text-foreground font-medium">{agent.typeDelayMaxMs ?? config?.defaultTypeDelayMax ?? 180}</span>ms/key
                   </div>
                 </div>
-                {agent.status === 'QR' && (
+                {['QR', 'STARTING'].includes(agent.status) && (
                   <div className="text-xs text-yellow-700 bg-yellow-50 border border-yellow-200 rounded px-3 py-2">
-                    QR code visible — check the preview above and scan with your phone.
+                    {agent.status === 'QR'
+                      ? <>QR code visible — click <button type="button" onClick={() => setQrAgent(agent)} className="font-medium underline">Scan QR</button> to enlarge.</>
+                      : <>Browser starting — <button type="button" onClick={() => setQrAgent(agent)} className="font-medium underline">Scan QR</button> if a QR code appears.</>}
                   </div>
                 )}
               </div>
 
               <div className="shrink-0 flex gap-2">
+                {['QR', 'STARTING'].includes(agent.status) && (
+                  <button
+                    type="button"
+                    onClick={() => setQrAgent(agent)}
+                    className="bg-yellow-500 text-black text-sm px-3 py-1.5 rounded-md hover:bg-yellow-400"
+                  >
+                    Scan QR
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleEdit(agent)}

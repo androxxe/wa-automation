@@ -170,6 +170,12 @@ router.get('/:id/screenshot', async (req, res) => {
   res.json({ ok: true, data: { screenshot } })
 })
 
+// GET /api/agents/:id/qr — cropped WhatsApp QR code (PNG base64) for scanning
+router.get('/:id/qr', async (req, res) => {
+  const qr = await redis.get(`agent:${parseId(req.params.id)}:qr`)
+  res.json({ ok: true, data: { qr } })
+})
+
 // POST /api/agents/:id/start
 router.post('/:id/start', async (req, res) => {
   const id = parseId(req.params.id)
