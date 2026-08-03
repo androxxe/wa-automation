@@ -644,6 +644,7 @@ interface CampaignArea {
   sentCount:     number
   replyCount:    number
   targetReached: boolean
+  qualifyingReplyCount?: number
   area:          { name: string; department: { name: string } }
 }
 
@@ -663,6 +664,7 @@ interface Campaign {
   cancelledCount: number
   expiredCount:   number
   targetRepliesPerArea: number | null
+  targetReplyMode?:     'ALL' | 'YES' | 'YES_NO'
   areas:        CampaignArea[]
 }
 
@@ -1095,19 +1097,36 @@ export default function CampaignDetail() {
               </thead>
               <tbody className="divide-y">
                 {campaign.areas.map((ca) => {
-                  const target     = campaign.targetRepliesPerArea ?? 20
-                  const reached    = ca.targetReached
-                  const allSent    = ca.sendLimit !== null && ca.sentCount >= ca.sendLimit
-                  const shortfall  = target - ca.replyCount
-                  const needsTopup = allSent && !reached && shortfall > 0
+                  const target        = campaign.targetRepliesPerArea ?? 20
+                  const mode          = campaign.targetReplyMode ?? 'ALL'
+                  const modeLabel     = mode === 'YES' ? 'Only YES' : mode === 'YES_NO' ? 'YES or NO' : 'Any reply'
+                  const qualifies    = ca.qualifyingReplyCount ?? ca.replyCount
+                  const reached       = ca.targetReached
+                  const allSent       = ca.sendLimit !== null && ca.sentCount >= ca.sendLimit
+                  const shortfall     = target - qualifies
+                  const needsTopup    = allSent && !reached && shortfall > 0
 
                   return (
                     <tr key={ca.areaId} className={needsTopup ? 'bg-yellow-50/50' : ''}>
                       <td className="px-4 py-2.5">{ca.area.name}</td>
                       <td className="px-4 py-2.5 text-muted-foreground text-xs">{ca.area.department.name}</td>
                       <td className="px-4 py-2.5 text-center">{ca.sentCount} / {ca.sendLimit ?? '?'}</td>
-                      <td className="px-4 py-2.5 text-center font-semibold">{ca.replyCount}</td>
-                      <td className="px-4 py-2.5 text-center text-muted-foreground">{target}</td>
+                      <td className="px-4 py-2.5 text-center font-semibold">
+                        {ca.replyCount}
+                        {mode !== 'ALL' && (
+                          <span className="ml-1 text-xs font-normal text-muted-foreground">({qualifies})</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-2.5 text-center">
+                        <div className="flex items-center justify-center gap-1.5">
+                          <span className="text-muted-foreground">{target}</span>
+                          {mode !== 'ALL' && (
+                            <span className="text-[10px] uppercase tracking-wide text-muted-foreground border rounded-full px-1.5 py-0.5" title={`Count ${modeLabel} replies`}>
+                              {modeLabel}
+                            </span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-2.5">
                         {reached ? (
                           <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full font-medium">Target reached</span>

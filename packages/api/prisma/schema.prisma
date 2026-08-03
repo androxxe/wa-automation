@@ -109,6 +109,7 @@ model Campaign {
   targetRepliesPerArea Int?
   expectedReplyRate    Float?
   stopOnTargetReached  Boolean @default(true)
+  targetReplyMode      String  @default("ALL") // ALL|YES|YES_NO — which replies count toward target
 
   areas          CampaignArea[]
   messages       Message[]

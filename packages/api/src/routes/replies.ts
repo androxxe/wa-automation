@@ -657,10 +657,21 @@ router.post('/', async (req, res) => {
       if (msg.campaign.stopOnTargetReached) {
         const appConfig = await db.appConfig.findUnique({ where: { id: 'singleton' } })
         const target = msg.campaign.targetRepliesPerArea ?? appConfig?.defaultTargetRepliesPerArea ?? 20
+        const mode   = msg.campaign.targetReplyMode ?? 'ALL'
+        const areaId = msg.contact.areaId
         const area = await db.campaignArea.findUnique({
-          where: { campaignId_areaId: { campaignId: msg.campaignId, areaId: msg.contact.areaId } },
+          where: { campaignId_areaId: { campaignId: msg.campaignId, areaId } },
         })
-        if (area && area.replyCount >= target && !area.targetReached) {
+
+        // Count only the replies that qualify for the campaign's target mode
+        const qualifyingCount = await db.reply.count({
+          where: {
+            message: { campaignId: msg.campaignId, contact: { areaId } },
+            ...(mode === 'YES'    ? { jawaban: 1 }              : {}),
+            ...(mode === 'YES_NO' ? { jawaban: { in: [0, 1] } } : {}),
+          },
+        })
+        if (area && qualifyingCount >= target && !area.targetReached) {
           await db.campaignArea.update({
             where: { campaignId_areaId: { campaignId: msg.campaignId, areaId: msg.contact.areaId } },
             data:  { targetReached: true },

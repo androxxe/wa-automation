@@ -12,6 +12,12 @@ export type CampaignStatus =
   | 'COMPLETED'
   | 'CANCELLED'
 
+// Which replies count toward targetRepliesPerArea:
+// ALL    — any reply
+// YES    — only jawaban = 1 (Ya)
+// YES_NO — jawaban = 1 or 0 (Ya/Tidak), excludes null (unclear)
+export type TargetReplyMode = 'ALL' | 'YES' | 'YES_NO'
+
 // ─── Message ──────────────────────────────────────────────────────────────────
 
 export type MessageStatus =

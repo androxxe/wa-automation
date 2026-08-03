@@ -118,6 +118,7 @@ const CreateCampaign = z.object({
   targetRepliesPerArea:    z.number().int().min(1).optional(),
   expectedReplyRate:       z.number().min(0.01).max(1).optional(),
   stopOnTargetReached:     z.boolean().optional(),
+  targetReplyMode:         z.enum(['ALL', 'YES', 'YES_NO']).optional(),
 })
 
 router.post('/', async (req, res) => {
@@ -127,7 +128,7 @@ router.post('/', async (req, res) => {
     return
   }
   const { name, template, bulan, campaignType, areaIds,
-          targetRepliesPerArea, expectedReplyRate, stopOnTargetReached } = parsed.data
+          targetRepliesPerArea, expectedReplyRate, stopOnTargetReached, targetReplyMode } = parsed.data
   try {
     const campaign = await db.campaign.create({
       data: {
@@ -138,6 +139,7 @@ router.post('/', async (req, res) => {
         ...(targetRepliesPerArea !== undefined && { targetRepliesPerArea }),
         ...(expectedReplyRate    !== undefined && { expectedReplyRate }),
         ...(stopOnTargetReached  !== undefined && { stopOnTargetReached }),
+        ...(targetReplyMode      !== undefined && { targetReplyMode }),
         areas: { create: areaIds.map((id) => ({ areaId: id })) },
       },
     })
@@ -199,7 +201,23 @@ router.get('/:id', async (req, res) => {
       if (row.status === 'EXPIRED') countMap.expiredCount = row._count.id
     }
 
-    res.json({ ok: true, data: { ...campaign, ...countMap } })
+    // Per-area replies that qualify for the campaign's target mode
+    // (ALL = any reply, YES = jawaban 1, YES_NO = jawaban 0 or 1)
+    const mode  = campaign.targetReplyMode ?? 'ALL'
+    const areas = await Promise.all(
+      campaign.areas.map(async (ca) => {
+        const qualifyingReplyCount = await db.reply.count({
+          where: {
+            message: { campaignId: campaign.id, contact: { areaId: ca.areaId } },
+            ...(mode === 'YES'    ? { jawaban: 1 }              : {}),
+            ...(mode === 'YES_NO' ? { jawaban: { in: [0, 1] } } : {}),
+          },
+        })
+        return { ...ca, qualifyingReplyCount }
+      }),
+    )
+
+    res.json({ ok: true, data: { ...campaign, ...countMap, areas } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
