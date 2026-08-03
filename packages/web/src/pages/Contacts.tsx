@@ -37,6 +37,12 @@ interface Area {
   id: string
   name: string
   contactType: string
+  departmentId: string
+}
+
+interface Department {
+  id: string
+  name: string
 }
 
 // ─── WA Status Badge ──────────────────────────────────────────────────────────
@@ -64,24 +70,29 @@ function WaStatusBadge({
   return <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">Belum dicek</span>
 }
 
-// ─── Area Combobox ────────────────────────────────────────────────────────────
+// ─── Searchable Combobox ─────────────────────────────────────────────────────
 
-function AreaPicker({
+function SearchPicker<T>({
   value,
   onChange,
-  areas,
+  options,
+  placeholder,
+  searchPlaceholder,
+  render,
 }: {
   value:    string
   onChange: (id: string) => void
-  areas:    Area[]
+  options:  T[]
+  placeholder: string
+  searchPlaceholder: string
+  render:   (opt: T) => React.ReactNode
 }) {
   const [search, setSearch] = useState('')
   const [open,   setOpen]   = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
-  const selected = areas.find((a) => a.id === value)
-  const filtered = areas.filter((a) =>
-    a.name.toLowerCase().includes(search.toLowerCase())
+  const filtered = options.filter((opt) =>
+    String((opt as { name: string }).name).toLowerCase().includes(search.toLowerCase())
   )
 
   useEffect(() => {
@@ -102,8 +113,10 @@ function AreaPicker({
         onClick={() => setOpen((v) => !v)}
         className="text-sm rounded-md border bg-background px-3 py-1.5 text-left flex items-center gap-2 min-w-[160px]"
       >
-        <span className={selected ? 'truncate' : 'text-muted-foreground truncate'}>
-          {selected ? selected.name : 'Semua Area'}
+        <span className="truncate">
+          {value
+            ? String((options.find((o) => (o as { id: string }).id === value) as { name: string } | undefined)?.name ?? '')
+            : <span className="text-muted-foreground">{placeholder}</span>}
         </span>
         <span className="text-xs opacity-60 shrink-0 ml-auto">▾</span>
       </button>
@@ -115,7 +128,7 @@ function AreaPicker({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Cari area…"
+              placeholder={searchPlaceholder}
               ref={(el) => { if (el) el.focus() }}
               className="w-full text-sm rounded border bg-background px-2 py-1 outline-none"
             />
@@ -127,25 +140,20 @@ function AreaPicker({
                 className="w-full text-left text-sm px-3 py-2 hover:bg-accent text-muted-foreground"
                 onClick={() => { onChange(''); setOpen(false); setSearch('') }}
               >
-                — Semua Area —
+                — {placeholder} —
               </button>
             )}
             {filtered.length === 0 && (
               <p className="text-sm text-muted-foreground px-3 py-4 text-center">Tidak ditemukan</p>
             )}
-            {filtered.map((a) => (
+            {filtered.map((opt) => (
               <button
-                key={a.id}
+                key={(opt as { id: string }).id}
                 type="button"
-                className={`w-full text-left text-sm px-3 py-2 hover:bg-accent ${a.id === value ? 'bg-accent/60 font-medium' : ''}`}
-                onClick={() => { onChange(a.id); setOpen(false); setSearch('') }}
+                className={`w-full text-left text-sm px-3 py-2 hover:bg-accent ${(opt as { id: string }).id === value ? 'bg-accent/60 font-medium' : ''}`}
+                onClick={() => { onChange((opt as { id: string }).id); setOpen(false); setSearch('') }}
               >
-                {a.name}
-                <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-medium ${
-                  TYPE_BADGE[a.contactType] ?? 'bg-gray-100 text-gray-700'
-                }`}>
-                  {a.contactType}
-                </span>
+                {render(opt)}
               </button>
             ))}
           </div>
@@ -162,6 +170,7 @@ export default function Contacts() {
   const [page, setPage]                       = useState(1)
   const [statusFilter, setStatusFilter]       = useState('')
   const [typeFilter, setTypeFilter]           = useState('')
+  const [deptFilter, setDeptFilter]           = useState('')
   const [areaFilter, setAreaFilter]           = useState('')
   const [searchInput, setSearchInput]         = useState('')
   const [searchQuery, setSearchQuery]         = useState('')
@@ -182,13 +191,19 @@ export default function Contacts() {
     queryFn:  () => apiFetch<Area[]>('/api/contacts/areas'),
   })
 
-  // When type filter is active, only show areas of that type in the picker
-  const pickerAreas = typeFilter
-    ? allAreas.filter((a) => a.contactType === typeFilter)
-    : allAreas
+  const { data: allDepts = [] } = useQuery<Department[]>({
+    queryKey: ['departments'],
+    queryFn:  () => apiFetch<Department[]>('/api/contacts/departments'),
+  })
 
-  // If a specific area is selected but type filter no longer includes it, clear area
-  const effectiveAreaFilter = (typeFilter && areaFilter)
+  // When type/department filter is active, only show matching areas in the picker
+  const pickerAreas = allAreas.filter((a) =>
+    (!typeFilter || a.contactType === typeFilter) &&
+    (!deptFilter || a.departmentId === deptFilter)
+  )
+
+  // If a specific area is selected but type/dept filter no longer includes it, clear area
+  const effectiveAreaFilter = (typeFilter || deptFilter) && areaFilter
     ? (pickerAreas.some((a) => a.id === areaFilter) ? areaFilter : '')
     : areaFilter
 
@@ -197,11 +212,12 @@ export default function Contacts() {
   if (statusFilter === 'valid')     { params.set('phoneValid', 'true'); params.set('waChecked', 'true') }
   if (statusFilter === 'unchecked') { params.set('phoneValid', 'true'); params.set('waChecked', 'false') }
   if (typeFilter)                   params.set('contactType', typeFilter)
+  if (deptFilter)                   params.set('departmentId', deptFilter)
   if (effectiveAreaFilter)          params.set('areaId', effectiveAreaFilter)
   if (searchQuery)                  params.set('search', searchQuery)
 
   const { data, isLoading } = useQuery<ContactsPage>({
-    queryKey: ['contacts', page, statusFilter, typeFilter, effectiveAreaFilter, searchQuery],
+    queryKey: ['contacts', page, statusFilter, typeFilter, deptFilter, effectiveAreaFilter, searchQuery],
     queryFn:  () => apiFetch<ContactsPage>(`/api/contacts?${params}`),
   })
 
@@ -298,11 +314,33 @@ export default function Contacts() {
           <option value="CRISPY_BALLS">CRISPY_BALLS</option>
         </select>
 
+        {/* Department searchable combobox */}
+        <SearchPicker<Department>
+          value={deptFilter}
+          onChange={(id) => { setDeptFilter(id); setAreaFilter(''); setPage(1) }}
+          options={allDepts}
+          placeholder="Semua Department"
+          searchPlaceholder="Cari department…"
+          render={(d) => <>{d.name}</>}
+        />
+
         {/* Area searchable combobox */}
-        <AreaPicker
+        <SearchPicker<Area>
           value={effectiveAreaFilter}
           onChange={(id) => { setAreaFilter(id); setPage(1) }}
-          areas={pickerAreas}
+          options={pickerAreas}
+          placeholder="Semua Area"
+          searchPlaceholder="Cari area…"
+          render={(a) => (
+            <>
+              {a.name}
+              <span className={`ml-1.5 text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                TYPE_BADGE[a.contactType] ?? 'bg-gray-100 text-gray-700'
+              }`}>
+                {a.contactType}
+              </span>
+            </>
+          )}
         />
 
         {/* Status filter */}

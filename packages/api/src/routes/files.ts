@@ -23,11 +23,30 @@ router.get('/areas', async (_req, res) => {
   try {
     const departments = await db.department.findMany({
       include: {
-        areas: { orderBy: { name: 'asc' } },
+        areas: {
+          orderBy: { name: 'asc' },
+          include: { _count: { select: { contacts: true } } },
+        },
       },
       orderBy: { name: 'asc' },
     })
-    res.json({ ok: true, data: departments })
+
+    const validCounts = await db.contact.groupBy({
+      by: ['areaId'],
+      where: { phoneValid: true },
+      _count: { _all: true },
+    })
+    const validMap = new Map(validCounts.map((r) => [r.areaId, r._count._all]))
+
+    const data = departments.map((d) => ({
+      ...d,
+      areas: d.areas.map((a) => ({
+        ...a,
+        validContacts: validMap.get(a.id) ?? 0,
+      })),
+    }))
+
+    res.json({ ok: true, data })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

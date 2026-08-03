@@ -7,11 +7,24 @@ const WA_CHECKING_TTL = 600 // 10 minutes — safety expiry if worker crashes
 
 const router: import('express').Router = Router()
 
+// GET /api/contacts/departments — all departments for filter dropdown
+router.get('/departments', async (_req, res) => {
+  try {
+    const departments = await db.department.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: 'asc' },
+    })
+    res.json({ ok: true, data: departments })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // GET /api/areas  — returns all areas for filter dropdown
 router.get('/areas', async (_req, res) => {
   try {
     const areas = await db.area.findMany({
-      select: { id: true, name: true, contactType: true },
+      select: { id: true, name: true, contactType: true, departmentId: true },
       orderBy: { name: 'asc' },
     })
     res.json({ ok: true, data: areas })
@@ -77,7 +90,13 @@ router.get('/validate-wa/count', async (_req, res) => {
     // Fetch all areas and counts in parallel
     const [allAreas, uncheckedGroups, validatedGroups, registeredGroups, invalidGroups, totalGroups, globalUnchecked] = await Promise.all([
       db.area.findMany({
-        select: { id: true, name: true, contactType: true },
+        select: {
+          id:           true,
+          name:         true,
+          contactType:  true,
+          departmentId: true,
+          department:   { select: { name: true } },
+        },
         orderBy: { name: 'asc' },
       }),
       db.contact.groupBy({
@@ -118,13 +137,15 @@ router.get('/validate-wa/count', async (_req, res) => {
         const total     = totalMap.get(a.id) ?? 0
         if (total === 0) return null // skip areas with no contacts
         return {
-          areaId:      a.id,
-          name:        a.name,
-          contactType: a.contactType,
-          unchecked:   uncheckedMap.get(a.id) ?? 0,
-          validated:   validatedMap.get(a.id) ?? 0,
-          registered:  registeredMap.get(a.id) ?? 0,
-          invalid:     invalidMap.get(a.id) ?? 0,
+          areaId:       a.id,
+          name:         a.name,
+          contactType:  a.contactType,
+          departmentId: a.departmentId,
+          department:   a.department?.name ?? '',
+          unchecked:    uncheckedMap.get(a.id) ?? 0,
+          validated:    validatedMap.get(a.id) ?? 0,
+          registered:   registeredMap.get(a.id) ?? 0,
+          invalid:      invalidMap.get(a.id) ?? 0,
           total,
         }
       })

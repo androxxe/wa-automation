@@ -3,14 +3,16 @@ import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 
 interface AreaInfo {
-  areaId:      string
-  name:        string
-  contactType: string
-  unchecked:   number
-  validated:   number
-  registered:  number
-  invalid:     number
-  total:       number
+  areaId:       string
+  name:         string
+  contactType:  string
+  departmentId: string
+  department:   string
+  unchecked:    number
+  validated:    number
+  registered:   number
+  invalid:      number
+  total:        number
 }
 
 interface CountData {
@@ -48,23 +50,16 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const yoyicAreas        = useMemo(() => areas.filter((a) => a.contactType === 'YOYIC'), [areas])
   const crispyBallsAreas  = useMemo(() => areas.filter((a) => a.contactType === 'CRISPY_BALLS'), [areas])
 
-  // Filter by search
-  const filteredStik   = useMemo(() =>
-    search ? stikAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : stikAreas,
-    [stikAreas, search],
-  )
-  const filteredKardus = useMemo(() =>
-    search ? kardusAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : kardusAreas,
-    [kardusAreas, search],
-  )
-  const filteredYoyic  = useMemo(() =>
-    search ? yoyicAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : yoyicAreas,
-    [yoyicAreas, search],
-  )
-  const filteredCrispyBalls = useMemo(() =>
-    search ? crispyBallsAreas.filter((a) => a.name.toLowerCase().includes(search.toLowerCase())) : crispyBallsAreas,
-    [crispyBallsAreas, search],
-  )
+  // Filter by search — matches area name or department name
+  const matchesSearch = (a: AreaInfo) =>
+    !search ||
+    a.name.toLowerCase().includes(search.toLowerCase()) ||
+    a.department.toLowerCase().includes(search.toLowerCase())
+
+  const filteredStik   = useMemo(() => stikAreas.filter(matchesSearch), [stikAreas, search])
+  const filteredKardus = useMemo(() => kardusAreas.filter(matchesSearch), [kardusAreas, search])
+  const filteredYoyic  = useMemo(() => yoyicAreas.filter(matchesSearch), [yoyicAreas, search])
+  const filteredCrispyBalls = useMemo(() => crispyBallsAreas.filter(matchesSearch), [crispyBallsAreas, search])
 
   // Reset state when modal opens
   useEffect(() => {
@@ -75,16 +70,6 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
       setSearch('')
     }
   }, [open])
-
-  // Auto-select only areas that have NEVER been validated (validated === 0).
-  // Areas that have any validated phones (even partially) start unchecked —
-  // the user can opt-in to validate remaining or re-check them.
-  const selectedCount = selectedIds.size
-  useEffect(() => {
-    if (data?.areas && data.areas.length > 0 && selectedCount === 0) {
-      setSelectedIds(new Set(data.areas.filter((a) => a.validated === 0 && a.unchecked > 0).map((a) => a.areaId)))
-    }
-  }, [data, selectedCount])
 
   if (!open) return null
 
@@ -162,15 +147,18 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
           return (
             <label
               key={area.areaId}
-              className={`flex items-center gap-2 py-0.5 cursor-pointer select-none ${hasValidated ? 'opacity-60' : ''}`}
+              className={`flex items-start gap-2 py-1 cursor-pointer select-none ${hasValidated ? 'opacity-60' : ''}`}
             >
               <input
                 type="checkbox"
                 checked={selectedIds.has(area.areaId)}
                 onChange={() => toggleArea(area.areaId)}
-                className="rounded border-gray-300 text-primary focus:ring-primary"
+                className="mt-0.5 rounded border-gray-300 text-primary focus:ring-primary shrink-0"
               />
-              <span className="text-sm flex-1 truncate">{area.name}</span>
+              <span className="flex-1 min-w-0">
+                <span className="text-sm block truncate">{area.name}</span>
+                <span className="text-xs text-muted-foreground block truncate">{area.department}</span>
+              </span>
               {hasValidated ? (
                 <span className="flex flex-col items-end text-xs tabular-nums leading-tight">
                   <span className="flex items-center gap-1 text-green-600 whitespace-nowrap">
@@ -259,7 +247,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
             {/* Search */}
             <input
               type="text"
-              placeholder="Cari area..."
+              placeholder="Cari area / department..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-full text-sm rounded-md border px-3 py-2 bg-background focus:outline-none focus:ring-2 focus:ring-ring"

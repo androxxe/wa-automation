@@ -41,6 +41,8 @@ interface AreaItem {
   id: string
   name: string
   contactType: string
+  _count?: { contacts: number }
+  validContacts?: number
 }
 
 interface DeptWithAreas {
@@ -67,6 +69,7 @@ export default function NewCampaign() {
   const [templateEdited, setTemplateEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>("")
   const [replyRate, setReplyRate] = useState<string>("")
+  const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("ALL")
   const [config, setConfig] = useState<AppConfigData | null>(null)
 
   const [allDepts, setAllDepts] = useState<DeptWithAreas[]>([])
@@ -176,6 +179,7 @@ export default function NewCampaign() {
       areaIds: Array.from(selectedAreas),
       ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies) }),
       ...(replyRate && { expectedReplyRate: parseFloat(replyRate) / 100 }),
+      ...(targetReplyMode !== "ALL" && { targetReplyMode }),
     })
   }
 
@@ -291,7 +295,17 @@ export default function NewCampaign() {
             <p className="text-sm font-medium">Target areas ({campaignType})</p>
             {selectedAreas.size > 0 && (
               <span className="text-xs text-primary font-medium">
-                {selectedAreas.size} selected
+                {selectedAreas.size} selected ·{" "}
+                {depts
+                  .flatMap((d) => d.areas)
+                  .filter((a) => selectedAreas.has(a.id))
+                  .reduce((sum, a) => sum + (a._count?.contacts ?? 0), 0)}{" "}
+                contacts ·{" "}
+                {depts
+                  .flatMap((d) => d.areas)
+                  .filter((a) => selectedAreas.has(a.id))
+                  .reduce((sum, a) => sum + (a.validContacts ?? 0), 0)}{" "}
+                valid
               </span>
             )}
           </div>
@@ -350,6 +364,10 @@ export default function NewCampaign() {
                             className="rounded"
                           />
                           <span className="text-sm">{area.name}</span>
+                          <span className="text-xs text-muted-foreground ml-auto">
+                            {area._count?.contacts ?? 0} total ·{" "}
+                            {area.validContacts ?? 0} valid
+                          </span>
                         </label>
                       ))}
                   </div>
@@ -405,6 +423,44 @@ export default function NewCampaign() {
             Messages to send per area:{" "}
             <span className="font-semibold text-foreground">{sendPerArea}</span>{" "}
             = ceil({effectiveTarget} ÷ {Math.round(effectiveRate * 100)}%)
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">
+              Which replies count toward the target?
+            </p>
+            <div className="flex flex-col gap-2">
+              {(
+                [
+                  { value: "ALL", label: "Any reply", desc: "Every reply counts, regardless of YES/NO" },
+                  { value: "YES", label: "Only YES", desc: "Only replies classified as YES (jawaban = 1)" },
+                  { value: "YES_NO", label: "YES or NO", desc: "Replies YES or NO — excludes unclear/null" },
+                ] as const
+              ).map((opt) => (
+                <label
+                  key={opt.value}
+                  className={`flex items-start gap-3 rounded-md border px-3 py-2 cursor-pointer transition-colors ${
+                    targetReplyMode === opt.value
+                      ? "border-primary bg-primary/5"
+                      : "hover:bg-accent"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="targetReplyMode"
+                    value={opt.value}
+                    checked={targetReplyMode === opt.value}
+                    onChange={() => setTargetReplyMode(opt.value)}
+                    className="mt-1"
+                  />
+                  <span className="text-sm">
+                    <span className="font-medium">{opt.label}</span>
+                    <span className="block text-xs text-muted-foreground">
+                      {opt.desc}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
 
