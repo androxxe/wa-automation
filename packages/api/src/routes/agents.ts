@@ -176,6 +176,18 @@ router.get('/:id/qr', async (req, res) => {
   res.json({ ok: true, data: { qr } })
 })
 
+// POST /api/agents/:id/screenshot/refresh — request an immediate screenshot
+// capture from the worker (on-demand, avoids periodic captures when idle)
+router.post('/:id/screenshot/refresh', async (req, res) => {
+  const id = parseId(req.params.id)
+  try {
+    await redis.publish(`browser:command:${id}`, JSON.stringify({ agentId: id, cmd: 'screenshot' }))
+    res.json({ ok: true, data: { queued: true } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
 // POST /api/agents/:id/start
 router.post('/:id/start', async (req, res) => {
   const id = parseId(req.params.id)

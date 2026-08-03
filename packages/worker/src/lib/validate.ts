@@ -140,6 +140,7 @@ export async function validateStartup(): Promise<void> {
     { label: 'REPLY_POLL_COOLDOWN_MS',       result: checkOptionalPositiveInt('REPLY_POLL_COOLDOWN_MS') },
     { label: 'POLL_INTER_VISIT_DELAY_MIN_MS', result: checkOptionalPositiveInt('POLL_INTER_VISIT_DELAY_MIN_MS') },
     { label: 'POLL_INTER_VISIT_DELAY_MAX_MS', result: checkOptionalPositiveInt('POLL_INTER_VISIT_DELAY_MAX_MS') },
+    { label: 'AGENT_SCREENSHOT_INTERVAL_MS', result: checkOptionalPositiveInt('AGENT_SCREENSHOT_INTERVAL_MS') },
   ]
 
   const antiRestrictionFailures = printResults(antiRestrictionChecks)

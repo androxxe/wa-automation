@@ -52,7 +52,7 @@ export class BrowserAgent {
   private page:          Page | null           = null
   private _status:       BrowserStatus         = 'disconnected'
   private _browserLock:  boolean               = false
-  private _pollTimer:    ReturnType<typeof setInterval> | null = null
+  private _pollTimer:    ReturnType<typeof setTimeout> | null = null
 
   /** Incremented when a job is assigned; decremented when it finishes. */
   activeJobCount = 0
@@ -127,7 +127,7 @@ export class BrowserAgent {
       const connected = await this.page
         .waitForSelector(
           '[data-testid="chat-list"], #side, [aria-label="Chat list"], ._aigs',
-          { timeout: 30000 },
+          { timeout: 10000 },
         )
         .then(() => true)
         .catch(() => false)
@@ -168,14 +168,13 @@ export class BrowserAgent {
       headless: HEADLESS,
       args: [
         '--no-sandbox',
-        '--start-maximized',
-        '--window-size=1920,1080',
+        '--window-size=1366,768',
         '--disable-blink-features=AutomationControlled',
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-default-apps',
       ],
-      viewport:   HEADLESS ? { width: 1920, height: 1080 } : null,
+      viewport:   HEADLESS ? { width: 1366, height: 768 } : null,
       userAgent:  USER_AGENT,
       locale:     'id-ID',
       timezoneId: 'Asia/Jakarta',
@@ -195,7 +194,7 @@ export class BrowserAgent {
       this.context = null
       this.page    = null
       if (this._pollTimer) {
-        clearInterval(this._pollTimer)
+        clearTimeout(this._pollTimer)
         this._pollTimer = null
       }
     })
@@ -211,7 +210,11 @@ export class BrowserAgent {
 
   private _startPolling() {
     if (this._pollTimer) return
-    this._pollTimer = setInterval(async () => {
+
+    // Adaptive cadence: poll fast (5s) while connecting (loading/QR) so logins and
+    // QR scans register quickly, then slow to 60s once connected since the status
+    // rarely changes while the browser is stable.
+    const poll = async () => {
       if (!this.page) return
       const prev    = this._status
       this._status  = await this._detectStatus()
@@ -222,7 +225,11 @@ export class BrowserAgent {
       // QR codes expire in ~30-60s; the stale overlay is "Select to reload QR code".
       await this._refreshQrIfStale()
       this._publishQr()
-    }, 5000)
+      const delay = this._status === 'connected' ? 60000 : 5000
+      this._pollTimer = setTimeout(poll, delay)
+    }
+
+    this._pollTimer = setTimeout(poll, 5000)
   }
 
   // ─── Screenshot ───────────────────────────────────────────────────────────

@@ -13,9 +13,22 @@ const redisKey = (agentId: number) => `agent:${agentId}:status`
 
 const qrRedisKey = (agentId: number) => `agent:${agentId}:qr`
 
+const screenshotRedisKey = (agentId: number) => `agent:${agentId}:screenshot`
+
+// Cadence for periodic screenshot captures (the Agents UI can also request an
+// immediate capture on demand via the 'screenshot' browser command).
+const AGENT_SCREENSHOT_INTERVAL_MS = parseInt(
+  process.env.AGENT_SCREENSHOT_INTERVAL_MS ?? "60000",
+  10,
+)
+
+// Keep the key alive between periodic captures (min 2x interval, floor 120s).
+const SCREENSHOT_TTL_SEC = Math.max(AGENT_SCREENSHOT_INTERVAL_MS * 2, 120000) / 1000
+
 export class AgentManager {
   private agents = new Map<number, BrowserAgent>()
   private redis!: IORedis
+  private lastScreenshotAt = new Map<number, number>()
 
   // ─── Init ────────────────────────────────────────────────────────────────
 
@@ -87,6 +100,7 @@ export class AgentManager {
 
           if (cmd === "start") this.startAgent(agentId).catch(console.error)
           if (cmd === "stop") this.stopAgent(agentId).catch(console.error)
+          if (cmd === "screenshot") this.captureScreenshot(agentId).catch(console.error)
         } catch (err) {
           console.error("[agent-manager] pubsub handler error:", err)
         }
@@ -263,6 +277,17 @@ export class AgentManager {
 
   // ─── Status polling ───────────────────────────────────────────────────────
 
+  /** Capture the agent's current screen and publish it to Redis (on-demand). */
+  async captureScreenshot(agentId: number): Promise<void> {
+    const agent = this.agents.get(agentId)
+    if (!agent || agent.status === "disconnected") return
+    const shot = await agent.screenshot()
+    if (shot) {
+      this.lastScreenshotAt.set(agentId, Date.now())
+      await this.redis.set(screenshotRedisKey(agentId), shot, "EX", SCREENSHOT_TTL_SEC)
+    }
+  }
+
   async startPollingStatus(): Promise<void> {
     setInterval(async () => {
       for (const [agentId, agent] of this.agents.entries()) {
@@ -272,15 +297,20 @@ export class AgentManager {
         await this._setStatus(agentId, status)
 
         // Publish screenshot for all states except disconnected
-        // (show preview during loading, QR, and normal online operation)
-        if (agent.status !== "disconnected") {
+        // (show preview during loading, QR, and normal online operation).
+        // Capture on status change (always) or when the interval has elapsed —
+        // the Agents UI can request an immediate capture via the 'screenshot'
+        // browser command instead of waiting for the next tick.
+        const due = (this.lastScreenshotAt.get(agentId) ?? 0) + AGENT_SCREENSHOT_INTERVAL_MS <= Date.now()
+        if (agent.status !== "disconnected" && (prev !== agent.status || due)) {
+          this.lastScreenshotAt.set(agentId, Date.now())
           const screenshot = await agent.screenshot()
           if (screenshot) {
             await this.redis.set(
-              `agent:${agentId}:screenshot`,
+              screenshotRedisKey(agentId),
               screenshot,
               "EX",
-              60,
+              SCREENSHOT_TTL_SEC,
             )
             if (agent.status === "qr" || agent.status === "loading") {
               console.log(
@@ -288,7 +318,7 @@ export class AgentManager {
               )
             }
           } else {
-            await this.redis.del(`agent:${agentId}:screenshot`)
+            await this.redis.del(screenshotRedisKey(agentId))
             if (agent.status === "qr" || agent.status === "loading") {
               console.warn(
                 `[agent:${agentId}] screenshot failed (${agent.status})`,

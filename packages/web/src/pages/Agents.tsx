@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { AppConfigData } from '@aice/shared'
@@ -73,6 +73,32 @@ export default function Agents() {
     queryFn:        () => apiFetch<Agent[]>('/api/agents'),
     refetchInterval: 5000,
   })
+
+  // Request fresh screenshots on demand while this page is visible — the worker
+  // otherwise only captures on a slow cadence, so this keeps the preview live
+  // without paying the capture cost when nobody is watching the page.
+  const agentsRef = useRef<Agent[]>([])
+  agentsRef.current = agents
+
+  useEffect(() => {
+    const requestScreenshots = () => {
+      if (document.visibilityState !== 'visible') return
+      for (const a of agentsRef.current) {
+        if (a.status === 'OFFLINE') continue
+        apiFetch(`/api/agents/${a.id}/screenshot/refresh`, { method: 'POST' }).catch(() => {})
+      }
+    }
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') requestScreenshots()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    const timer = setInterval(requestScreenshots, 30000)
+    requestScreenshots()
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      clearInterval(timer)
+    }
+  }, [])
 
   // Poll the cropped QR code every 5s while the scan modal is open
   const { data: qrData } = useQuery<{ qr: string | null }>({
