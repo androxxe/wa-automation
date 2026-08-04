@@ -130,6 +130,11 @@ export default function Agents() {
     onSuccess:  () => setTimeout(() => queryClient.invalidateQueries({ queryKey: ['agents'] }), 1000),
   })
 
+  const refreshScreenshotMutation = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/agents/${id}/screenshot/refresh`, { method: 'POST' }),
+    onSuccess:  () => setTimeout(() => queryClient.invalidateQueries({ queryKey: ['agents'] }), 1200),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: number) => apiFetch(`/api/agents/${id}`, { method: 'DELETE' }),
     onSuccess:  () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
@@ -561,6 +566,16 @@ export default function Agents() {
                     className="bg-yellow-500 text-black text-sm px-3 py-1.5 rounded-md hover:bg-yellow-400"
                   >
                     Scan QR
+                  </button>
+                )}
+                {agent.status !== 'OFFLINE' && (
+                  <button
+                    type="button"
+                    onClick={() => refreshScreenshotMutation.mutate(agent.id)}
+                    disabled={refreshScreenshotMutation.isPending}
+                    className="border text-sm px-3 py-1.5 rounded-md hover:bg-accent disabled:opacity-50"
+                  >
+                    {refreshScreenshotMutation.isPending ? 'Refreshing…' : 'Refresh preview'}
                   </button>
                 )}
                 <button
