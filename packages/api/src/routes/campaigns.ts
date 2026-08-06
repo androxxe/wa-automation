@@ -26,7 +26,7 @@ router.get('/', async (req, res) => {
     // Compute live counts from Message records (one query each for all campaigns)
     // to avoid trusting potentially-stale denormalized counters.
     const campaignIds = campaigns.map((c) => c.id)
-    const [replyCounts, statusCounts] = await Promise.all([
+    const [replyCounts, statusCounts, qualifyingReplies] = await Promise.all([
       db.message.groupBy({
         by:    ['campaignId'],
         where: { campaignId: { in: campaignIds }, reply: { isNot: null } },
@@ -37,11 +37,33 @@ router.get('/', async (req, res) => {
         where: { campaignId: { in: campaignIds }, status: { in: ['PENDING', 'QUEUED', 'FAILED', 'CANCELLED'] } },
         _count: { id: true },
       }),
+      db.reply.findMany({
+        where: { message: { campaignId: { in: campaignIds } } },
+        select: { jawaban: true, message: { select: { campaignId: true } } },
+      }),
     ])
     const replyCountMap = new Map(replyCounts.map((r) => [r.campaignId, r._count.id]))
     const queueCountMap = new Map<string, number>()
     const failedCountMap = new Map<string, number>()
     const cancelledCountMap = new Map<string, number>()
+
+    // Aggregate replies by (campaignId, jawaban) so each campaign can count only
+    // the replies matching its targetReplyMode (ALL = any, YES = jawaban 1,
+    // YES_NO = jawaban 0 or 1).
+    const jawabanByCampaign = new Map<string, { 1: number; 0: number; null: number }>()
+    for (const r of qualifyingReplies) {
+      const entry = jawabanByCampaign.get(r.message.campaignId) ?? { 1: 0, 0: 0, null: 0 }
+      if (r.jawaban === 1) entry[1]++
+      else if (r.jawaban === 0) entry[0]++
+      else entry.null++
+      jawabanByCampaign.set(r.message.campaignId, entry)
+    }
+    const countQualifying = (mode: string | null, entry?: { 1: number; 0: number; null: number }) => {
+      if (!entry) return 0
+      if (mode === 'YES') return entry[1]
+      if (mode === 'YES_NO') return entry[1] + entry[0]
+      return entry[1] + entry[0] + entry.null
+    }
 
     for (const row of statusCounts) {
       if (row.status === 'FAILED') {
@@ -93,10 +115,11 @@ router.get('/', async (req, res) => {
 
       return {
         ...c,
-        replyCount:     replyCountMap.get(c.id)      ?? 0,
-        queuedCount:    queueCountMap.get(c.id)      ?? 0,
-        failedCount:    failedCountMap.get(c.id)     ?? 0,
-        cancelledCount: cancelledCountMap.get(c.id)  ?? 0,
+        replyCount:           replyCountMap.get(c.id)       ?? 0,
+        qualifyingReplyCount: countQualifying(c.targetReplyMode, jawabanByCampaign.get(c.id)),
+        queuedCount:          queueCountMap.get(c.id)       ?? 0,
+        failedCount:          failedCountMap.get(c.id)      ?? 0,
+        cancelledCount:       cancelledCountMap.get(c.id)   ?? 0,
         alreadyRepliedCount,
       }
     })

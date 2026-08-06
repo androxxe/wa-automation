@@ -20,6 +20,7 @@ interface Campaign {
   totalCount: number
   sentCount: number
   replyCount: number
+  qualifyingReplyCount: number
   queuedCount: number
   failedCount: number
   alreadyRepliedCount: number
@@ -39,6 +40,8 @@ const STATUS_COLORS: Record<CampaignStatus, string> = {
 export default function Campaigns() {
   const queryClient = useQueryClient()
   const [statusFilter, setStatusFilter] = useState<'' | CampaignStatus>('')
+  const [bulanFilter, setBulanFilter] = useState('')
+  const [typeFilter,  setTypeFilter]  = useState('')
 
   const { data: campaigns = [], isLoading } = useQuery<Campaign[]>({
     queryKey: ['campaigns', statusFilter],
@@ -56,7 +59,15 @@ export default function Campaigns() {
     cancelMutation.mutate(id)
   }
 
-  const stats = campaigns.reduce(
+  const uniqueMonths = Array.from(new Set(campaigns.map((c) => c.bulan))).sort()
+  const uniqueTypes  = Array.from(new Set(campaigns.map((c) => c.campaignType))).sort()
+
+  const filteredCampaigns = campaigns.filter((c) =>
+    (!bulanFilter || c.bulan === bulanFilter) &&
+    (!typeFilter  || c.campaignType === typeFilter)
+  )
+
+  const stats = filteredCampaigns.reduce(
     (acc, c) => {
       acc.total++
       if (c.status === 'RUNNING') acc.running++
@@ -64,9 +75,10 @@ export default function Campaigns() {
       acc.queued += c.queuedCount
       acc.failed += c.failedCount
       acc.replies += c.replyCount
+      acc.qualify += c.qualifyingReplyCount
       return acc
     },
-    { total: 0, running: 0, paused: 0, queued: 0, failed: 0, replies: 0 },
+    { total: 0, running: 0, paused: 0, queued: 0, failed: 0, replies: 0, qualify: 0 },
   )
 
   return (
@@ -75,7 +87,9 @@ export default function Campaigns() {
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Campaigns</h2>
           <p className="text-muted-foreground">
-            {campaigns.length} total{statusFilter ? ` (${statusFilter})` : ''}
+            {filteredCampaigns.length} total{[statusFilter, bulanFilter, typeFilter].filter(Boolean).length > 0
+              ? ` (${[statusFilter, bulanFilter, typeFilter].filter(Boolean).join(' · ')})`
+              : ''}
           </p>
         </div>
         <Link
@@ -101,18 +115,40 @@ export default function Campaigns() {
           <option value="COMPLETED">COMPLETED</option>
           <option value="CANCELLED">CANCELLED</option>
         </select>
-        {statusFilter && (
+        <select
+          id="campaign-type-filter"
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value)}
+          className="text-sm rounded-md border bg-background px-3 py-1.5"
+        >
+          <option value="">All Types</option>
+          {uniqueTypes.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
+        <select
+          id="campaign-month-filter"
+          value={bulanFilter}
+          onChange={(e) => setBulanFilter(e.target.value)}
+          className="text-sm rounded-md border bg-background px-3 py-1.5"
+        >
+          <option value="">All Months</option>
+          {uniqueMonths.map((b) => (
+            <option key={b} value={b}>{b}</option>
+          ))}
+        </select>
+        {(statusFilter || typeFilter || bulanFilter) && (
           <button
             type="button"
-            onClick={() => setStatusFilter('')}
+            onClick={() => { setStatusFilter(''); setTypeFilter(''); setBulanFilter('') }}
             className="text-xs text-muted-foreground hover:text-foreground underline"
           >
-            Clear filter
+            Clear filters
           </button>
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-7 gap-3">
         {[
           ['Shown', String(stats.total), 'text-foreground'],
           ['Running', String(stats.running), 'text-green-700'],
@@ -120,6 +156,7 @@ export default function Campaigns() {
           ['In Queue', String(stats.queued), 'text-blue-700'],
           ['Failed', String(stats.failed), 'text-red-700'],
           ['Replies', String(stats.replies), 'text-emerald-700'],
+          ['Qualify', String(stats.qualify), 'text-indigo-700'],
         ].map(([label, value, color]) => (
           <div key={label} className="rounded-lg border bg-card px-4 py-3">
             <p className={`text-2xl font-bold ${color}`}>{value}</p>
@@ -141,13 +178,13 @@ export default function Campaigns() {
             {isLoading && (
               <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
             )}
-            {!isLoading && campaigns.length === 0 && (
+            {!isLoading && filteredCampaigns.length === 0 && (
               <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
-            {campaigns.map((c) => {
+            {filteredCampaigns.map((c) => {
               const progress    = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
               const totalTarget = c.targetRepliesPerArea ? c.targetRepliesPerArea * c.areas.length : null
-              const targetMet   = totalTarget !== null && c.replyCount >= totalTarget
+              const targetMet   = totalTarget !== null && c.qualifyingReplyCount >= totalTarget
 
               return (
                 <tr key={c.id} className="hover:bg-accent/50 transition-colors">
@@ -184,6 +221,14 @@ export default function Campaigns() {
                         <span className="text-muted-foreground text-xs">/ {totalTarget}</span>
                       )}
                       {targetMet && <span className="text-xs text-green-600 font-bold">✓</span>}
+                      {c.qualifyingReplyCount !== c.replyCount && (
+                        <span
+                          className="text-xs text-muted-foreground"
+                          title="Replies matching the send config (Any reply / Only YES / YES or NO)"
+                        >
+                          · {c.qualifyingReplyCount} qualify
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="px-4 py-2.5 whitespace-nowrap">
