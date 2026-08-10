@@ -62,6 +62,11 @@ interface Campaign {
   campaignType: string
 }
 
+interface ManualPollResult {
+  queued:  Array<{ phone: string; agentId: number; mode?: 'unreplied' | 'fallback_latest' }>
+  skipped: Array<{ phone: string; reason: string }>
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -394,6 +399,7 @@ export default function Responses() {
   const [page,               setPage]                = useState(1)
   const [screenshot,       setScreenshot]        = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, { category: string; jawaban: string }>>({})
+  const [pollingPhone, setPollingPhone] = useState<string | null>(null)
 
   // Reset to page 1 whenever filters change
   function updateFilter<T>(setter: (v: T) => void) {
@@ -443,6 +449,24 @@ export default function Responses() {
       })
     },
     onError: (e) => alert(String(e)),
+  })
+
+  const pollMutation = useMutation({
+    mutationFn: (phone: string) =>
+      apiFetch<ManualPollResult>('/api/replies/poll-manual', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ phones: [phone] }),
+      }),
+    onSuccess: (result) => {
+      const q = result.queued[0]
+      alert(q
+        ? `Poll queued for ${q.phone} (agent #${q.agentId})${q.mode === 'fallback_latest' ? ' — checking latest' : ''}`
+        : `Poll skipped: ${result.skipped[0]?.reason ?? 'no message found'}`)
+      queryClient.invalidateQueries({ queryKey: ['replies'] })
+    },
+    onError: (e) => alert(String(e)),
+    onSettled: () => setPollingPhone(null),
   })
 
   const { data: config } = useQuery<AppConfigData>({
@@ -695,22 +719,33 @@ export default function Responses() {
 
                 {/* Update */}
                 <td className="px-3 py-2.5 whitespace-nowrap">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
-                      const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
-                      updateReplyMutation.mutate({ id: r.id, category, jawaban })
-                    }}
-                    disabled={updateReplyMutation.isPending || (() => {
-                      const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
-                      const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
-                      return category === (r.claudeCategory ?? '') && jawaban === (r.jawaban === null ? 'null' : String(r.jawaban))
-                    })()}
-                    className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent disabled:opacity-40"
-                  >
-                    {updateReplyMutation.isPending ? 'Saving…' : 'Save'}
-                  </button>
+                  <div className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
+                        const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
+                        updateReplyMutation.mutate({ id: r.id, category, jawaban })
+                      }}
+                      disabled={updateReplyMutation.isPending || (() => {
+                        const category = drafts[r.id]?.category ?? (r.claudeCategory ?? '')
+                        const jawaban = drafts[r.id]?.jawaban ?? (r.jawaban === null ? 'null' : String(r.jawaban))
+                        return category === (r.claudeCategory ?? '') && jawaban === (r.jawaban === null ? 'null' : String(r.jawaban))
+                      })()}
+                      className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent disabled:opacity-40"
+                    >
+                      {updateReplyMutation.isPending ? 'Saving…' : 'Save'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setPollingPhone(r.message.phone); pollMutation.mutate(r.message.phone) }}
+                      disabled={pollingPhone !== null}
+                      className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent disabled:opacity-40"
+                      title="Check WhatsApp for a newer reply for this phone"
+                    >
+                      {pollingPhone === r.message.phone ? 'Polling…' : 'Poll'}
+                    </button>
+                  </div>
                 </td>
                 {/* Metadata */}
                 <td className="px-3 py-2.5 align-top">
