@@ -4,6 +4,7 @@ import type { MessageJob, PhoneCheckJob } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
 import { agentManager } from './lib/agent-manager'
+import { AccountRestrictedError } from './lib/browser-agent'
 import { validateStartup } from './lib/validate'
 import {
   isWorkingHours,
@@ -27,6 +28,9 @@ const PHONE_POLL_COOLDOWN    = parseInt(process.env.REPLY_POLL_COOLDOWN_MS ?? '1
 const SIDEBAR_RATIO          = parseFloat(process.env.SIDEBAR_SEND_RATIO ?? '0.70')
 const MANUAL_SEND_CHANNEL    = process.env.MANUAL_SEND_CHANNEL ?? 'manual-send:cmd'
 const ALLOW_MANUAL_OUTSIDE_HOURS = process.env.ALLOW_MANUAL_OUTSIDE_HOURS === 'true'
+const AGENT_RESTRICTED_MS     = parseInt(process.env.AGENT_RESTRICTED_MS ?? String(7 * 24 * 60 * 60 * 1000), 10)
+const RESTRICTED_RESCHEDULE_MS = parseInt(process.env.RESTRICTED_RESCHEDULE_MS ?? '3600000', 10)
+const AGENT_RETRY_CHANNEL     = process.env.AGENT_RETRY_CHANNEL ?? 'agent:retry'
 // REPLY_POLL_CONCURRENCY is now read from DB (appConfig.replyPollConcurrency) each poll cycle.
 // Env var serves as fallback when the DB value is missing.
 const REPLY_POLL_CONCURRENCY_DEFAULT = parseInt(process.env.REPLY_POLL_CONCURRENCY ?? '1', 10)
@@ -64,6 +68,45 @@ async function incrementDailyCount(agentId: number): Promise<void> {
     update: { count: { increment: 1 } },
     create: { agentId, date: today, count: 1 },
   })
+}
+
+// ─── Restriction helpers ──────────────────────────────────────────────────────
+
+/**
+ * When ALL non-validation agents are restricted, auto-pause every RUNNING
+ * campaign (mirrors the /campaigns/:id/pause route: pause the message queue +
+ * flip campaign status). No auto-resume — the operator resumes from the UI
+ * once the accounts recover.
+ */
+async function pauseCampaignsIfAllAgentsRestricted(): Promise<void> {
+  try {
+    const agents = await db.agent.findMany({ select: { id: true, validationOnly: true } })
+    const campaignAgents = agents.filter((a) => !a.validationOnly)
+    if (campaignAgents.length === 0) return
+
+    const restrictedIds = await Promise.all(
+      campaignAgents.map((a) => agentManager.isRestricted(a.id).catch(() => false)),
+    )
+    const allRestricted = restrictedIds.every(Boolean)
+    if (!allRestricted) return
+
+    // Pause the message queue + flip campaigns — same effect as the pause route.
+    const queue = new Queue<MessageJob>(QUEUE_NAME, { connection: redis as never })
+    try {
+      await queue.pause()
+    } finally {
+      await queue.close()
+    }
+    const updated = await db.campaign.updateMany({
+      where:  { status: 'RUNNING' },
+      data:   { status: 'PAUSED' },
+    })
+    console.error(
+      `[worker] ALL ${campaignAgents.length} agent(s) are RESTRICTED — auto-paused ${updated.count} RUNNING campaign(s). Resume from the UI after accounts recover.`,
+    )
+  } catch (err) {
+    console.error('[worker] pauseCampaignsIfAllAgentsRestricted error:', err)
+  }
 }
 
 // ─── Message worker ───────────────────────────────────────────────────────────
@@ -115,7 +158,7 @@ const worker = new Worker<MessageJob>(
       // Filter: exclude agents in warm mode, validation-only mode, OR actively in a RUNNING warm session.
       // warmMode and validationOnly are stored in DB (not in-memory BrowserAgent), so we query each cycle.
       // Agents that flip warmMode=false mid-session are still blocked via the session check.
-       const [excludedModeAgents, runningSessionAgents] = await Promise.all([
+       const [excludedModeAgents, runningSessionAgents, restrictedAgents] = await Promise.all([
          (async () => {
            const warmAgents = await db.agent.findMany({ where: { warmMode: true }, select: { id: true } })
            const validationAgents = await db.agent.findMany({ where: { validationOnly: true }, select: { id: true } })
@@ -125,10 +168,15 @@ const worker = new Worker<MessageJob>(
            where: { session: { status: 'RUNNING' } },
            select: { agentId: true },
          }),
+         db.agent.findMany({
+           where: { restrictedUntil: { gt: new Date() } },
+           select: { id: true },
+         }),
        ])
       const excludedAgentIds = new Set([
         ...excludedModeAgents.map((a) => a.id),
         ...runningSessionAgents.map((a) => a.agentId),
+        ...restrictedAgents.map((a) => a.id),
       ])
 
       // Use cached status from the 15s polling interval instead of forcing a
@@ -274,6 +322,45 @@ const worker = new Worker<MessageJob>(
       }
 
       log(`✓ sent msg:${messageId} to ${phone}`)
+
+      // 9. If this message previously hit the account-level restriction and the
+      //    send now SUCCEEDED, the ban has been lifted — clear the agent's
+      //    restriction so it rejoins the send pool. (Restricted accounts can
+      //    still send to EXISTING chats, so we only clear based on messages
+      //    that were actually blocked before — not on any send success.)
+      const msgMeta = ((await db.message.findUnique({
+        where:  { id: messageId },
+        select: { metadata: true },
+      }).catch(() => null))?.metadata ?? {}) as Record<string, unknown>
+      if (msgMeta.restrictedAttempt === true) {
+        await db.message.update({
+          where: { id: messageId },
+          data:  { metadata: { ...msgMeta, restrictedAttempt: false } },
+        }).catch(() => {})
+        await agentManager.clearRestricted(usedAgentId)
+      }
+    } catch (err) {
+      // Account-level restriction (soft ban on linked devices) — NOT a per-phone
+      // failure. Never mark the message FAILED (it stays QUEUED and is retried
+      // after the cooldown) and never mark the contact as unregistered.
+      if (err instanceof AccountRestrictedError) {
+        // Remember this message was blocked so a later successful send proves
+        // the restriction has lifted (see step 9).
+        const meta = ((await db.message.findUnique({
+          where:  { id: messageId },
+          select: { metadata: true },
+        }).catch(() => null))?.metadata ?? {}) as Record<string, unknown>
+        await db.message.update({
+          where: { id: messageId },
+          data:  { metadata: { ...meta, restrictedAttempt: true } },
+        }).catch(() => {})
+        await agentManager.markRestricted(usedAgentId, AGENT_RESTRICTED_MS)
+        log(`RESTRICTED — rescheduling msg:${messageId} in ${Math.round(RESTRICTED_RESCHEDULE_MS / 60000)}m`)
+        await pauseCampaignsIfAllAgentsRestricted()
+        await job.moveToDelayed(Date.now() + RESTRICTED_RESCHEDULE_MS, token)
+        throw new DelayedError()
+      }
+      throw err
     } finally {
       agent.activeJobCount--
     }
@@ -290,6 +377,20 @@ worker.on('failed', async (job, err) => {
   if (!job) return
   console.error(`[worker] job ${job.id} FAILED for msg:${job.data.messageId} → ${job.data.phone}:`, err)
   const failReason = String(err)
+
+  // Account-level restriction — never mark FAILED. Restore QUEUED so the
+  // message is re-enqueued (reconcile on restart or manual retry) and skip
+  // the failedCount increment. The contact is untouched — the number is NOT
+  // necessarily unregistered, the ACCOUNT is restricted.
+  if (failReason.includes('restricted')) {
+    await db.message.update({
+      where: { id: job.data.messageId },
+      data:  { status: 'QUEUED', failedAt: null, failReason: null },
+    }).catch(() => {})
+    console.warn(`[worker] msg:${job.data.messageId} kept QUEUED (account restricted) — will retry later`)
+    return
+  }
+
   await db.message.update({
     where: { id: job.data.messageId },
     data:  { status: 'FAILED', failedAt: new Date(), failReason },
@@ -319,11 +420,11 @@ const phoneCheckWorker = new Worker<PhoneCheckJob>(
 
     const start = Date.now()
     // Prefer a validation-only agent; fall back to any campaign agent if none available.
-    let agent   = agentManager.getValidationAgent() ?? await agentManager.getLeastBusyAgent().catch(() => null)
+    let agent   = (await agentManager.getValidationAgent()) ?? await agentManager.getLeastBusyAgent().catch(() => null)
     while (!agent) {
       if (Date.now() - start > 5 * 60 * 1000) throw new Error('No agent online — cannot check phone')
       await sleep(5000)
-      agent = agentManager.getValidationAgent() ?? await agentManager.getLeastBusyAgent().catch(() => null)
+      agent = (await agentManager.getValidationAgent()) ?? await agentManager.getLeastBusyAgent().catch(() => null)
     }
 
     agent.activeJobCount++
@@ -918,18 +1019,26 @@ interface ManualSendCommand {
 }
 
 async function selectManualAgent(preferredAgentId?: number) {
-  const online = agentManager.getAllAgents()
-    .filter(({ agent }) => agent.status === 'connected' && !agent.validationOnly)
+  const online = await Promise.all(
+    agentManager.getAllAgents().map(async ({ agentId, agent }) => ({
+      agentId,
+      agent,
+      restricted: await agentManager.isRestricted(agentId).catch(() => false),
+    })),
+  )
+  const eligible = online.filter(
+    ({ agent, restricted }) => agent.status === 'connected' && !agent.validationOnly && !restricted,
+  )
 
   if (preferredAgentId) {
-    const found = online.find(({ agentId }) => agentId === preferredAgentId)
+    const found = eligible.find(({ agentId }) => agentId === preferredAgentId)
     if (found) return found.agent
   }
 
-  if (online.length === 0) return null
+  if (eligible.length === 0) return null
 
-  online.sort((a, b) => a.agent.activeJobCount - b.agent.activeJobCount)
-  return online[0].agent
+  eligible.sort((a, b) => a.agent.activeJobCount - b.agent.activeJobCount)
+  return eligible[0].agent
 }
 
 async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
@@ -1108,6 +1217,112 @@ async function startManualPollListener(): Promise<void> {
   console.log('[worker] listening on reply:poll-manual channel')
 }
 
+// ─── Agent retry (probe restriction / promote pending jobs) ──────────────────
+
+interface AgentRetryCommand {
+  requestId: string
+  agentId:   number
+}
+
+/**
+ * "Retry now" button handler:
+ *  1. Promote this agent's delayed QUEUED jobs (real retry decides the state).
+ *  2. If nothing is pending, probe a never-chatted registered contact — open
+ *     the chat WITHOUT typing/sending and check for the restriction banner.
+ *  3. Publish the result to `agent:retry:result:<requestId>` for the API.
+ */
+async function handleAgentRetry(cmd: AgentRetryCommand): Promise<void> {
+  const { requestId, agentId } = cmd
+  const log   = (msg: string) => console.log(`[agent-retry:${requestId}][agent:${agentId}] ${msg}`)
+  const reply = (payload: Record<string, unknown>) => {
+    redis.publish(`agent:retry:result:${requestId}`, JSON.stringify(payload)).catch(() => {})
+  }
+
+  try {
+    const entry = agentManager.getAllAgents().find(({ agentId: id }) => id === agentId)
+    if (!entry || entry.agent.status === 'disconnected') {
+      log('agent not connected — cannot retry')
+      reply({ ok: false, error: 'Agent is not connected' })
+      return
+    }
+
+    // 1. Promote this agent's delayed jobs (match by DB message.agentId)
+    const queued = await db.message.findMany({
+      where:  { agentId, status: 'QUEUED' },
+      select: { id: true },
+    })
+    const queuedIds = new Set(queued.map((m) => m.id))
+    const queue = new Queue<MessageJob>(QUEUE_NAME, { connection: redis as never })
+    let promoted = 0
+    try {
+      const delayed = await queue.getJobs(['delayed'])
+      for (const job of delayed) {
+        if (queuedIds.has(job.data?.messageId)) {
+          await job.promote().catch(() => {})
+          promoted++
+        }
+      }
+    } finally {
+      await queue.close()
+    }
+
+    if (promoted > 0) {
+      log(`promoted ${promoted} delayed message job(s) — retrying now`)
+      reply({ ok: true, promoted, probed: false })
+      return
+    }
+
+    // 2. Nothing pending — probe a fresh number to test the restriction state
+    const probeContact = await db.contact.findFirst({
+      where: {
+        phoneValid: true,
+        messages:   { none: { agentId } },
+      },
+      select: { phoneNorm: true },
+    }).catch(() => null)
+    const fallbackContact = probeContact
+      ? null
+      : await db.contact.findFirst({ where: { phoneValid: true }, select: { phoneNorm: true } }).catch(() => null)
+    const phone = probeContact?.phoneNorm ?? fallbackContact?.phoneNorm
+
+    if (!phone) {
+      log('no pending jobs and no probe number available')
+      reply({ ok: true, promoted: 0, probed: false, note: 'no pending messages and no probe number available' })
+      return
+    }
+
+    log(`probing restriction with ${phone} (no message sent)…`)
+    const result = await entry.agent.probeRestriction(phone)
+    if (result === 'restricted') {
+      log(`probe: still restricted (${phone})`)
+      reply({ ok: true, promoted: 0, probed: true, stillRestricted: true })
+    } else {
+      log(`probe: no restriction banner (${phone}) — restriction lifted, clearing`)
+      await agentManager.clearRestricted(agentId)
+      reply({ ok: true, promoted: 0, probed: true, stillRestricted: false })
+    }
+  } catch (err) {
+    console.error(`[agent-retry:${requestId}] error:`, err)
+    reply({ ok: false, error: String(err) })
+  }
+}
+
+async function startAgentRetryListener(): Promise<void> {
+  const sub = redis.duplicate()
+  await sub.subscribe(AGENT_RETRY_CHANNEL)
+  sub.on('message', (_channel, message) => {
+    try {
+      const cmd = JSON.parse(message) as AgentRetryCommand
+      ;(async () => handleAgentRetry(cmd))().catch((err) =>
+        console.error('[agent-retry] handler error:', err),
+      )
+    } catch (err) {
+      console.error('[agent-retry] command parse error:', err)
+    }
+  })
+  console.log(`[worker] listening on ${AGENT_RETRY_CHANNEL} channel`)
+}
+
 async function main() {
   await validateStartup()
 
@@ -1131,6 +1346,7 @@ async function main() {
   await startWarmCommandListener()
   await startManualSendListener()
   await startManualPollListener()
+  await startAgentRetryListener()
 }
 
 main().catch((err) => {

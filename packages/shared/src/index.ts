@@ -32,7 +32,7 @@ export type MessageStatus =
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
-export type AgentStatus = 'OFFLINE' | 'STARTING' | 'ONLINE' | 'QR' | 'ERROR'
+export type AgentStatus = 'OFFLINE' | 'STARTING' | 'ONLINE' | 'QR' | 'ERROR' | 'RESTRICTED'
 
 export interface AgentInfo {
   id: number              // integer autoincrement — e.g. 1, 2, 3
@@ -94,7 +94,7 @@ export interface ReplyAnalysis {
 
 // ─── Browser / Agent status ───────────────────────────────────────────────────
 
-export type BrowserStatus = 'connected' | 'qr' | 'loading' | 'disconnected'
+export type BrowserStatus = 'connected' | 'qr' | 'loading' | 'disconnected' | 'restricted'
 
 export interface BrowserStatusPayload {
   status:     BrowserStatus

@@ -105,13 +105,14 @@ router.get('/:id', async (req, res) => {
 
 // PATCH /api/agents/:id
 router.patch('/:id', async (req, res) => {
-  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, warmMode, validationOnly } = req.body as {
+  const { name, departmentId, phoneNumber, dailySendCap, breakEvery, breakMinMs, breakMaxMs, typeDelayMinMs, typeDelayMaxMs, warmMode, validationOnly, clearRestriction } = req.body as {
     name?: string; departmentId?: string | null; phoneNumber?: string
     dailySendCap?: number | null
     breakEvery?: number | null; breakMinMs?: number | null; breakMaxMs?: number | null
     typeDelayMinMs?: number | null; typeDelayMaxMs?: number | null
     warmMode?: boolean
     validationOnly?: boolean
+    clearRestriction?: boolean
   }
   try {
     // validationOnly and warmMode are mutually exclusive: enabling one clears the other.
@@ -132,6 +133,7 @@ router.patch('/:id', async (req, res) => {
         ...(resolvedWarmMode      !== undefined ? { warmMode: resolvedWarmMode }           : {}),
         ...(resolvedValidationOnly !== undefined ? { validationOnly: resolvedValidationOnly } : {}),
         ...(departmentId !== undefined ? { department: departmentId ? { connect: { id: departmentId } } : { disconnect: true } } : {}),
+        ...(clearRestriction === true ? { restrictedUntil: null } : {}),
       },
     })
     res.json({ ok: true, data: updated })
@@ -205,6 +207,31 @@ router.post('/:id/stop', async (req, res) => {
   try {
     await redis.publish(`browser:command:${id}`, JSON.stringify({ agentId: id, cmd: 'stop' }))
     res.json({ ok: true, data: { queued: true } })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// POST /api/agents/:id/retry — "Retry now": promote the agent's pending
+// messages, or probe a fresh number to check whether the restriction lifted.
+// Waits up to 45s for the worker result (probe takes a few seconds).
+router.post('/:id/retry', async (req, res) => {
+  const id = parseId(req.params.id)
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  try {
+    const sub = redis.duplicate()
+    await sub.subscribe(`agent:retry:result:${requestId}`)
+    const result = await new Promise<Record<string, unknown>>((resolve) => {
+      const timer = setTimeout(() => resolve({ ok: false, error: 'timeout waiting for worker' }), 45000)
+      sub.on('message', (_channel, message) => {
+        clearTimeout(timer)
+        resolve(JSON.parse(message) as Record<string, unknown>)
+      })
+      redis.publish('agent:retry', JSON.stringify({ requestId, agentId: id })).catch(() => {})
+    })
+    await sub.unsubscribe()
+    await sub.quit()
+    res.json({ ok: true, data: result })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

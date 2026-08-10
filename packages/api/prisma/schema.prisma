@@ -28,6 +28,7 @@ model Agent {
   warmDaysCompleted Int     @default(0)            // how many full warm sessions completed
   restrictionCount  Int     @default(0)            // cumulative restriction count
   lastRestrictedAt  DateTime?                      // when the agent was last restricted
+  restrictedUntil   DateTime?                      // epoch when the current restriction lifts (null = not restricted)
   departmentId      String?
   department        Department?    @relation(fields: [departmentId], references: [id], onDelete: SetNull)
   messages      Message[]

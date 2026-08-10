@@ -230,14 +230,24 @@ export class AgentManager {
       if (
         preferred &&
         preferred.status === "connected" &&
-        !preferred.validationOnly
+        !preferred.validationOnly &&
+        !(await this.isRestricted(preferredAgentId))
       )
         return preferred
     }
 
-    const online = Array.from(this.agents.entries())
-      .filter(([, a]) => a.status === "connected" && !a.validationOnly)
-      .map(([id, a]) => ({ id, agent: a, active: a.activeJobCount }))
+    const online = (
+      await Promise.all(
+        Array.from(this.agents.entries()).map(async ([id, a]) => ({
+          id,
+          agent: a,
+          active: a.activeJobCount,
+          restricted: await this.isRestricted(id),
+        })),
+      )
+    )
+      .filter(({ agent, restricted }) => agent.status === "connected" && !agent.validationOnly && !restricted)
+      .map(({ id, agent, active }) => ({ id, agent, active }))
 
     if (online.length === 0)
       return Promise.reject(new Error("No agents online"))
@@ -251,10 +261,19 @@ export class AgentManager {
    * Falls back to null if no validation-only agent is online.
    * Used by the phone-check worker (falls back to getLeastBusyAgent if null).
    */
-  getValidationAgent(): BrowserAgent | null {
-    const online = Array.from(this.agents.entries())
-      .filter(([, a]) => a.status === "connected" && a.validationOnly)
-      .map(([, a]) => a)
+  async getValidationAgent(): Promise<BrowserAgent | null> {
+    const online = (
+      await Promise.all(
+        Array.from(this.agents.entries()).map(async ([id, a]) => ({
+          id,
+          agent: a,
+          active: a.activeJobCount,
+          restricted: await this.isRestricted(id),
+        })),
+      )
+    )
+      .filter(({ agent, restricted }) => agent.status === "connected" && agent.validationOnly && !restricted)
+      .map(({ agent }) => agent)
 
     if (online.length === 0) return null
 
@@ -293,7 +312,12 @@ export class AgentManager {
       for (const [agentId, agent] of this.agents.entries()) {
         const prev = agent.status
         await agent.getStatus()
-        const status = this._mapBrowserStatus(agent.status)
+        // DB restriction state overrides DOM detection — the restriction banner
+        // only appears on new-chat attempts, so a restricted account can still
+        // look "connected" on existing chats. Keep publishing RESTRICTED while
+        // restrictedUntil is in the future (persists across worker restarts).
+        const restricted = await this.isRestricted(agentId)
+        const status = restricted ? "RESTRICTED" : this._mapBrowserStatus(agent.status)
         await this._setStatus(agentId, status)
 
         // Publish screenshot for all states except disconnected
@@ -371,7 +395,76 @@ export class AgentManager {
     if (bs === "connected") return "ONLINE"
     if (bs === "qr") return "QR"
     if (bs === "loading") return "STARTING"
+    if (bs === "restricted") return "RESTRICTED"
     return "OFFLINE"
+  }
+
+  // ─── Restriction handling ────────────────────────────────────────────────
+
+  /**
+   * Returns true when the agent is currently under a WhatsApp account-level
+   * restriction (restrictedUntil is set and still in the future).
+   * Reads from DB so the state survives worker restarts.
+   */
+  async isRestricted(agentId: number): Promise<boolean> {
+    const row = await db.agent
+      .findUnique({
+        where:  { id: agentId },
+        select: { restrictedUntil: true },
+      })
+      .catch(() => null)
+    return !!row?.restrictedUntil && row.restrictedUntil.getTime() > Date.now()
+  }
+
+  /**
+   * Mark an agent as restricted: bump the cumulative counter, record when it
+   * happened and when the restriction is expected to lift, then publish the
+   * RESTRICTED status so the UI reflects it.
+   */
+  async markRestricted(agentId: number, durationMs: number): Promise<void> {
+    const now    = new Date()
+    const until  = new Date(Date.now() + durationMs)
+    const updated = await db.agent
+      .update({
+        where: { id: agentId },
+        data:  {
+          restrictionCount: { increment: 1 },
+          lastRestrictedAt:  now,
+          restrictedUntil:   until,
+        },
+        select: { restrictionCount: true },
+      })
+      .catch((err) => {
+        console.error(`[agent-manager] markRestricted DB update failed for agent ${agentId}:`, err)
+        return null
+      })
+    await this._setStatus(agentId, "RESTRICTED")
+    console.error(
+      `[agent:${agentId}] RESTRICTED — WhatsApp account-level restriction detected, sends paused until ${until.toISOString()} (restriction #${updated?.restrictionCount ?? '?'})`,
+    )
+  }
+
+  /**
+   * Clear the restriction (ban lifted or operator override). Resets
+   * restrictedUntil and re-evaluates the live browser status.
+   */
+  async clearRestricted(agentId: number): Promise<void> {
+    await db.agent
+      .update({
+        where: { id: agentId },
+        data:  { restrictedUntil: null },
+      })
+      .catch((err) => console.error(`[agent-manager] clearRestricted DB update failed for agent ${agentId}:`, err))
+    // Re-evaluate live status — the restriction banner disappears once lifted,
+    // so the next DOM check returns the real state (connected/qr/...).
+    const agent = this.agents.get(agentId)
+    let status: AgentStatus = "OFFLINE"
+    if (agent) {
+      await agent.getStatus().catch(() => {})
+      status = this._mapBrowserStatus(agent.status)
+    }
+    await this._setStatus(agentId, status)
+    console.log(`[agent:${agentId}] restriction cleared — status: ${status}`)
   }
 }
 

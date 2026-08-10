@@ -240,6 +240,9 @@ async function processWarmJob(job: Job<WarmJob>): Promise<void> {
   if (!agent || agent.status !== 'connected') {
     throw new Error(`Agent ${agentId} not connected`)
   }
+  if (await agentManager.isRestricted(agentId).catch(() => false)) {
+    throw new Error(`Agent ${agentId} is restricted — warm send skipped`)
+  }
 
   console.log(`[warm-worker] agent:${agentId} → ${targetPhone} (exchange:${exchangeId} isReply:${isReply})`)
   await agent.sendMessage(targetPhone, text)

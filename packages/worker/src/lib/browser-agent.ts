@@ -15,6 +15,43 @@ const QR_SELECTORS = [
   'canvas[aria-label="QR code"]',
 ].join(', ')
 
+/**
+ * Thrown when WhatsApp shows the "Your account on linked devices is restricted"
+ * banner in place of the compose box (verified live on web.whatsapp.com):
+ *
+ *   div[data-testid="block-message"]
+ *     └── div[data-testid="reachout-timelock-compose-bar"]   ← replaces compose box
+ *         └── span: "Your account on linked devices is restricted.
+ *                    You can't start new chats right now."
+ *         └── button: "Show details"
+ *
+ * The restriction is ACCOUNT-level (linked devices), NOT phone-level — so the
+ * phone must NOT be marked unregistered, and the message must NOT be marked
+ * FAILED. Callers reschedule instead.
+ */
+export class AccountRestrictedError extends Error {
+  constructor() {
+    super('WhatsApp account is restricted — cannot start new chats right now')
+    this.name = 'AccountRestrictedError'
+  }
+}
+
+// DOM markers for the restriction banner (verified live on web.whatsapp.com).
+const RESTRICTION_SELECTORS = [
+  '[data-testid="block-message"]',
+  '[data-testid="reachout-timelock-compose-bar"]',
+].join(', ')
+
+// Locale-agnostic text fallback in case the data-testid attributes change.
+// Scoped to the compose footer only, so normal chat messages that happen to
+// contain "restricted" never trigger a false positive.
+const RESTRICTION_KEYWORDS = [
+  'restricted',
+  "can't start new chats",
+  'cannot start new chats',
+  'tidak dapat memulai chat baru',
+]
+
 const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   window.chrome = { runtime: {} };
@@ -124,6 +161,10 @@ export class BrowserAgent {
   private async _detectStatus(): Promise<BrowserStatus> {
     if (!this.page) return 'disconnected'
     try {
+      // Restriction banner takes precedence — it can be present even when the
+      // chat list is visible (restricted accounts keep their chat list).
+      if (await this._hasRestrictionBanner()) return 'restricted'
+
       const connected = await this.page
         .waitForSelector(
           '[data-testid="chat-list"], #side, [aria-label="Chat list"], ._aigs',
@@ -142,6 +183,32 @@ export class BrowserAgent {
       return 'loading'
     } catch {
       return 'loading'
+    }
+  }
+
+  /**
+   * Detect the account-level restriction banner. WhatsApp replaces the compose
+   * box with "reachout-timelock-compose-bar" (inside "block-message") when a
+   * NEW chat is attempted on a restricted account. Existing chats still show
+   * the compose box, so the text fallback is scoped to the compose footer.
+   */
+  private async _hasRestrictionBanner(): Promise<boolean> {
+    if (!this.page) return false
+    try {
+      const viaSelector = await this.page
+        .waitForSelector(RESTRICTION_SELECTORS, { timeout: 500 })
+        .then(() => true)
+        .catch(() => false)
+      if (viaSelector) return true
+
+      return await this.page.evaluate((keywords: string[]) => {
+        const footer = document.querySelector('footer[data-testid="compose-box"]')
+        if (!footer) return false
+        const text = (footer.textContent ?? '').toLowerCase()
+        return keywords.some((kw) => text.includes(kw))
+      }, RESTRICTION_KEYWORDS)
+    } catch {
+      return false
     }
   }
 
@@ -410,22 +477,44 @@ export class BrowserAgent {
 
     const handle = await page
       .waitForFunction(
-        ({ keywords, inputSel }: { keywords: string[]; inputSel: string }): string | false => {
+        ({
+          keywords,
+          inputSel,
+          restrictionKeywords,
+        }: {
+          keywords: string[]
+          inputSel: string
+          restrictionKeywords: string[]
+        }): string | false => {
           const modal = document.querySelector('[data-animate-modal-popup="true"]')
           if (modal) {
             const text = (modal.textContent ?? '').toLowerCase()
             if (keywords.some((kw) => text.includes(kw))) return 'invalid'
           }
+          // Account-level restriction — compose box replaced by a banner.
+          // Check the dedicated container first, then the compose footer text.
+          if (document.querySelector('[data-testid="block-message"], [data-testid="reachout-timelock-compose-bar"]')) {
+            return 'restricted'
+          }
+          const footer = document.querySelector('footer[data-testid="compose-box"]')
+          if (footer) {
+            const footerText = (footer.textContent ?? '').toLowerCase()
+            if (restrictionKeywords.some((kw) => footerText.includes(kw))) return 'restricted'
+          }
           const compose = document.querySelector(inputSel)
           if (compose) return 'ready'
           return false
         },
-        { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS },
+        { keywords: INVALID_KEYWORDS, inputSel: INPUT_SELECTORS, restrictionKeywords: RESTRICTION_KEYWORDS },
         { timeout: chatLoadTimeoutMs, polling: 100 },
       )
       .catch(() => null)
 
     const signal = handle ? ((await handle.jsonValue()) as string) : null
+
+    if (signal === 'restricted') {
+      throw new AccountRestrictedError()
+    }
 
     if (signal === 'invalid') {
       await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
@@ -492,7 +581,13 @@ export class BrowserAgent {
             keywords,
             stabiliseMs,
             id,
-          }: { keywords: string[]; stabiliseMs: number; id: string }): string | false => {
+            restrictionKeywords,
+          }: {
+            keywords: string[]
+            stabiliseMs: number
+            id: string
+            restrictionKeywords: string[]
+          }): string | false => {
             const w = window as unknown as Record<string, unknown>
             if (w['__wc_runId'] !== id) {
               w['__wc_runId']       = id
@@ -502,6 +597,15 @@ export class BrowserAgent {
             if (modal) {
               const text = (modal.textContent ?? '').toLowerCase()
               if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+            }
+            // Account-level restriction — do NOT report the number as unregistered.
+            if (document.querySelector('[data-testid="block-message"], [data-testid="reachout-timelock-compose-bar"]')) {
+              return 'restricted'
+            }
+            const footer = document.querySelector('footer[data-testid="compose-box"]')
+            if (footer) {
+              const footerText = (footer.textContent ?? '').toLowerCase()
+              if (restrictionKeywords.some((kw) => footerText.includes(kw))) return 'restricted'
             }
             const compose = document.querySelector(
               '[data-testid="conversation-compose-box-input"], ' +
@@ -516,18 +620,49 @@ export class BrowserAgent {
             }
             return false
           },
-          { keywords: INVALID_KEYWORDS, stabiliseMs: STABILISE_MS, id: runId },
+          {
+            keywords: INVALID_KEYWORDS,
+            stabiliseMs: STABILISE_MS,
+            id: runId,
+            restrictionKeywords: RESTRICTION_KEYWORDS,
+          },
           { timeout: 15000, polling: 100 },
         )
         .catch(() => null)
 
       const result = handle ? ((await handle.jsonValue()) as string) : null
 
+      if (result === 'restricted') {
+        throw new AccountRestrictedError()
+      }
+
       if (result === 'invalid') {
         await page.click('[data-animate-modal-popup="true"] button').catch(() => {})
         return false
       }
       return result === 'registered'
+    })
+  }
+
+  // ─── probeRestriction ────────────────────────────────────────────────────
+
+  /**
+   * Open a chat for `phone` WITHOUT typing or sending anything, then report
+   * whether the account-level restriction banner is present. Used by the
+   * "Retry now" button to check if a restriction has been lifted.
+   */
+  async probeRestriction(phone: string): Promise<'restricted' | 'ok'> {
+    return this._withBrowserLock(async () => {
+      const page   = this.page!
+      const number = phone.replace('+', '')
+      const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
+
+      await this._gotoQuiet(url, 'load')
+      // Give the chat panel / banner time to render
+      await page.waitForTimeout(4000)
+
+      const banner = await this._hasRestrictionBanner()
+      return banner ? 'restricted' : 'ok'
     })
   }
 

@@ -24,6 +24,9 @@ interface Agent {
   isWarmed:       boolean
   warmedAt:       string | null
   validationOnly: boolean
+  restrictedUntil:   string | null
+  restrictionCount:  number
+  lastRestrictedAt:  string | null
 }
 
 interface Department {
@@ -32,11 +35,12 @@ interface Department {
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  ONLINE:   'bg-green-500',
-  QR:       'bg-yellow-500 animate-pulse',
-  STARTING: 'bg-blue-500 animate-pulse',
-  ERROR:    'bg-red-500',
-  OFFLINE:  'bg-gray-400',
+  ONLINE:     'bg-green-500',
+  QR:         'bg-yellow-500 animate-pulse',
+  STARTING:   'bg-blue-500 animate-pulse',
+  ERROR:      'bg-red-500',
+  RESTRICTED: 'bg-orange-500',
+  OFFLINE:    'bg-gray-400',
 }
 
 export default function Agents() {
@@ -151,6 +155,21 @@ export default function Agents() {
       queryClient.invalidateQueries({ queryKey: ['agents'] })
       setEditing(null)
     },
+  })
+
+  const retryMutation = useMutation({
+    mutationFn: (id: number) => apiFetch(`/api/agents/${id}/retry`, { method: 'POST' }),
+    onSuccess:  () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
+  })
+
+  const clearRestrictionMutation = useMutation({
+    mutationFn: (id: number) =>
+      apiFetch(`/api/agents/${id}`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ clearRestriction: true }),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['agents'] }),
   })
 
   const createMutation = useMutation({
@@ -521,7 +540,24 @@ export default function Agents() {
                       Validation
                     </span>
                   )}
+                  {agent.status === 'RESTRICTED' && (
+                    <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full font-medium">
+                      Restricted{agent.restrictionCount > 0 ? ` #${agent.restrictionCount}` : ''}
+                    </span>
+                  )}
                 </div>
+                {agent.status === 'RESTRICTED' && (
+                  <div className="text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded px-3 py-2 space-y-1">
+                    <div className="font-medium">
+                      WhatsApp account restricted — new chats blocked on this linked device.
+                    </div>
+                    <div>
+                      {agent.restrictedUntil
+                        ? <>Sends paused until <span className="font-mono">{new Date(agent.restrictedUntil).toLocaleString()}</span>. Existing chats can still be polled for replies.</>
+                        : 'Sends paused.'}
+                    </div>
+                  </div>
+                )}
                 <div className="text-xs text-muted-foreground space-y-0.5">
                   <div>Profile: <span className="font-mono">{agent.profilePath}</span></div>
                   <div>Department: {agent.departmentName ?? 'Shared pool'}</div>
@@ -567,6 +603,29 @@ export default function Agents() {
                   >
                     Scan QR
                   </button>
+                )}
+                {agent.status === 'RESTRICTED' && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => retryMutation.mutate(agent.id)}
+                      disabled={retryMutation.isPending}
+                      className="bg-orange-500 text-white text-sm px-3 py-1.5 rounded-md hover:bg-orange-400 disabled:opacity-50"
+                    >
+                      {retryMutation.isPending ? 'Retrying…' : 'Retry now'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!confirm('Clear restriction for this agent? Use only after the account has recovered on the phone.')) return
+                        clearRestrictionMutation.mutate(agent.id)
+                      }}
+                      disabled={clearRestrictionMutation.isPending}
+                      className="border border-orange-200 text-orange-700 text-sm px-3 py-1.5 rounded-md hover:bg-orange-50 disabled:opacity-50"
+                    >
+                      Clear restriction
+                    </button>
+                  </>
                 )}
                 {agent.status !== 'OFFLINE' && (
                   <button
