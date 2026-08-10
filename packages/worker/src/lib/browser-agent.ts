@@ -922,13 +922,13 @@ export class BrowserAgent {
 
         const lastIncoming = result.text
         console.log(`[agent:${this.agentId}] reply from ${phone}: "${lastIncoming.slice(0, 40)}${lastIncoming.length > 40 ? '…' : ''}"`)
-        const screenshotPath = await this._saveReplyScreenshot(phone)
+        const screenshotPath = await this.saveReplyScreenshot(phone)
         await onReply({ phone, text: lastIncoming, screenshotPath })
       })
     }
   }
 
-  private async _saveReplyScreenshot(phone: string): Promise<string | null> {
+  async saveReplyScreenshot(phone: string): Promise<string | null> {
     const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER
     if (!OUTPUT_FOLDER || !this.page) return null
 

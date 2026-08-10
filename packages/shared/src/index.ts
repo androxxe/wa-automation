@@ -92,6 +92,21 @@ export interface ReplyAnalysis {
   jawaban:   1 | 0 | null
 }
 
+// ─── Reply conversation (outbound thread) ─────────────────────────────────────
+
+export type ConversationEntryStatus = 'SENT' | 'FAILED' | 'BLOCKED'
+
+// One operator-sent reply appended to Reply.conversation (append-only JSON array).
+export interface ConversationEntry {
+  body:           string
+  sentAt:         string  // ISO timestamp
+  agentId?:       number
+  status:         ConversationEntryStatus
+  failReason?:    string
+  requestId?:     string
+  screenshotPath?: string // relative path, viewable via /api/replies/screenshot?p=…
+}
+
 // ─── Browser / Agent status ───────────────────────────────────────────────────
 
 export type BrowserStatus = 'connected' | 'qr' | 'loading' | 'disconnected' | 'restricted'

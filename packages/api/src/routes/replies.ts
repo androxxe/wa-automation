@@ -1,6 +1,7 @@
 import path from 'path'
 import fs   from 'fs'
 import { Router } from 'express'
+import { Prisma } from '@prisma/client'
 import { db } from '../lib/db'
 import { redis } from '../lib/queue'
 import { normalizePhone } from '../lib/phone'
@@ -26,6 +27,7 @@ router.get('/', async (req, res) => {
       bulan,
       category,
       jawaban,
+      hasConversation,
       page:  pageStr  = '1',
       limit: limitStr = '50',
     } = req.query as Record<string, string>
@@ -58,6 +60,12 @@ router.get('/', async (req, res) => {
       }
     }
 
+    if (hasConversation === '1') {
+      where.conversation = { not: Prisma.DbNull }
+    } else if (hasConversation === '0') {
+      where.conversation = Prisma.DbNull
+    }
+
     const [replies, total] = await Promise.all([
       db.reply.findMany({
         where,
@@ -73,17 +81,19 @@ router.get('/', async (req, res) => {
           jawaban:         true,
           screenshotPath:  true,
           receivedAt:      true,
-          message: {
-            select: {
-              id:         true,
-              phone:      true,
-              sentAt:     true,
-              body:       true,
-              campaignId: true,
-              metadata:   true,
-              campaign: {
-                select: { id: true, name: true, bulan: true, campaignType: true },
-              },
+          conversation:    true,
+              message: {
+                select: {
+                  id:         true,
+                  phone:      true,
+                  sentAt:     true,
+                  body:       true,
+                  campaignId: true,
+                  metadata:   true,
+                  agent:      { select: { name: true } },
+                  campaign: {
+                    select: { id: true, name: true, bulan: true, campaignType: true },
+                  },
               contact: {
                 select: {
                   storeName: true,

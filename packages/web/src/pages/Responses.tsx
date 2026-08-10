@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
-import type { AppConfigData, ReplyCategory } from '@aice/shared'
+import ReplyConversationModal from '@/components/ReplyConversationModal'
+import type { AppConfigData, ReplyCategory, ConversationEntry } from '@aice/shared'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,7 @@ interface Reply {
   jawaban:         number | null   // 1 = ya, 0 = tidak, null = unclear
   screenshotPath:  string | null
   receivedAt:      string
+  conversation:    ConversationEntry[] | null
   message: {
     id:         string
     phone:      string
@@ -29,6 +31,7 @@ interface Reply {
     body:       string
     campaignId: string
     metadata:   MessageMetadata | null
+    agent:      { name: string } | null
     campaign:   { id: string; name: string; bulan: string; campaignType: string }
     contact: {
       storeName:  string
@@ -396,10 +399,12 @@ export default function Responses() {
   const [filterBulan,        setFilterBulan]        = useState('')
   const [filterCategory,     setFilterCategory]     = useState('')
   const [filterJawaban,      setFilterJawaban]       = useState('')
+  const [filterConversation, setFilterConversation]  = useState('')
   const [page,               setPage]                = useState(1)
   const [screenshot,       setScreenshot]        = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, { category: string; jawaban: string }>>({})
   const [pollingPhone, setPollingPhone] = useState<string | null>(null)
+  const [replyTargetId, setReplyTargetId] = useState<string | null>(null)
 
   // Reset to page 1 whenever filters change
   function updateFilter<T>(setter: (v: T) => void) {
@@ -412,7 +417,7 @@ export default function Responses() {
   })
 
   const repliesQuery = useQuery<RepliesResponse>({
-    queryKey: ['replies', filterCampaignId, filterCampaignType, filterBulan, filterCategory, filterJawaban, page],
+    queryKey: ['replies', filterCampaignId, filterCampaignType, filterBulan, filterCategory, filterJawaban, filterConversation, page],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: '50' })
       if (filterCampaignId)   params.set('campaignId',   filterCampaignId)
@@ -420,6 +425,7 @@ export default function Responses() {
       if (filterBulan)        params.set('bulan',        filterBulan)
       if (filterCategory)     params.set('category',     filterCategory)
       if (filterJawaban)      params.set('jawaban',      filterJawaban)
+      if (filterConversation) params.set('hasConversation', filterConversation)
       return apiFetch<RepliesResponse>(`/api/replies?${params}`)
     },
     placeholderData: (prev) => prev,
@@ -429,6 +435,9 @@ export default function Responses() {
   const replies = data?.replies ?? []
   const stats   = data?.stats ?? { total: 0, confirmed: 0, denied: 0, question: 0, unclear: 0, invalid: 0, other: 0 }
   const pages   = data?.pages ?? 1
+
+  // Live lookup so the modal reflects refetched data (conversation updates after send)
+  const replyTarget = replyTargetId ? replies.find((r) => r.id === replyTargetId) ?? null : null
 
   const updateReplyMutation = useMutation({
     mutationFn: (payload: { id: string; category: string; jawaban: string }) =>
@@ -544,10 +553,20 @@ export default function Responses() {
           ))}
         </select>
 
-        {(filterCampaignId || filterCampaignType || filterBulan || filterCategory || filterJawaban) && (
+        <select
+          value={filterConversation}
+          onChange={(e) => updateFilter(setFilterConversation)(e.target.value)}
+          className="text-sm rounded-md border bg-background px-3 py-1.5"
+        >
+          <option value="">All Conversations</option>
+          <option value="1">Has conversation</option>
+          <option value="0">No conversation</option>
+        </select>
+
+        {(filterCampaignId || filterCampaignType || filterBulan || filterCategory || filterJawaban || filterConversation) && (
           <button
             type="button"
-            onClick={() => { setFilterCampaignId(''); setFilterCampaignType(''); setFilterBulan(''); setFilterCategory(''); setFilterJawaban(''); setPage(1) }}
+            onClick={() => { setFilterCampaignId(''); setFilterCampaignType(''); setFilterBulan(''); setFilterCategory(''); setFilterJawaban(''); setFilterConversation(''); setPage(1) }}
             className="text-xs text-muted-foreground hover:text-foreground underline"
           >
             Clear filters
@@ -584,6 +603,9 @@ export default function Responses() {
                 <td className="px-3 py-2.5 whitespace-nowrap">
                   <p className="font-medium text-xs leading-tight">{r.message.campaign.name}</p>
                   <p className="text-muted-foreground text-xs">{r.message.campaign.bulan} · {r.message.campaign.campaignType}</p>
+                  <p className="text-muted-foreground text-xs">
+                    Agent: {r.message.agent?.name ?? '—'}
+                  </p>
                 </td>
 
                 {/* Store */}
@@ -611,9 +633,21 @@ export default function Responses() {
 
                 {/* Reply */}
                 <td className="px-3 py-2.5 max-w-[180px]">
-                  <p className="truncate" title={r.body}>
-                    {r.body.slice(0, 70)}{r.body.length > 70 ? '…' : ''}
-                  </p>
+                  <div className="flex items-center gap-1.5">
+                    <p className="truncate" title={r.body}>
+                      {r.body.slice(0, 70)}{r.body.length > 70 ? '…' : ''}
+                    </p>
+                    {r.conversation && r.conversation.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setReplyTargetId(r.id)}
+                        title="View conversation"
+                        className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium shrink-0 hover:bg-blue-200"
+                      >
+                        → {r.conversation.length}
+                      </button>
+                    )}
+                  </div>
                 </td>
 
                 {/* AI Summary */}
@@ -745,6 +779,14 @@ export default function Responses() {
                     >
                       {pollingPhone === r.message.phone ? 'Polling…' : 'Poll'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setReplyTargetId(r.id)}
+                      className="text-xs px-3 py-1.5 rounded-md border bg-primary/5 hover:bg-primary/10"
+                      title="Reply to this contact"
+                    >
+                      Reply
+                    </button>
                   </div>
                 </td>
                 {/* Metadata */}
@@ -788,6 +830,19 @@ export default function Responses() {
       {/* Screenshot modal */}
       {screenshot && (
         <ScreenshotModal path={screenshot} onClose={() => setScreenshot(null)} />
+      )}
+
+      {/* Conversation reply modal */}
+      {replyTarget && (
+        <ReplyConversationModal
+          replyId={replyTarget.id}
+          phone={replyTarget.message.phone}
+          storeName={replyTarget.message.contact.storeName}
+          incomingBody={replyTarget.body}
+          conversation={replyTarget.conversation}
+          onClose={() => setReplyTargetId(null)}
+          onRefresh={() => queryClient.invalidateQueries({ queryKey: ['replies'] })}
+        />
       )}
     </div>
   )

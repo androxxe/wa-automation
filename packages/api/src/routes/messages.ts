@@ -14,6 +14,7 @@ const SendSchema = z.object({
   agentId:   z.number().int().positive().optional(),
   dryRun:    z.boolean().optional(),
   messageId: z.string().trim().optional(),
+  replyId:   z.string().trim().optional(),
 })
 
 // POST /api/messages/send — fire-and-forget manual send
@@ -24,7 +25,8 @@ router.post('/send', async (req, res) => {
     return
   }
 
-  const { phone, agentId, dryRun, messageId } = parsed.data
+  const { phone, agentId, dryRun, messageId, replyId } = parsed.data
+  let originalAgentId: number | null = null
 
   const normalized = normalizePhone(phone)
   if (!normalized.valid) {
@@ -59,6 +61,22 @@ router.post('/send', async (req, res) => {
     return
   }
 
+  if (replyId) {
+    const reply = await db.reply.findUnique({
+      where:  { id: replyId },
+      include: { message: { select: { agentId: true } } },
+    })
+    if (!reply) {
+      res.status(404).json({ ok: false, error: 'Reply not found' })
+      return
+    }
+    if (reply.phone !== normalized.normalized) {
+      res.status(400).json({ ok: false, error: 'Phone does not match reply' })
+      return
+    }
+    originalAgentId = reply.message.agentId
+  }
+
   // Resolve agent
   const agents = await db.agent.findMany({
     select: { id: true, validationOnly: true },
@@ -69,7 +87,35 @@ router.post('/send', async (req, res) => {
 
   let selected: number | null = null
 
-  if (agentId !== undefined) {
+  // Replies are hard-locked to the ORIGINAL sending agent — strict, no fallback.
+  if (replyId) {
+    const origAgentId = originalAgentId
+    if (origAgentId == null) {
+      res.status(409).json({ ok: false, error: 'Cannot send reply: original agent is unknown' })
+      return
+    }
+    if (agentId !== undefined && agentId !== origAgentId) {
+      res.status(409).json({
+        ok: false,
+        error: `Reply must be sent from the original agent (agent:${origAgentId}), not agent:${agentId}`,
+      })
+      return
+    }
+    const orig = agents.find((a) => a.id === origAgentId)
+    if (!orig) {
+      res.status(404).json({ ok: false, error: `Original agent (agent:${origAgentId}) not found` })
+      return
+    }
+    if (orig.validationOnly) {
+      res.status(409).json({ ok: false, error: `Original agent (agent:${origAgentId}) is validation-only and cannot send messages` })
+      return
+    }
+    if ((await onlineStatus(origAgentId)) !== 'ONLINE') {
+      res.status(409).json({ ok: false, error: `Original agent (agent:${origAgentId}) is not online` })
+      return
+    }
+    selected = origAgentId
+  } else if (agentId !== undefined) {
     const exists = agents.find((a) => a.id === agentId)
     if (!exists) {
       res.status(404).json({ ok: false, error: 'Agent not found' })
@@ -107,6 +153,7 @@ router.post('/send', async (req, res) => {
     requestedBy: req.headers['x-user'] ?? undefined,
     dryRun: dryRun ?? false,
     ...(messageId ? { messageId } : {}),
+    ...(replyId ? { replyId } : {}),
   }
 
   await redis.publish(MANUAL_SEND_CHANNEL, JSON.stringify(payload))

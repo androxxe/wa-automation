@@ -2,7 +2,8 @@ import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
-import type { CampaignStatus, MessageStatus, AreaEnqueuePreview } from '@aice/shared'
+import ReplyConversationModal from '@/components/ReplyConversationModal'
+import type { CampaignStatus, MessageStatus, AreaEnqueuePreview, ConversationEntry } from '@aice/shared'
 
 // ─── Fail-reason modal ────────────────────────────────────────────────────────
 
@@ -689,6 +690,7 @@ interface Message {
     claudeCategory: string | null
     jawaban: number | null
     screenshotPath: string | null
+    conversation: ConversationEntry[] | null
   } | null
   agent:      { name: string } | null
   body?:      string
@@ -746,6 +748,7 @@ export default function CampaignDetail() {
   const [completeModal, setCompleteModal] = useState(false)
   const [screenshot, setScreenshot] = useState<string | null>(null)
   const [invalidReplyId, setInvalidReplyId] = useState<string | null>(null)
+  const [viewReplyMsgId, setViewReplyMsgId] = useState<string | null>(null)
   const eventSourceRef            = useRef<EventSource | null>(null)
 
   const { data: campaign } = useQuery<Campaign>({
@@ -964,6 +967,21 @@ export default function CampaignDetail() {
           })()}
         </>
       )}
+      {viewReplyMsgId && (() => {
+        const msg = messages.find((m) => m.id === viewReplyMsgId)
+        if (!msg?.reply) return null
+        return (
+          <ReplyConversationModal
+            replyId={msg.reply.id}
+            phone={msg.phone}
+            storeName={msg.contact.storeName}
+            incomingBody={msg.reply.body}
+            conversation={msg.reply.conversation}
+            onClose={() => setViewReplyMsgId(null)}
+            onRefresh={() => queryClient.invalidateQueries({ queryKey: ['campaign-messages', id] })}
+          />
+        )
+      })()}
 
       <div className="space-y-6">
         {/* Header */}
@@ -1273,6 +1291,17 @@ export default function CampaignDetail() {
                           </span>
                         </div>
                         <div className="flex items-center gap-1 flex-shrink-0">
+                          {/* Conversation badge / view */}
+                          {(m.reply.conversation?.length ?? 0) > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => setViewReplyMsgId(m.id)}
+                              title="View conversation"
+                              className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium hover:bg-blue-200"
+                            >
+                              → {m.reply!.conversation!.length}
+                            </button>
+                          )}
                           {/* Screenshot button */}
                           {m.reply.screenshotPath ? (
                             <button

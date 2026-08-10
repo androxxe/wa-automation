@@ -1,6 +1,6 @@
 import { Worker, Queue, DelayedError, type Job } from 'bullmq'
 import type { Prisma } from '@prisma/client'
-import type { MessageJob, PhoneCheckJob } from '@aice/shared'
+import type { MessageJob, PhoneCheckJob, ConversationEntry } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
 import { agentManager } from './lib/agent-manager'
@@ -28,6 +28,8 @@ const PHONE_POLL_COOLDOWN    = parseInt(process.env.REPLY_POLL_COOLDOWN_MS ?? '1
 const SIDEBAR_RATIO          = parseFloat(process.env.SIDEBAR_SEND_RATIO ?? '0.70')
 const MANUAL_SEND_CHANNEL    = process.env.MANUAL_SEND_CHANNEL ?? 'manual-send:cmd'
 const ALLOW_MANUAL_OUTSIDE_HOURS = process.env.ALLOW_MANUAL_OUTSIDE_HOURS === 'true'
+// Delay before auto re-polling a chat after an operator reply send (catches fast follow-ups)
+const AUTO_REPOLL_DELAY_MS   = parseInt(process.env.AUTO_REPOLL_DELAY_MS ?? '90000', 10)
 const AGENT_RESTRICTED_MS     = parseInt(process.env.AGENT_RESTRICTED_MS ?? String(7 * 24 * 60 * 60 * 1000), 10)
 const RESTRICTED_RESCHEDULE_MS = parseInt(process.env.RESTRICTED_RESCHEDULE_MS ?? '3600000', 10)
 const AGENT_RETRY_CHANNEL     = process.env.AGENT_RETRY_CHANNEL ?? 'agent:retry'
@@ -1016,9 +1018,57 @@ interface ManualSendCommand {
   requestedBy?: string
   dryRun?:      boolean
   messageId?:   string
+  replyId?:     string
 }
 
-async function selectManualAgent(preferredAgentId?: number) {
+// Append an entry to Reply.conversation (read-modify-write; low concurrency per
+// reply row, and manual sends are serialized per agent). Never throws to the caller.
+async function appendConversation(replyId: string, entry: ConversationEntry): Promise<void> {
+  try {
+    const reply = await db.reply.findUnique({
+      where: { id: replyId },
+      select: { conversation: true },
+    })
+    const current = Array.isArray(reply?.conversation) ? (reply!.conversation as unknown as ConversationEntry[]) : []
+    await db.reply.update({
+      where: { id: replyId },
+      data:  { conversation: [...current, entry] as unknown as Prisma.InputJsonValue },
+    })
+  } catch (err) {
+    console.error(`[manual-send] appendConversation failed for reply ${replyId}:`, err)
+  }
+}
+
+// After a successful operator reply, schedule a one-shot manual poll (fallback_latest)
+// so a fast follow-up message from the contact refreshes the Reply row + screenshot.
+async function scheduleAutoRepoll(replyId: string, phone: string): Promise<void> {
+  try {
+    const reply = await db.reply.findUnique({
+      where: { id: replyId },
+      include: { message: { select: { body: true, sentAt: true, agentId: true } } },
+    })
+    const msg = reply?.message
+    if (!msg || msg.agentId == null || !msg.sentAt) return
+
+    const agentId = msg.agentId
+    const sentAt  = msg.sentAt.toISOString()
+    const body    = msg.body
+    setTimeout(() => {
+      redis.publish('reply:poll-manual', JSON.stringify({
+        byAgent: {
+          [agentId]: {
+            [phone]: { sentAt, mode: 'fallback_latest', body },
+          },
+        },
+      })).catch((err) => console.error('[manual-send] auto re-poll publish failed:', err))
+      console.log(`[manual-send] auto re-poll scheduled for ${phone} via agent:${agentId} (${Math.round(AUTO_REPOLL_DELAY_MS / 1000)}s)`)
+    }, AUTO_REPOLL_DELAY_MS)
+  } catch (err) {
+    console.warn('[manual-send] auto re-poll scheduling failed:', err)
+  }
+}
+
+async function selectManualAgent(preferredAgentId?: number, strict = false) {
   const online = await Promise.all(
     agentManager.getAllAgents().map(async ({ agentId, agent }) => ({
       agentId,
@@ -1033,6 +1083,9 @@ async function selectManualAgent(preferredAgentId?: number) {
   if (preferredAgentId) {
     const found = eligible.find(({ agentId }) => agentId === preferredAgentId)
     if (found) return found.agent
+    // Strict mode: never fall back to another agent (reply sends must stay on
+    // the account that owns the conversation).
+    if (strict) return null
   }
 
   if (eligible.length === 0) return null
@@ -1042,13 +1095,38 @@ async function selectManualAgent(preferredAgentId?: number) {
 }
 
 async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
-  const { requestId, phone, body, agentId, dryRun, messageId } = cmd
+  const { requestId, phone, body, agentId, dryRun, messageId, replyId } = cmd
   const log = (msg: string) => console.log(`[manual-send:${requestId}] ${msg}`)
 
+  // Reply sends are interactions with already-engaged contacts — they bypass the
+  // daily cap and working-hours gates (ban risk is low), but NEVER restricted agents.
+  const bypass = Boolean(replyId)
+
+  const recordOutcome = (status: ConversationEntry['status'], extra?: { failReason?: string; agentId?: number; screenshotPath?: string }) => {
+    if (!replyId) return
+    appendConversation(replyId, {
+      body,
+      sentAt: new Date().toISOString(),
+      status,
+      requestId,
+      ...(extra?.agentId !== undefined ? { agentId: extra.agentId } : {}),
+      ...(extra?.failReason ? { failReason: extra.failReason.slice(0, 500) } : {}),
+      ...(extra?.screenshotPath ? { screenshotPath: extra.screenshotPath } : {}),
+    })
+  }
+
   try {
-    const agent = await selectManualAgent(agentId)
+    // Replies are hard-locked to the original agent — strict, never another account.
+    const agent = await selectManualAgent(agentId, bypass && agentId !== undefined)
     if (!agent) {
-      log('no online agent available (excluding validation-only)')
+      log(bypass && agentId !== undefined
+        ? `no eligible original agent:${agentId} (offline/restricted/validation-only) — not falling back`
+        : 'no online agent available (excluding validation-only)')
+      recordOutcome('BLOCKED', {
+        failReason: bypass && agentId !== undefined
+          ? `original agent (agent:${agentId}) not available (offline/restricted/validation-only)`
+          : 'no online agent available (excluding validation-only)',
+      })
       return
     }
 
@@ -1057,22 +1135,26 @@ async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
       return
     }
 
-    if (!ALLOW_MANUAL_OUTSIDE_HOURS && !isWorkingHours()) {
+    if (!bypass && !ALLOW_MANUAL_OUTSIDE_HOURS && !isWorkingHours()) {
       log('blocked: outside working hours (ALLOW_MANUAL_OUTSIDE_HOURS=false)')
+      recordOutcome('BLOCKED', { failReason: 'outside working hours' })
       return
     }
 
-    const sentToday = await todaySendCount(agent.agentId)
-    if (sentToday >= agent.dailySendCap) {
-      log(`blocked: daily cap reached (${agent.dailySendCap}) for agent:${agent.agentId}`)
-      return
+    if (!bypass) {
+      const sentToday = await todaySendCount(agent.agentId)
+      if (sentToday >= agent.dailySendCap) {
+        log(`blocked: daily cap reached (${agent.dailySendCap}) for agent:${agent.agentId}`)
+        recordOutcome('BLOCKED', { failReason: `daily cap reached (${agent.dailySendCap})` })
+        return
+      }
     }
 
     agent.activeJobCount++
     try {
       log(`sending via agent:${agent.agentId} to ${phone}`)
       await agent.sendMessage(phone, body)
-      await incrementDailyCount(agent.agentId)
+      if (!bypass) await incrementDailyCount(agent.agentId)
       if (messageId) {
         await db.message.update({
           where: { id: messageId },
@@ -1086,6 +1168,18 @@ async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
           },
         }).catch((e) => log(`warn: failed to update message status: ${e}`))
       }
+      if (replyId) {
+        // Capture proof-of-send screenshot (best-effort) then append to thread
+        const screenshotPath = await agent.saveReplyScreenshot(phone).catch(() => null)
+        await appendConversation(replyId, {
+          body,
+          sentAt:       new Date().toISOString(),
+          agentId:      agent.agentId,
+          status:       'SENT',
+          requestId,
+          ...(screenshotPath ? { screenshotPath } : {}),
+        })
+        scheduleAutoRepoll(replyId, phone).catch(() => {})      }
       log('sent')
     } catch (err) {
       if (messageId) {
@@ -1094,12 +1188,22 @@ async function handleManualSend(cmd: ManualSendCommand): Promise<void> {
           data:  { status: 'FAILED', failReason: String(err).slice(0, 500) },
         }).catch(() => {})
       }
+      if (replyId) {
+        await appendConversation(replyId, {
+          body,
+          sentAt:    new Date().toISOString(),
+          status:    'FAILED',
+          requestId,
+          failReason: String(err).slice(0, 500),
+        })
+      }
       log(`error: ${err}`)
     } finally {
       agent.activeJobCount--
     }
   } catch (err) {
     console.error(`[manual-send:${requestId}] unexpected error:`, err)
+    recordOutcome('BLOCKED', { failReason: `unexpected error: ${String(err)}` })
   }
 }
 

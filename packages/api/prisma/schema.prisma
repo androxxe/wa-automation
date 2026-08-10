@@ -183,6 +183,7 @@ model Reply {
   jawaban         Int?
   screenshotPath  String?  @db.VarChar(500)
   receivedAt      DateTime @default(now())
+  conversation    Json?    // outbound reply thread: [{ body, sentAt, agentId?, status, failReason?, requestId?, screenshotPath? }]
 }
 
 // ─── DailySendLog ─────────────────────────────────────────────────────────────
