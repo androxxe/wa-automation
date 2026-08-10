@@ -10,17 +10,57 @@ const IMG_H          = 180
 const ROW_H_WITH_IMG = Math.ceil(IMG_H * 0.75) + 6  // ~141pt
 const ROW_H_DEFAULT  = 18
 
+export interface ReportXlsxOptions {
+  /** Embed screenshots as images in the workbook (legacy). Default true. */
+  embedImages?: boolean
+  /** Collect each existing screenshot (zip mode) — invoked with its archive path. */
+  onPhoto?: (photo: { archivePath: string; absPath: string }) => void
+}
+
+function sanitizeDirName(name: string): string {
+  return name
+    .replace(/\s+/g, '_')
+    .replace(/[\\/:*?"<>|-]/g, '')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 100)
+}
+
+function sanitizeFileName(name: string): string {
+  return name.trim().replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').slice(0, 80)
+}
+
+function extractScreenshotTimestamp(screenshotPath: string | null): string {
+  const match = screenshotPath?.match(/(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})/)
+  if (match) return match[1]
+  return new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+}
+
+// Archive path + reference text for zip mode: screenshots/<CampaignName_>/<phone>_<store>_<timestamp>.jpg
+function buildScreenshotRef(
+  campaignName: string,
+  absPath: string,
+  phone: string,
+  storeName: string,
+): { archivePath: string; ref: string } {
+  const namePart = sanitizeFileName(storeName)
+  const filename = `${phone.replace('+', '')}${namePart ? `_${namePart}` : ''}_${extractScreenshotTimestamp(absPath)}${path.extname(absPath) || '.jpg'}`
+  const archivePath = `screenshots/${sanitizeDirName(campaignName)}/${filename}`
+  return { archivePath, ref: archivePath }
+}
+
 /**
  * Build an XLSX workbook for a campaign — one sheet per area.
  *
  * Columns: No | Nama Toko | Nomor HP | Department | Area | Agent Phone | Jawaban | Kategori | Status | Dikirim pada | Dibalas pada | Raw Response | Screenshot
- * Screenshots are embedded as images in column M.
+ * Screenshots are embedded as images in column M by default (legacy).
+ * Pass { embedImages: false, onPhoto } to collect screenshots for a ZIP archive instead (column M shows the archive path).
  *
  * Includes ALL contacts with a SENT/DELIVERED/READ message — not just replied ones.
  * Contacts without a reply show blank Jawaban and no Screenshot.
  * Invalid replies show "⚠ Invalid" in Status column with red background.
  */
-export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffer> {
+export async function buildCampaignReportXlsx(campaignId: string, options?: ReportXlsxOptions): Promise<Buffer> {
   const campaign = await db.campaign.findUnique({
     where:   { id: campaignId },
     include: { areas: { include: { area: { include: { department: true } } } } },
@@ -120,10 +160,11 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
         : null
       const hasImg  = absPath !== null && fs.existsSync(absPath)
+      const embed   = options?.embedImages !== false
 
       // col 13 = column M (0-indexed: 12) for screenshot image
       const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, statusLabel, dikirimPada, dibalasPada, rawResponse, ''])
-      dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
+      dataRow.height = hasImg && embed ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
       dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
       dataRow.getCell(2).alignment = { vertical: 'middle', wrapText: true }
@@ -186,7 +227,13 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
         }
       }
 
-       if (hasImg) {
+       if (hasImg && !embed) {
+         const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
+         options?.onPhoto?.({ archivePath, absPath })
+         dataRow.getCell(13).value     = ref
+         dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+         dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+       } else if (hasImg) {
          try {
            const ext       = path.extname(absPath).toLowerCase().replace('.', '')
            const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
@@ -202,9 +249,9 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
          } catch {
            dataRow.getCell(13).value     = absPath
            dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-               dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
-            }
+           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
          }
+       }
 
         // Add black borders to all cells in the row
         for (let c = 1; c <= 13; c++) {
@@ -245,7 +292,7 @@ export async function buildCampaignReportXlsx(campaignId: string): Promise<Buffe
  *
  * Similar structure to buildCampaignReportXlsx but includes all campaigns.
  */
-export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; campaignType?: string }): Promise<Buffer> {
+export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; campaignType?: string }, options?: ReportXlsxOptions): Promise<Buffer> {
   const campaigns = await db.campaign.findMany({
     where: {
       ...(filters?.bulan && { bulan: filters.bulan }),
@@ -355,9 +402,10 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
           ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
           : null
         const hasImg = absPath !== null && fs.existsSync(absPath)
+        const embed  = options?.embedImages !== false
 
         const dataRow = sheet.addRow([campaignRowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, statusLabel, dikirimPada, dibalasPada, rawResponse, ''])
-        dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
+        dataRow.height = hasImg && embed ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
         dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
         dataRow.getCell(2).alignment = { vertical: 'middle', wrapText: true }
@@ -418,7 +466,13 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
           }
         }
 
-         if (hasImg) {
+         if (hasImg && !embed) {
+           const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
+           options?.onPhoto?.({ archivePath, absPath })
+           dataRow.getCell(13).value = ref
+           dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
+           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+         } else if (hasImg) {
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
              const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
@@ -506,7 +560,7 @@ interface DepartmentReportFilters {
  * - Multiple campaigns per sheet (with empty row separator)
  * - Column order: Market | No | Nama Toko | No HP | Agent Phone | Dynamic Jawaban Header | Kategori | Status | etc.
  */
-export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilters): Promise<Buffer> {
+export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilters, options?: ReportXlsxOptions): Promise<Buffer> {
   const campaignFilters: Record<string, unknown> = {
     ...(filters?.bulan && { bulan: filters?.bulan }),
     ...(filters?.campaignType && { campaignType: filters?.campaignType }),
@@ -712,6 +766,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
           : null
         const hasImg = absPath !== null && fs.existsSync(absPath)
+        const embed  = options?.embedImages !== false
 
         const dataRow = sheet.addRow([
           campaignRowNo,
@@ -734,7 +789,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           firstDataRowNum = dataRow.number
         }
         
-        dataRow.height = hasImg ? ROW_H_WITH_IMG : ROW_H_DEFAULT
+        dataRow.height = hasImg && embed ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
         const borderStyle = {
           top: { style: 'thin' as const, color: { argb: 'FF000000' } },
@@ -809,7 +864,13 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         dataRow.getCell(12).border = borderStyle
         dataRow.getCell(13).border = borderStyle
 
-         if (hasImg) {
+         if (hasImg && !embed) {
+           const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
+           options?.onPhoto?.({ archivePath, absPath })
+           dataRow.getCell(13).value = ref
+           dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
+           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+         } else if (hasImg) {
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
              const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'

@@ -44,6 +44,7 @@ export default function Export() {
     new Set(JAWABANS)
   )
   const [exportType, setExportType] = useState<'campaign' | 'department'>('campaign')
+  const [fileFormat, setFileFormat] = useState<'xlsx' | 'zip'>('xlsx')
   const [downloading, setDownloading] = useState(false)
 
   const { data: campaigns = [] } = useQuery<Campaign[]>({
@@ -103,6 +104,9 @@ export default function Export() {
         })
       }
 
+      // File format (zip = xlsx + screenshots folder)
+      if (fileFormat === 'zip') params.append('format', 'zip')
+
       const endpoint =
         exportType === 'campaign'
           ? `/api/export/report-xlsx-filtered?${params}`
@@ -117,7 +121,7 @@ export default function Export() {
 
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
-      const filename = buildFilename(selectedMonth, selectedType, exportType)
+      const filename = buildFilename(selectedMonth, selectedType, exportType, fileFormat)
       const a = document.createElement('a')
       a.href = url
       a.download = filename
@@ -135,15 +139,17 @@ export default function Export() {
   const buildFilename = (
     month?: string,
     type?: string,
-    exportTypeParam?: string
+    exportTypeParam?: string,
+    format: 'xlsx' | 'zip' = 'xlsx'
   ): string => {
     const date = new Date().toISOString().slice(0, 10)
+    const ext = format === 'zip' ? 'zip' : 'xlsx'
     const prefix = exportTypeParam === 'department' ? 'laporan_departemen_' : 'laporan_'
 
-    if (!month && !type) return `${prefix}semua_campaign_${date}.xlsx`
-    if (month && !type) return `${prefix}${month}_${date}.xlsx`
-    if (!month && type) return `${prefix}${type}_${date}.xlsx`
-    return `${prefix}${month}_${type}_${date}.xlsx`
+    if (!month && !type) return `${prefix}semua_campaign_${date}.${ext}`
+    if (month && !type) return `${prefix}${month}_${date}.${ext}`
+    if (!month && type) return `${prefix}${type}_${date}.${ext}`
+    return `${prefix}${month}_${type}_${date}.${ext}`
   }
 
   return (
@@ -181,6 +187,37 @@ export default function Export() {
               className="w-4 h-4"
             />
             <span className="text-sm">Department-Based (one sheet per department)</span>
+          </label>
+        </div>
+      </div>
+
+      {/* File Format Selection */}
+      <div className="rounded-lg border bg-card p-6 space-y-3">
+        <div>
+          <p className="text-sm font-medium">File Format</p>
+        </div>
+        <div className="space-y-2">
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="fileFormat"
+              value="xlsx"
+              checked={fileFormat === 'xlsx'}
+              onChange={() => setFileFormat('xlsx')}
+              className="w-4 h-4"
+            />
+            <span className="text-sm">XLSX — screenshots embedded in the report (legacy)</span>
+          </label>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input
+              type="radio"
+              name="fileFormat"
+              value="zip"
+              checked={fileFormat === 'zip'}
+              onChange={() => setFileFormat('zip')}
+              className="w-4 h-4"
+            />
+            <span className="text-sm">ZIP — report + screenshots in separate folders</span>
           </label>
         </div>
       </div>
@@ -338,7 +375,7 @@ export default function Export() {
           disabled={downloading || filteredCampaigns.length === 0}
           className="flex-1 px-6 py-3 rounded-md bg-primary text-primary-foreground font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors"
         >
-          {downloading ? 'Generating…' : 'Download XLSX Report'}
+          {downloading ? 'Generating…' : fileFormat === 'zip' ? 'Download ZIP Report' : 'Download XLSX Report'}
         </button>
       </div>
 
@@ -359,7 +396,11 @@ export default function Export() {
               <li>Filtered by selected {modelName.toLocaleLowerCase()} categories and jawaban values</li>
             </>
           )}
-          <li>All screenshots are embedded in the file</li>
+          {fileFormat === 'zip' ? (
+            <li>Screenshots bundled in <code>screenshots/&lt;campaign&gt;/</code> folders inside the ZIP</li>
+          ) : (
+            <li>All screenshots are embedded in the file</li>
+          )}
           <li>Summary sheet shows global statistics</li>
           <li>Data includes: store name, phone, area, department, message, reply, category</li>
         </ul>
