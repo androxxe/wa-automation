@@ -774,7 +774,7 @@ export default function Responses() {
                       type="button"
                       onClick={() => { setPollingPhone(r.message.phone); pollMutation.mutate(r.message.phone) }}
                       disabled={pollingPhone !== null}
-                      className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent disabled:opacity-40"
+                      className="text-xs px-3 py-1.5 rounded-md border border-amber-300 text-amber-700 hover:bg-amber-50 disabled:opacity-40"
                       title="Check WhatsApp for a newer reply for this phone"
                     >
                       {pollingPhone === r.message.phone ? 'Polling…' : 'Poll'}
