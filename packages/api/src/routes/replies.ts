@@ -63,7 +63,7 @@ router.get('/', async (req, res) => {
     if (hasConversation === '1') {
       where.conversation = { not: Prisma.DbNull }
     } else if (hasConversation === '0') {
-      where.conversation = Prisma.DbNull
+      where.conversation = { equals: Prisma.DbNull }
     }
 
     const [replies, total] = await Promise.all([
