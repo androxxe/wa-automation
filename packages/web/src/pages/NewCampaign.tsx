@@ -14,9 +14,9 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
     `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah dilakukan penukaran Stik ke distributor? Mohon konfirmasinya, terima kasih.`,
   ],
   KARDUS: [
-    `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran kupon Kardus?`,
-    `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} toko bapak/ibu sudah melakukan penukaran kupon Kardus bersama distributor?`,
-    `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah dilakukan penukaran kupon Kardus? Mohon konfirmasinya, terima kasih.`,
+    `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah menukarkan kupon Kardus ke distributor dan menerima hadiahnya (Yoyic Botol / Yoyic Sachet / Crispy Balls)? terimakasih`,
+    `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} toko bapak/ibu sudah menukarkan kupon Kardus ke distributor dan sudah menerima salah satu hadiahnya — Yoyic Botol, Yoyic Sachet, atau Crispy Balls? terimakasih`,
+    `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} sudah dilakukan penukaran kupon Kardus ke distributor dengan hadiah Yoyic Botol / Yoyic Sachet / Crispy Balls? terimakasih`,
   ],
   YOYIC: [
     `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu mendapatkan Yoyic bubuk atau botol dari aice? Terimakasih`,
@@ -69,7 +69,7 @@ export default function NewCampaign() {
   const [templateEdited, setTemplateEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>("")
   const [replyRate, setReplyRate] = useState<string>("")
-  const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("ALL")
+  const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("YES")
   const [config, setConfig] = useState<AppConfigData | null>(null)
 
   const [allDepts, setAllDepts] = useState<DeptWithAreas[]>([])
