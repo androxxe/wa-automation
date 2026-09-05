@@ -270,8 +270,11 @@ const worker = new Worker<MessageJob>(
       const isRetryAttempt = (job.attemptsMade ?? 0) > 0
       const chatLoadTimeoutMs = isRetryAttempt ? CHAT_LOAD_RETRY_TIMEOUT_MS : CHAT_LOAD_TIMEOUT_MS
       log(`chat-load timeout for this attempt: ${chatLoadTimeoutMs}ms (attempt ${job.attemptsMade + 1}/${job.opts.attempts ?? 1})`)
-      const useSidebar = false
-      // const useSidebar = Math.random() < SIDEBAR_RATIO
+
+      // 4a. Template variation happens at campaign level (NewCampaign variants,
+      // rotated per contact at enqueue). Worker sends the stored body as-is so
+      // reply fingerprint matching keeps working.
+      const useSidebar = Math.random() < SIDEBAR_RATIO
       if (useSidebar) {
         log(`sending via sidebar search to ${phone}…`)
         await agent.sendMessageViaSidebar(phone, body, chatLoadTimeoutMs)

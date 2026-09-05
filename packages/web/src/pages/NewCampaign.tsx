@@ -4,9 +4,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/utils"
 import type { AppConfigData } from "@aice/shared"
 
-// 3 template variants per type — structurally different so each campaign
-// starts from a meaningfully different base. AI varies each one further
-// before send, giving effectively unlimited uniqueness across contacts.
+// 3 template variants per type — structurally different. All of them are saved
+// on the campaign and the API picks one at random PER CONTACT at enqueue time,
+// so contacts across the campaign receive different texts (anti-ban variety).
+// No AI paraphrasing happens at send time — what you see here is what is sent.
 const DEFAULT_TEMPLATES: Record<string, string[]> = {
   STIK: [
     `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stik ke distributor?`,
@@ -30,10 +31,14 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
   ],
 }
 
-function pickTemplate(type: string): string {
+function pickTemplate(type: string, exclude: string[] = []): string {
   const pool = DEFAULT_TEMPLATES[type] ?? DEFAULT_TEMPLATES["STIK"]
-  return pool[Math.floor(Math.random() * pool.length)]
+  const fresh = pool.filter((t) => !exclude.includes(t))
+  const src = fresh.length > 0 ? fresh : pool
+  return src[Math.floor(Math.random() * src.length)]
 }
+
+const MAX_VARIANTS = 5
 
 type CampaignType = "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS"
 
@@ -65,8 +70,8 @@ export default function NewCampaign() {
   const [name, setName] = useState("")
   const [bulan, setBulan] = useState("")
   const [campaignType, setCampaignType] = useState<CampaignType>("STIK")
-  const [template, setTemplate] = useState(() => pickTemplate("STIK"))
-  const [templateEdited, setTemplateEdited] = useState(false)
+  const [templates, setTemplates] = useState<string[]>(() => [...DEFAULT_TEMPLATES["STIK"]])
+  const [templatesEdited, setTemplatesEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>("")
   const [replyRate, setReplyRate] = useState<string>("")
   const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("YES")
@@ -126,11 +131,34 @@ export default function NewCampaign() {
     (t: CampaignType) => {
       setCampaignType(t)
       setSelectedAreas(new Set())
-      // Only switch the template if the user hasn't manually edited it
-      if (!templateEdited) setTemplate(pickTemplate(t))
+      // Only refill the variants if the user hasn't manually edited them
+      if (!templatesEdited) setTemplates([...(DEFAULT_TEMPLATES[t] ?? DEFAULT_TEMPLATES["STIK"])])
     },
-    [templateEdited],
+    [templatesEdited],
   )
+
+  function updateVariant(i: number, value: string) {
+    setTemplates((prev) => prev.map((t, idx) => (idx === i ? value : t)))
+    setTemplatesEdited(true)
+  }
+
+  function rerollVariant(i: number) {
+    setTemplates((prev) =>
+      prev.map((t, idx) => (idx === i ? pickTemplate(campaignType, prev) : t)),
+    )
+  }
+
+  function addVariant() {
+    setTemplates((prev) =>
+      prev.length >= MAX_VARIANTS ? prev : [...prev, pickTemplate(campaignType, prev)],
+    )
+    setTemplatesEdited(true)
+  }
+
+  function removeVariant(i: number) {
+    setTemplates((prev) => (prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)))
+    setTemplatesEdited(true)
+  }
 
   function toggleArea(areaId: string) {
     setSelectedAreas((prev) => {
@@ -166,14 +194,16 @@ export default function NewCampaign() {
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!name || !bulan || !template || selectedAreas.size === 0) {
-      setError("All fields are required and at least one area must be selected")
+    const cleanTemplates = templates.map((t) => t.trim()).filter((t) => t.length > 0)
+    if (!name || !bulan || cleanTemplates.length === 0 || selectedAreas.size === 0) {
+      setError("All fields are required, at least one template variant, and at least one area must be selected")
       return
     }
     setError(null)
     createMutation.mutate({
       name,
-      template,
+      template: cleanTemplates[0],
+      templates: cleanTemplates,
       bulan,
       campaignType,
       areaIds: Array.from(selectedAreas),
@@ -255,36 +285,62 @@ export default function NewCampaign() {
           </p>
         </div>
 
-        {/* Template */}
-        <div className="space-y-1.5">
+        {/* Templates */}
+        <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label htmlFor="camp-template" className="text-sm font-medium">
-              Message template
+            <label className="text-sm font-medium">
+              Message templates ({templates.length})
             </label>
             <button
               type="button"
-              onClick={() => {
-                setTemplate(pickTemplate(campaignType))
-                setTemplateEdited(false)
-              }}
-              className="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-0.5 flex items-center gap-1"
-              title={`Pick a different template (${DEFAULT_TEMPLATES[campaignType]?.length ?? 3} variants available)`}
+              onClick={addVariant}
+              disabled={templates.length >= MAX_VARIANTS}
+              className="text-xs text-muted-foreground hover:text-foreground border rounded px-2 py-0.5 disabled:opacity-40"
+              title={`Add a variant (max ${MAX_VARIANTS})`}
             >
-              ↺ Randomize
+              + Add variant
             </button>
           </div>
-          <textarea
-            id="camp-template"
-            value={template}
-            onChange={(e) => {
-              setTemplate(e.target.value)
-              setTemplateEdited(true)
-            }}
-            rows={5}
-            className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
-          />
+          {templates.map((t, i) => (
+            <div key={i} className="space-y-1.5 rounded-md border p-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Variant {i + 1}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => rerollVariant(i)}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    title="Replace with a different default variant"
+                  >
+                    ↺ Re-roll
+                  </button>
+                  {templates.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => removeVariant(i)}
+                      className="text-xs text-destructive/70 hover:text-destructive"
+                      title="Remove this variant"
+                    >
+                      ✕ Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+              <textarea
+                id={`camp-template-${i}`}
+                value={t}
+                onChange={(e) => updateVariant(i, e.target.value)}
+                rows={4}
+                className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
+              />
+            </div>
+          ))}
           <p className="text-xs text-muted-foreground">
-            Variables: {"{{nama_toko}}"} {"{{bulan}}"} {"{{department}}"}{" "}
+            One variant is picked at random per contact when messages are
+            created — contacts receive different texts. Variables:{" "}
+            {"{{nama_toko}}"} {"{{bulan}}"} {"{{department}}"}{" "}
             {"{{area}}"} {"{{tipe}}"}
           </p>
         </div>

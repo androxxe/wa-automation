@@ -102,6 +102,10 @@ model Campaign {
   id           String         @id @default(cuid())
   name         String
   template     String         @db.Text
+  // Extra message templates (JSON string[]) — one picked at random per contact
+  // at enqueue time so no two contacts get byte-identical text. Null/empty =
+  // single-template campaign (uses `template`). First entry duplicates `template`.
+  templateVariants Json?
   bulan        String
   campaignType String         @default("STIK") // "STIK" | "KARDUS"
   status       String         @default("DRAFT") // DRAFT|RUNNING|PAUSED|COMPLETED|CANCELLED

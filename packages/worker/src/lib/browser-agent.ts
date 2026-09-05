@@ -52,6 +52,28 @@ const RESTRICTION_KEYWORDS = [
   'tidak dapat memulai chat baru',
 ]
 
+// ─── Interstitial / onboarding modal (e.g. "What's new on WhatsApp Web" → Continue) ───
+// Verified live 2026-09-04 via Playwright MCP after QR scan:
+//   <div role="dialog" active>  ← also has data-animate-modal-popup="true" in some builds
+//     <h1>What’s new on WhatsApp Web</h1>
+//     <button>Continue</button>   ← id-ID: "Lanjutkan"
+//     <button aria-label="Close">Close</button>
+// This overlay blocks the chat list and must be dismissed before reporting "connected".
+const INTERSTITIAL_DIALOG_SELECTORS = [
+  '[data-animate-modal-popup="true"]',
+  'div[role="dialog"]',
+].join(', ')
+
+const INTERSTITIAL_TITLE_KEYWORDS = [
+  "what's new",
+  'whats new',
+  'apa yang baru',
+  'yang baru di whatsapp',
+]
+
+const CONTINUE_BUTTON_REGEX = /^(continue|lanjutkan|got it|mengerti|ok)$/i
+const CONTINUE_BUTTON_REGEX_LOOSE = /continue|lanjutkan|got it|mengerti/i
+
 const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
   window.chrome = { runtime: {} };
@@ -161,6 +183,11 @@ export class BrowserAgent {
   private async _detectStatus(): Promise<BrowserStatus> {
     if (!this.page) return 'disconnected'
     try {
+      // Dismiss onboarding interstitial (e.g. "What's new" → Continue) before
+      // checking status — it overlays the chat list and blocks interaction.
+      // Fast evaluate (~0-20ms) when no dialog; only does locators when needed.
+      await this._dismissInterstitialIfNeeded().catch(() => false)
+
       // Restriction banner takes precedence — it can be present even when the
       // chat list is visible (restricted accounts keep their chat list).
       if (await this._hasRestrictionBanner()) return 'restricted'
@@ -172,7 +199,16 @@ export class BrowserAgent {
         )
         .then(() => true)
         .catch(() => false)
-      if (connected) return 'connected'
+      if (connected) {
+        // Double-check: a dialog may have appeared between the initial dismiss
+        // and the chat-list resolving. Try once more before reporting connected.
+        const dismissed = await this._dismissInterstitialIfNeeded().catch(() => false)
+        if (dismissed) {
+          // Give WA a moment to remove overlay, then re-verify chat list still there
+          await this.page.waitForTimeout(500).catch(() => {})
+        }
+        return 'connected'
+      }
 
       const qr = await this.page
         .waitForSelector(QR_SELECTORS, { timeout: 8000 })
@@ -205,9 +241,156 @@ export class BrowserAgent {
         const footer = document.querySelector('footer[data-testid="compose-box"]')
         if (!footer) return false
         const text = (footer.textContent ?? '').toLowerCase()
-        return keywords.some((kw) => text.includes(kw))
+        // NOTE: no .some()/.map() closures here — tsx/esbuild injects __name
+        // into nested closures and Playwright serialization breaks in dev.
+        for (const kw of keywords) {
+          if (text.includes(kw)) return true
+        }
+        return false
       }, RESTRICTION_KEYWORDS)
     } catch {
+      return false
+    }
+  }
+
+  /**
+   * Dismiss the "What's new on WhatsApp Web" / onboarding interstitial that appears
+   * after QR scan and blocks the chat list.
+   * Verified live 2026-09-04: dialog[role="dialog"] with h1 "What’s new on WhatsApp Web"
+   * and button "Continue" (id-ID: "Lanjutkan"). Also seen as [data-animate-modal-popup="true"].
+   * Returns true if a dialog was found and dismissed.
+   */
+  private async _dismissInterstitialIfNeeded(): Promise<boolean> {
+    if (!this.page) return false
+    const page = this.page
+    try {
+      // ── Fast check: is there a dialog that looks like the interstitial? ──────
+      const probe = await page
+        .evaluate(
+          (args: { sel: string; titleKws: string[]; invalidKws: string[] }) => {
+            const dialogs = Array.from(document.querySelectorAll(args.sel))
+            // NOTE: plain for-loops only — nested closures break under tsx
+            // (esbuild __name injection) and Playwright serialization fails.
+            for (const d of dialogs) {
+              const text = (d.textContent ?? '').toLowerCase()
+              // Never treat the "not registered" / "tidak terdaftar" modal as interstitial —
+              // it is handled separately in _typeAndSendBody / checkPhoneRegistered.
+              let isInvalid = false
+              for (const kw of args.invalidKws) {
+                if (text.includes(kw)) { isInvalid = true; break }
+              }
+              if (isInvalid) continue
+              let titleHit = false
+              for (const kw of args.titleKws) {
+                if (text.includes(kw)) { titleHit = true; break }
+              }
+              if (titleHit) return { found: true, snippet: text.slice(0, 120) }
+              // Also match if dialog contains a Continue/Lanjutkan button
+              const btns = Array.from(d.querySelectorAll('button'))
+              for (const b of btns) {
+                const bt = (b.textContent ?? '').toLowerCase().trim()
+                if (/^(continue|lanjutkan)$/i.test(bt) || /continue|lanjutkan|got it|mengerti/i.test(bt)) {
+                  return { found: true, snippet: text.slice(0, 120) }
+                }
+              }
+            }
+            return { found: false, snippet: '' }
+          },
+          {
+            sel: INTERSTITIAL_DIALOG_SELECTORS,
+            titleKws: INTERSTITIAL_TITLE_KEYWORDS,
+            invalidKws: ['tidak terdaftar', 'not registered'],
+          },
+        )
+        .catch(() => ({ found: false as const, snippet: '' }))
+
+      if (!probe.found) return false
+
+      console.log(
+        `[agent:${this.agentId}] interstitial detected — attempting dismiss (snippet: "${probe.snippet.slice(0, 80)}...")`,
+      )
+
+      // ── Try to click Continue / Lanjutkan inside the dialog ──────────────────
+      // Order: dialog-scoped Continue → global Continue → Close button
+      const dialog = page.locator(INTERSTITIAL_DIALOG_SELECTORS).first()
+
+      // Strategy 1: dialog-scoped button with Continue text
+      try {
+        const btn = dialog.getByRole('button', { name: CONTINUE_BUTTON_REGEX_LOOSE }).first()
+        if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+          await btn.click({ timeout: 2000 })
+          await page.waitForTimeout(800)
+          const gone = await page
+            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
+            .catch(() => false)
+          if (gone) {
+            console.log(`[agent:${this.agentId}] interstitial dismissed via Continue (dialog-scoped)`)
+            return true
+          }
+        }
+      } catch {}
+
+      // Strategy 2: any visible Continue/Lanjutkan button on page (fallback)
+      try {
+        const globalContinue = page.getByRole('button', { name: CONTINUE_BUTTON_REGEX }).first()
+        if (await globalContinue.isVisible({ timeout: 800 }).catch(() => false)) {
+          await globalContinue.click({ timeout: 2000 })
+          await page.waitForTimeout(800)
+          const gone = await page
+            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
+            .catch(() => false)
+          if (gone) {
+            console.log(`[agent:${this.agentId}] interstitial dismissed via Continue (global)`)
+            return true
+          }
+        }
+      } catch {}
+
+      // Strategy 3: locator with text selector inside dialog
+      try {
+        const textBtn = page
+          .locator(`${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Continue"), ${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Lanjutkan")`)
+          .first()
+        if (await textBtn.isVisible({ timeout: 800 }).catch(() => false)) {
+          await textBtn.click({ timeout: 2000 })
+          await page.waitForTimeout(800)
+          const gone = await page
+            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
+            .catch(() => false)
+          if (gone) {
+            console.log(`[agent:${this.agentId}] interstitial dismissed via text selector`)
+            return true
+          }
+        }
+      } catch {}
+
+      // Strategy 4: Close / X button as last resort
+      try {
+        const closeBtn = page
+          .locator(
+            `${INTERSTITIAL_DIALOG_SELECTORS} button[aria-label="Close"], ${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Close"), [aria-label="Close"]`,
+          )
+          .first()
+        if (await closeBtn.isVisible({ timeout: 800 }).catch(() => false)) {
+          await closeBtn.click({ timeout: 2000 })
+          await page.waitForTimeout(800)
+          const gone = await page
+            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
+            .catch(() => false)
+          if (gone) {
+            console.log(`[agent:${this.agentId}] interstitial dismissed via Close`)
+            return true
+          }
+        }
+      } catch {}
+
+      console.warn(`[agent:${this.agentId}] interstitial found but no dismiss button worked`)
+      return false
+    } catch (err) {
+      console.warn(
+        `[agent:${this.agentId}] dismiss interstitial failed:`,
+        err instanceof Error ? err.message : String(err),
+      )
       return false
     }
   }
@@ -393,66 +576,127 @@ export class BrowserAgent {
 
   /**
    * Send a message by searching the phone number in the WA sidebar search box.
-   * More human-like than direct URL navigation. Falls back to sendMessage() if search fails.
+   * More human-like than direct URL navigation. NEVER fails the message itself:
+   * any sidebar problem falls back to sendMessage() (URL nav).
+   *
+   * Pinned live 2026-09-05 against real session (agent 4):
+   * - Search field is a real INPUT: `input[data-tab="3"][role="textbox"]`
+   *   (NO [data-testid="chat-list-search"], NO #side header in current build)
+   * - Must type via the element handle: global keyboard misses when a modal
+   *   dialog holds focus (dialog was the "not typing" root cause)
+   * - Results are [data-testid="cell-frame-container"] cells; first cell can be
+   *   a message-text match, so pick the cell whose title holds the number tail
+   * - Opened chat verified via [data-testid="conversation-header"] text
    */
   async sendMessageViaSidebar(phone: string, body: string, chatLoadTimeoutMs = 30000): Promise<void> {
     return this._withBrowserLock(async () => {
       const page = this.page!
-      const number = phone.replace('+', '')
-
-      // Go to main page
-      await this._gotoQuiet('https://web.whatsapp.com', 'load')
-
-      // Wait for chat list / sidebar
-      await page.waitForSelector('#side, [data-testid="chat-list"]', { timeout: 15000 })
-        .catch(() => { /* may use different selector — proceed anyway */ })
-      await page.waitForTimeout(1000 + Math.random() * 1000)
-
-      // Click search box — it's an <input> element with data-tab="3"
-      const SEARCH_SELECTORS = [
-        'input[data-tab="3"]',
-        'input[aria-label="Search or start a new chat"]',
-        '[data-testid="chat-list-search"]',
-        'span[data-icon="search"]',
-      ].join(', ')
-
-      const searchBox = await page.waitForSelector(SEARCH_SELECTORS, { timeout: 10000 })
-        .catch(() => null)
-
-      if (!searchBox) {
-        console.log(`[agent:${this.agentId}] sidebar search box not found, falling back to URL nav`)
+      const opened = await this._openChatViaSidebar(phone).catch(() => false)
+      if (!opened) {
+        console.log(`[agent:${this.agentId}] sidebar open failed for ${phone}, falling back to URL nav`)
+        await this._clearSidebarSearch().catch(() => {})
         await this._sendViaUrl(phone, body, page, chatLoadTimeoutMs)
         return
       }
-
-      await searchBox.click()
-      await page.waitForTimeout(500)
-
-      // Type phone number character by character
-      for (const char of number) {
-        await page.keyboard.type(char, {
-          delay: this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs),
-        })
-      }
-      await page.waitForTimeout(1500 + Math.random() * 1000)
-
-      // Click first search result or press Enter
-      const firstResult = await page.waitForSelector(
-        '[data-testid="cell-frame-container"], [role="button"][aria-label*="' + number.slice(-4) + '"]',
-        { timeout: 8000 },
-      ).catch(() => null)
-
-      if (firstResult) {
-        await firstResult.click()
-      } else {
-        await page.keyboard.press('Enter')
-      }
-
-      await page.waitForTimeout(2000)
-
-      // Now type and send the message body
+      await this._clearSidebarSearch().catch(() => {})
       await this._typeAndSendBody(body, page, phone, chatLoadTimeoutMs)
     })
+  }
+
+  /**
+   * Open the chat for `phone` through sidebar search. Returns true only when
+   * the opened conversation header provably matches the target number.
+   * Never throws — returns false on any problem so callers fall back to URL.
+   */
+  private async _openChatViaSidebar(phone: string): Promise<boolean> {
+    const page   = this.page!
+    const digits = phone.replace(/\D/g, '')
+    if (!digits) return false
+    const tail    = digits.slice(-8)
+    const midTail = digits.slice(-5)
+
+    try {
+      await this._gotoQuiet('https://web.whatsapp.com', 'load')
+      await this._dismissInterstitialIfNeeded().catch(() => {})
+      const listOk = await page
+        .waitForSelector('[data-testid="chat-list"], #side', { timeout: 15000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!listOk) return false
+      await this._dismissInterstitialIfNeeded().catch(() => {})
+
+      // Real editable input only — never an icon/container (typing into those
+      // silently goes nowhere, which was the original sidebar failure).
+      const field = page.locator('input[data-tab="3"][role="textbox"], #side input[data-tab="3"]').first()
+      if ((await field.count().catch(() => 0)) === 0) return false
+      if (!(await field.isVisible().catch(() => false))) return false
+      await field.click({ timeout: 5000 })
+
+      // Clear stale text from the previous search
+      await field.press('ControlOrMeta+A').catch(() => {})
+      await field.press('Backspace').catch(() => {})
+
+      // Type into the element handle (NOT global keyboard — a modal dialog can
+      // hold document focus and swallow global keystrokes).
+      const typeDelay = this.typeDelayMinMs + Math.random() * (this.typeDelayMaxMs - this.typeDelayMinMs)
+      await field.pressSequentially(digits, { delay: typeDelay, timeout: 30000 })
+      await page.waitForTimeout(1500 + Math.random() * 1000)
+
+      // Verify keystrokes actually landed — the core regression guard
+      const val = await field.inputValue().catch(() => '')
+      if (!val.replace(/\D/g, '').includes(midTail)) {
+        console.log(`[agent:${this.agentId}] sidebar typing missed (field="${val.slice(0, 24)}")`)
+        return false
+      }
+
+      // Pick the result whose title holds the number tail. The first cell is
+      // often a message-text match, so never blindly click cell #0.
+      const cells = page.locator('[data-testid="cell-frame-container"]')
+      const n = await cells.count().catch(() => 0)
+      let clicked = false
+      for (let i = 0; i < Math.min(n, 12); i++) {
+        const title = await cells
+          .nth(i)
+          .locator('[data-testid="cell-frame-title"]')
+          .first()
+          .textContent()
+          .catch(() => null)
+        const norm = (title ?? '').replace(/\D/g, '')
+        if (norm && (norm.includes(tail) || tail.includes(norm.slice(-8)))) {
+          await cells.nth(i).click({ timeout: 5000 })
+          clicked = true
+          break
+        }
+      }
+      if (!clicked) {
+        console.log(`[agent:${this.agentId}] sidebar no result matched ${phone} (${n} cells)`)
+        return false
+      }
+      await page.waitForTimeout(2000)
+
+      // Verify the opened conversation is really the target (wrong-chat guard)
+      const header = page.locator('[data-testid="conversation-header"]').first()
+      if ((await header.count().catch(() => 0)) === 0) return false
+      const htext = (await header.textContent().catch(() => null)) ?? ''
+      if (!htext.replace(/\D/g, '').includes(tail)) {
+        console.log(`[agent:${this.agentId}] sidebar opened wrong chat for ${phone}`)
+        return false
+      }
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Best-effort search reset so the next sidebar send starts from a blank box. */
+  private async _clearSidebarSearch(): Promise<void> {
+    const page  = this.page!
+    const field = page.locator('input[data-tab="3"][role="textbox"], #side input[data-tab="3"]').first()
+    if ((await field.count().catch(() => 0)) === 0) return
+    await field.click({ timeout: 3000 }).catch(() => {})
+    await field.press('ControlOrMeta+A').catch(() => {})
+    await field.press('Backspace').catch(() => {})
+    await page.keyboard.press('Escape').catch(() => {})
   }
 
   // ─── Internal: shared send helpers ────────────────────────────────────────
@@ -467,6 +711,9 @@ export class BrowserAgent {
     phone: string,
     chatLoadTimeoutMs: number,
   ): Promise<void> {
+    // Dismiss onboarding interstitial if it blocks the chat
+    await this._dismissInterstitialIfNeeded().catch(() => {})
+
     const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
     const INPUT_SELECTORS  = [
       '[data-testid="conversation-compose-box-input"]',
@@ -489,7 +736,11 @@ export class BrowserAgent {
           const modal = document.querySelector('[data-animate-modal-popup="true"]')
           if (modal) {
             const text = (modal.textContent ?? '').toLowerCase()
-            if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+            // NOTE: plain for-loops only — nested closures break under tsx
+            // (esbuild __name injection) and Playwright serialization fails.
+            for (const kw of keywords) {
+              if (text.includes(kw)) return 'invalid'
+            }
           }
           // Account-level restriction — compose box replaced by a banner.
           // Check the dedicated container first, then the compose footer text.
@@ -499,7 +750,9 @@ export class BrowserAgent {
           const footer = document.querySelector('footer[data-testid="compose-box"]')
           if (footer) {
             const footerText = (footer.textContent ?? '').toLowerCase()
-            if (restrictionKeywords.some((kw) => footerText.includes(kw))) return 'restricted'
+            for (const kw of restrictionKeywords) {
+              if (footerText.includes(kw)) return 'restricted'
+            }
           }
           const compose = document.querySelector(inputSel)
           if (compose) return 'ready'
@@ -570,6 +823,7 @@ export class BrowserAgent {
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
       await this._gotoQuiet(url)
+      await this._dismissInterstitialIfNeeded().catch(() => {})
 
       const INVALID_KEYWORDS = ['tidak terdaftar', 'not registered']
       const STABILISE_MS     = 1500
@@ -596,7 +850,11 @@ export class BrowserAgent {
             const modal = document.querySelector('[data-animate-modal-popup="true"]')
             if (modal) {
               const text = (modal.textContent ?? '').toLowerCase()
-              if (keywords.some((kw) => text.includes(kw))) return 'invalid'
+              // NOTE: plain for-loops only — nested closures break under tsx
+              // (esbuild __name injection) and Playwright serialization fails.
+              for (const kw of keywords) {
+                if (text.includes(kw)) return 'invalid'
+              }
             }
             // Account-level restriction — do NOT report the number as unregistered.
             if (document.querySelector('[data-testid="block-message"], [data-testid="reachout-timelock-compose-bar"]')) {
@@ -605,7 +863,9 @@ export class BrowserAgent {
             const footer = document.querySelector('footer[data-testid="compose-box"]')
             if (footer) {
               const footerText = (footer.textContent ?? '').toLowerCase()
-              if (restrictionKeywords.some((kw) => footerText.includes(kw))) return 'restricted'
+              for (const kw of restrictionKeywords) {
+                if (footerText.includes(kw)) return 'restricted'
+              }
             }
             const compose = document.querySelector(
               '[data-testid="conversation-compose-box-input"], ' +
@@ -658,6 +918,7 @@ export class BrowserAgent {
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
       await this._gotoQuiet(url, 'load')
+      await this._dismissInterstitialIfNeeded().catch(() => {})
       // Give the chat panel / banner time to render
       await page.waitForTimeout(4000)
 
@@ -728,6 +989,7 @@ export class BrowserAgent {
         const sentAtMs  = sentAt.getTime()
 
         await this._gotoQuiet(url)
+        await this._dismissInterstitialIfNeeded().catch(() => {})
 
         await page
           .waitForSelector('[data-testid="startup"]', { state: 'hidden', timeout: 10000 })
@@ -813,16 +1075,21 @@ export class BrowserAgent {
                 return { kind: 'stale', reason: 'FINGERPRINT_MISSING' }
               }
 
-              const incomingAfter = rows
-                .slice(fpIdx + 1)
-                .filter((el) => el.querySelector('[data-icon="tail-in"]'))
+              const incomingAfter: Element[] = []
+              // NOTE: plain for-loops only — nested closures break under tsx
+              // (esbuild __name injection) and Playwright serialization fails.
+              for (let j = fpIdx + 1; j < rows.length; j++) {
+                if (rows[j].querySelector('[data-icon="tail-in"]')) incomingAfter.push(rows[j])
+              }
               if (incomingAfter.length === 0) return { kind: 'no_reply' }
               const lastEl = incomingAfter[incomingAfter.length - 1]
               const copyableText = lastEl.querySelector('.copyable-text')
               if (!copyableText) return { kind: 'no_reply' }
               const clone = copyableText.cloneNode(true) as Element
-              clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2').forEach((e) => e.remove())
-              clone.querySelectorAll('span.x1c4vz4f.x2lah0s').forEach((e) => e.remove())
+              const strip1 = clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2')
+              for (let k = 0; k < strip1.length; k++) strip1[k].remove()
+              const strip2 = clone.querySelectorAll('span.x1c4vz4f.x2lah0s')
+              for (let k = 0; k < strip2.length; k++) strip2[k].remove()
               const text = clone.textContent?.trim() ?? ''
               const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
               return { kind: 'reply', text: clean }
@@ -830,11 +1097,11 @@ export class BrowserAgent {
 
             // ── Legacy fallback: last .message-out + date guard ───────────────
             let anchorIdx = -1
-            rows.forEach((el, idx) => {
-              if (el.querySelector('[data-icon="tail-out"]')) {
+            for (let idx = 0; idx < rows.length; idx++) {
+              if (rows[idx].querySelector('[data-icon="tail-out"]')) {
                 anchorIdx = idx
               }
-            })
+            }
             if (anchorIdx === -1) return { kind: 'stale', reason: 'NO_OUTGOING' }
 
             const anchorEl = rows[anchorIdx]
@@ -861,16 +1128,19 @@ export class BrowserAgent {
               }
             }
 
-            const incomingAfter = rows
-              .slice(anchorIdx + 1)
-              .filter((el) => el.querySelector('[data-icon="tail-in"]'))
+            const incomingAfter = []
+            for (let j = anchorIdx + 1; j < rows.length; j++) {
+              if (rows[j].querySelector('[data-icon="tail-in"]')) incomingAfter.push(rows[j])
+            }
             if (incomingAfter.length === 0) return { kind: 'no_reply' }
             const lastEl = incomingAfter[incomingAfter.length - 1]
             const copyableText = lastEl.querySelector('.copyable-text')
             if (!copyableText) return { kind: 'no_reply' }
             const clone = copyableText.cloneNode(true) as Element
-            clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2').forEach((e) => e.remove())
-            clone.querySelectorAll('span.x1c4vz4f.x2lah0s').forEach((e) => e.remove())
+            const strip1 = clone.querySelectorAll('._ahy0, ._ahy2, .xe9ewy2')
+            for (let k = 0; k < strip1.length; k++) strip1[k].remove()
+            const strip2 = clone.querySelectorAll('span.x1c4vz4f.x2lah0s')
+            for (let k = 0; k < strip2.length; k++) strip2[k].remove()
             const text = clone.textContent?.trim() ?? ''
             const clean = text.replace(/\s*(\d{1,2}:\d{2}\s*(am|pm|AM|PM)?)\s*$/i, '').trim()
             return { kind: 'reply', text: clean }

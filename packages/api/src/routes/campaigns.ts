@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 import { db } from '../lib/db'
 import { messageQueue } from '../lib/queue'
+import { variantList, renderBody } from '../lib/render'
 import type { MessageJob } from '@aice/shared'
 
 const router: import('express').Router = Router()
@@ -135,6 +136,7 @@ router.get('/', async (req, res) => {
 const CreateCampaign = z.object({
   name:                    z.string().min(1),
   template:                z.string().min(1),
+  templates:               z.array(z.string().min(1)).min(1).max(5).optional(),
   bulan:                   z.string().min(1),
   campaignType:            z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
   areaIds:                 z.array(z.string()).min(1),
@@ -152,11 +154,16 @@ router.post('/', async (req, res) => {
   }
   const { name, template, bulan, campaignType, areaIds,
           targetRepliesPerArea, expectedReplyRate, stopOnTargetReached, targetReplyMode } = parsed.data
+  // Template variants: explicit list wins; otherwise single-template campaign.
+  // First entry always mirrors `template` (used by detail pages / manual prefill).
+  const rawVariants = parsed.data.templates ?? [template]
+  const variants = [template, ...rawVariants.filter((t) => t !== template)]
   try {
     const campaign = await db.campaign.create({
       data: {
         name,
         template,
+        templateVariants: variants.length > 1 ? variants : undefined,
         bulan,
         campaignType,
         ...(targetRepliesPerArea !== undefined && { targetRepliesPerArea }),
@@ -320,6 +327,7 @@ router.post('/:id/enqueue', async (req, res) => {
     }> = []
 
     const jobs: Array<{ name: string; data: MessageJob }> = []
+    const variantCounts = new Array(variantList(campaign).length).fill(0) as number[]
 
     for (const ca of campaign.areas) {
       const area = ca.area
@@ -381,17 +389,10 @@ router.post('/:id/enqueue', async (req, res) => {
       if (preview) continue
 
       for (const contact of contacts) {
-        // Format campaign type for display: STIK → "Stik", KARDUS → "Kardus"
-        const tipe = campaign.campaignType.charAt(0).toUpperCase() +
-                     campaign.campaignType.slice(1).toLowerCase()
-
-        const body = campaign.template
-          .replace(/\{\{no\}\}/g,          contact.seqNo   ?? '')
-          .replace(/\{\{nama_toko\}\}/g,   contact.storeName)
-          .replace(/\{\{bulan\}\}/g,       campaign.bulan)
-          .replace(/\{\{area\}\}/g,        area.name)
-          .replace(/\{\{department\}\}/g,  contact.departmentId)
-          .replace(/\{\{tipe\}\}/g,        tipe)
+        // One variant picked at random PER CONTACT, then variables rendered —
+        // contacts across the campaign get structurally different texts.
+        const { body, variantIndex } = renderBody(campaign, contact, area.name)
+        variantCounts[variantIndex]++
 
         const message = await db.message.create({
           data: { campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body, status: 'QUEUED' },
@@ -418,6 +419,7 @@ router.post('/:id/enqueue', async (req, res) => {
 
     await messageQueue.addBulk(jobs as never)
     const totalEnqueued = jobs.length
+    console.log(`[campaign:${req.params.id}] enqueue variant split: ${variantCounts.map((c, i) => `v${i}×${c}`).join(' ')}`)
     await db.campaign.update({
       where: { id: campaign.id },
       data:  { status: 'RUNNING', totalCount: totalEnqueued, startedAt: new Date() },
@@ -584,6 +586,7 @@ router.post('/:id/topup', async (req, res) => {
 
     const results: Array<{ areaId: string; areaName: string; enqueued: number; skipped: string | null }> = []
     const jobs: Array<{ name: string; data: MessageJob }> = []
+    const variantCounts = new Array(variantList(campaign).length).fill(0) as number[]
 
     for (const ca of areaEntries) {
       // Skip areas that already reached their target
@@ -619,16 +622,8 @@ router.post('/:id/topup', async (req, res) => {
       }
 
       for (const contact of contacts) {
-        const tipe = campaign.campaignType.charAt(0).toUpperCase() +
-                     campaign.campaignType.slice(1).toLowerCase()
-
-        const body = campaign.template
-          .replace(/\{\{no\}\}/g,         contact.seqNo ?? '')
-          .replace(/\{\{nama_toko\}\}/g,  contact.storeName)
-          .replace(/\{\{bulan\}\}/g,      campaign.bulan)
-          .replace(/\{\{area\}\}/g,       ca.area.name)
-          .replace(/\{\{department\}\}/g, contact.departmentId)
-          .replace(/\{\{tipe\}\}/g,       tipe)
+        const { body, variantIndex } = renderBody(campaign, contact, ca.area.name)
+        variantCounts[variantIndex]++
 
         const message = await db.message.create({
           data: { campaignId: campaign.id, contactId: contact.id, phone: contact.phoneNorm, body, status: 'QUEUED' },
@@ -656,6 +651,7 @@ router.post('/:id/topup', async (req, res) => {
       })
     }
 
+    console.log(`[campaign:${campaign.id}] topup variant split: ${variantCounts.map((c, i) => `v${i}×${c}`).join(' ')}`)
     res.json({ ok: true, data: { totalEnqueued: jobs.length, areas: results } })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
