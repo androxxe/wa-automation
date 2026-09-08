@@ -46,6 +46,9 @@ const sessionSendCount = new Map<number, number>()
 let lastSendDisabledLogAt = 0
 const SEND_DISABLED_LOG_INTERVAL = 5 * 60 * 1000
 const SEND_DISABLED_RESCHEDULE   = 5 * 60 * 1000 // 5 minutes
+// Paused campaigns hold their jobs via self-delay (never a global queue pause,
+// which would silently block every other campaign).
+const PAUSED_RESCHEDULE_MS = 5 * 60 * 1000 // 5 minutes
 const CHAT_LOAD_TIMEOUT_MS       = 15000
 const CHAT_LOAD_RETRY_TIMEOUT_MS = Math.max(1000, Math.floor(CHAT_LOAD_TIMEOUT_MS / 2))
 
@@ -76,8 +79,9 @@ async function incrementDailyCount(agentId: number): Promise<void> {
 
 /**
  * When ALL non-validation agents are restricted, auto-pause every RUNNING
- * campaign (mirrors the /campaigns/:id/pause route: pause the message queue +
- * flip campaign status). No auto-resume — the operator resumes from the UI
+ * campaign (status flip only — never a global queue pause, which would
+ * silently block every other campaign; the worker self-delays jobs of
+ * PAUSED campaigns). No auto-resume — the operator resumes from the UI
  * once the accounts recover.
  */
 async function pauseCampaignsIfAllAgentsRestricted(): Promise<void> {
@@ -92,13 +96,6 @@ async function pauseCampaignsIfAllAgentsRestricted(): Promise<void> {
     const allRestricted = restrictedIds.every(Boolean)
     if (!allRestricted) return
 
-    // Pause the message queue + flip campaigns — same effect as the pause route.
-    const queue = new Queue<MessageJob>(QUEUE_NAME, { connection: redis as never })
-    try {
-      await queue.pause()
-    } finally {
-      await queue.close()
-    }
     const updated = await db.campaign.updateMany({
       where:  { status: 'RUNNING' },
       data:   { status: 'PAUSED' },
@@ -120,8 +117,8 @@ const worker = new Worker<MessageJob>(
 
     // 0a. Skip stale or CANCELLED messages
     const message = await db.message.findUnique({
-      where:  { id: messageId },
-      select: { id: true, status: true },
+      where:   { id: messageId },
+      select:  { id: true, status: true, campaign: { select: { status: true } } },
     })
     if (!message) {
       console.warn(`[worker] msg:${messageId} not found — stale job, skipping`)
@@ -130,6 +127,15 @@ const worker = new Worker<MessageJob>(
     if (message.status === 'CANCELLED') {
       console.log(`[worker] msg:${messageId} CANCELLED (area target reached), skipping`)
       return
+    }
+
+    // 0a2. Campaign-level pause gate — pausing one campaign must never block
+    // others, so the global queue is never paused; jobs of PAUSED campaigns
+    // self-delay instead (same pattern as working-hours / sendEnabled).
+    if (message.campaign.status === 'PAUSED') {
+      console.log(`[worker] campaign paused, rescheduling msg:${messageId} in ${PAUSED_RESCHEDULE_MS / 60000}m`)
+      await job.moveToDelayed(Date.now() + PAUSED_RESCHEDULE_MS, token)
+      throw new DelayedError()
     }
 
     // 0b. Check dynamic toggle — pause sending if disabled via Settings
@@ -1432,6 +1438,23 @@ async function startAgentRetryListener(): Promise<void> {
 
 async function main() {
   await validateStartup()
+
+  // Self-heal: the global queue must never stay paused (legacy pause flags
+  // from before per-campaign gating would otherwise block all campaigns).
+  // Pausing is per-campaign now — the worker self-delays those jobs.
+  try {
+    const bootQueue = new Queue<MessageJob>(QUEUE_NAME, { connection: redis as never })
+    try {
+      if (await bootQueue.isPaused()) {
+        await bootQueue.resume()
+        console.log('[worker] cleared legacy global queue pause — pause is per-campaign now')
+      }
+    } finally {
+      await bootQueue.close()
+    }
+  } catch (err) {
+    console.warn('[worker] boot queue-resume check failed:', err instanceof Error ? err.message : String(err))
+  }
 
   // Re-enqueue any QUEUED messages orphaned by Redis data loss BEFORE
   // agents come online and the worker starts picking up new jobs.

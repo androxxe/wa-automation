@@ -435,7 +435,8 @@ router.post('/:id/enqueue', async (req, res) => {
 
 router.post('/:id/pause', async (req, res) => {
   try {
-    await messageQueue.pause()
+    // NOTE: never messageQueue.pause() here — a global pause silently blocks
+    // every other campaign. The worker self-delays jobs of PAUSED campaigns.
     await db.campaign.update({ where: { id: req.params.id }, data: { status: 'PAUSED' } })
     res.json({ ok: true, data: null })
   } catch (err) {
@@ -447,7 +448,8 @@ router.post('/:id/pause', async (req, res) => {
 
 router.post('/:id/resume', async (req, res) => {
   try {
-    await messageQueue.resume()
+    // NOTE: no messageQueue.resume() needed — the queue is never paused
+    // globally (see pause route); flipping status releases the campaign's jobs.
     await db.campaign.update({ where: { id: req.params.id }, data: { status: 'RUNNING' } })
     res.json({ ok: true, data: null })
   } catch (err) {
