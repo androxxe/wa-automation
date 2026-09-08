@@ -1,8 +1,13 @@
 import OpenAI from "openai"
 import type { ColumnMapping, ReplyAnalysis } from "@aice/shared"
+import { randomUUID } from "node:crypto"
 
 const MODEL = process.env.OPCODE_MODEL ?? "deepseek-v4-flash"
 const BASE_URL = "https://opencode.ai/zen/go/v1"
+// Stable per-process session id — required by OpenCode Go routing
+// (400 MissingSessionID without it). Override via OPCODE_SESSION_ID if needed.
+const SESSION_ID = process.env.OPCODE_SESSION_ID ?? `aice-api-${randomUUID()}`
+const USER_AGENT = "aice-whatsapp-automation/1.0"
 
 if (!process.env.OPCODE_API_KEY) throw new Error("OPCODE_API_KEY is not set")
 
@@ -54,6 +59,8 @@ async function runChat(
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
+        'x-opencode-session': SESSION_ID,
+        'User-Agent': USER_AGENT,
       },
       body: JSON.stringify({
         model: MODEL,
@@ -109,6 +116,8 @@ async function runImageChat(
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
+          'x-opencode-session': SESSION_ID,
+          'User-Agent': USER_AGENT,
         },
         body: JSON.stringify({
           model: MODEL,
