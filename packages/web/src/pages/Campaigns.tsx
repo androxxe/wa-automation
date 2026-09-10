@@ -221,7 +221,7 @@ export default function Campaigns() {
                         <span className="text-muted-foreground text-xs">/ {totalTarget}</span>
                       )}
                       {targetMet && <span className="text-xs text-green-600 font-bold">✓</span>}
-                      {c.qualifyingReplyCount !== c.replyCount && (
+                      {c.qualifyingReplyCount > 0 && (
                         <span
                           className="text-xs text-muted-foreground"
                           title="Replies matching the send config (Any reply / Only YES / YES or NO)"
