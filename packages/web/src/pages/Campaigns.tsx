@@ -93,7 +93,7 @@ export default function Campaigns() {
           </p>
         </div>
         <Link
-          to="/campaigns/new"
+          to="/campaigns/new-bulk"
           className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md"
         >
           New Campaign

@@ -19,6 +19,11 @@ export interface ContactLike {
   departmentId: string
 }
 
+const BULAN_WORDS = [
+  'JANUARI', 'FEBRUARI', 'MARET', 'APRIL', 'MEI', 'JUNI',
+  'JULI', 'AGUSTUS', 'SEPTEMBER', 'OKTOBER', 'NOVEMBER', 'DESEMBER',
+] as const
+
 /** Effective variant list: templateVariants when valid, else [template]. */
 export function variantList(campaign: CampaignLike): string[] {
   const v = campaign.templateVariants
@@ -44,10 +49,20 @@ export function renderTemplate(
 ): string {
   const tipe = campaign.campaignType.charAt(0).toUpperCase() +
                campaign.campaignType.slice(1).toLowerCase()
+  // Stored `bulan` is numeric ("9") — messages use the word ("September").
+  // Non-numeric values (old campaigns like "Desember" / "JULI 2026") pass through.
+  const bulanWord = (() => {
+    const n = parseInt(campaign.bulan)
+    if (!Number.isNaN(n) && n >= 1 && n <= 12) {
+      const w = BULAN_WORDS[n - 1].toLowerCase()
+      return w.charAt(0).toUpperCase() + w.slice(1)
+    }
+    return campaign.bulan
+  })()
   return raw
     .replace(/\{\{no\}\}/g,          contact.seqNo ?? '')
     .replace(/\{\{nama_toko\}\}/g,   contact.storeName)
-    .replace(/\{\{bulan\}\}/g,       campaign.bulan)
+    .replace(/\{\{bulan\}\}/g,       bulanWord)
     .replace(/\{\{area\}\}/g,        areaName)
     .replace(/\{\{department\}\}/g,  contact.departmentId)
     .replace(/\{\{tipe\}\}/g,        tipe)

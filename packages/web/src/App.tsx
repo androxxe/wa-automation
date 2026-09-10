@@ -4,7 +4,7 @@ import Dashboard from '@/pages/Dashboard'
 import Import from '@/pages/Import'
 import Contacts from '@/pages/Contacts'
 import Campaigns from '@/pages/Campaigns'
-import NewCampaign from '@/pages/NewCampaign'
+import NewBulkCampaign from '@/pages/NewBulkCampaign'
 import CampaignDetail from '@/pages/CampaignDetail'
 import Agents from '@/pages/Agents'
 import Warmer from '@/pages/Warmer'
@@ -21,7 +21,8 @@ export default function App() {
         <Route path="import" element={<Import />} />
         <Route path="contacts" element={<Contacts />} />
         <Route path="campaigns" element={<Campaigns />} />
-        <Route path="campaigns/new" element={<NewCampaign />} />
+        <Route path="campaigns/new" element={<Navigate to="/campaigns/new-bulk" replace />} />
+        <Route path="campaigns/new-bulk" element={<NewBulkCampaign />} />
         <Route path="campaigns/:id" element={<CampaignDetail />} />
         <Route path="agents"    element={<Agents />} />
         <Route path="warmer"    element={<Warmer />} />

@@ -18,6 +18,35 @@ export type CampaignStatus =
 // YES_NO — jawaban = 1 or 0 (Ya/Tidak), excludes null (unclear)
 export type TargetReplyMode = 'ALL' | 'YES' | 'YES_NO'
 
+// ─── Bulk campaign creation (1 campaign = 1 area) ────────────────────────────
+
+export interface BulkCreateCampaignInput {
+  bulan: string  // numeric month, e.g. "9" — stored as-is
+  tahun?: string // e.g. "2026" — defaults to current year, used in auto-name only
+  campaignType: CampaignType
+  areaIds: string[]
+  templates: string[]
+  targetRepliesPerArea?: number
+  expectedReplyRate?: number
+  stopOnTargetReached?: boolean
+  targetReplyMode?: TargetReplyMode
+  namePattern?: string  // default "{area} {type} - {bulan} {tahun}", e.g. "GROBONGAN KARDUS - SEPTEMBER 2026" (uppercased)
+}
+
+export interface BulkCreatedCampaign {
+  id: string
+  name: string
+  areaId: string
+  areaName: string
+  departmentName: string | null
+}
+
+export interface BulkCreateCampaignResult {
+  count: number
+  campaigns: BulkCreatedCampaign[]
+  warnings: string[]
+}
+
 // ─── Message ──────────────────────────────────────────────────────────────────
 
 export type MessageStatus =

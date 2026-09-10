@@ -1,13 +1,10 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { useNavigate } from "react-router-dom"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/utils"
-import type { AppConfigData } from "@aice/shared"
+import type { AppConfigData, BulkCreateCampaignResult } from "@aice/shared"
 
-// 3 template variants per type — structurally different. All of them are saved
-// on the campaign and the API picks one at random PER CONTACT at enqueue time,
-// so contacts across the campaign receive different texts (anti-ban variety).
-// No AI paraphrasing happens at send time — what you see here is what is sent.
+// Same defaults as NewCampaign — one shared set applied to every bulk campaign.
 const DEFAULT_TEMPLATES: Record<string, string[]> = {
   STIK: [
     `Halo bapak/ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari tim inspeksi AICE pusat Jakarta ingin melakukan konfirmasi. Apakah benar bahwa pada bulan {{bulan}} toko bapak/ibu telah melakukan penukaran Stik ke distributor?`,
@@ -63,12 +60,38 @@ const TYPE_BADGE: Record<string, string> = {
   CRISPY_BALLS: "bg-purple-100 text-purple-700",
 }
 
-export default function NewCampaign() {
+const MONTHS = [
+  "JANUARI",
+  "FEBRUARI",
+  "MARET",
+  "APRIL",
+  "MEI",
+  "JUNI",
+  "JULI",
+  "AGUSTUS",
+  "SEPTEMBER",
+  "OKTOBER",
+  "NOVEMBER",
+  "DESEMBER",
+] as const
+
+const CURRENT_YEAR = new Date().getFullYear()
+
+// Mirrors backend default namePattern "{area} {type} - {bulan} {tahun}" (uppercased)
+// e.g. "GROBONGAN KARDUS - SEPTEMBER 2026". Stored `bulan` stays numeric ("9").
+function bulkName(area: string, type: string, monthWord: string, year: string): string {
+  return `${area} ${type} - ${monthWord || "{bulan}"} ${year}`.toUpperCase()
+}
+
+export default function NewBulkCampaign() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const [name, setName] = useState("")
-  const [bulan, setBulan] = useState("")
+  const [month, setMonth] = useState<number>(() => new Date().getMonth() + 1)
+  const [year, setYear] = useState<string>(() => String(CURRENT_YEAR))
+  const tahun = String(parseInt(year) || CURRENT_YEAR)
+  const bulan = String(month) // numeric — stored as-is in DB
+  const monthWord = MONTHS[month - 1] ?? ""
   const [campaignType, setCampaignType] = useState<CampaignType>("STIK")
   const [templates, setTemplates] = useState<string[]>(() => [...DEFAULT_TEMPLATES["STIK"]])
   const [templatesEdited, setTemplatesEdited] = useState(false)
@@ -82,6 +105,7 @@ export default function NewCampaign() {
   const [expandedDepts, setExpandedDepts] = useState<Set<string>>(new Set())
 
   const [error, setError] = useState<string | null>(null)
+  const [warnings, setWarnings] = useState<string[]>([])
 
   const { data: configData } = useQuery<AppConfigData>({
     queryKey: ["config"],
@@ -93,11 +117,9 @@ export default function NewCampaign() {
     queryFn: () => apiFetch<DeptWithAreas[]>("/api/files/areas"),
   })
 
-  // Sync config into local state
   useEffect(() => {
     if (configData) setConfig(configData)
   }, [configData])
-  // Sync areas into local state
   useEffect(() => {
     if (areasData.length > 0) {
       setAllDepts(areasData)
@@ -105,20 +127,23 @@ export default function NewCampaign() {
     }
   }, [areasData])
 
-  const createMutation = useMutation({
+  const bulkMutation = useMutation({
     mutationFn: (body: Record<string, unknown>) =>
-      apiFetch<{ id: string }>("/api/campaigns", {
+      apiFetch<BulkCreateCampaignResult>("/api/campaigns/bulk", {
         method: "POST",
         body: JSON.stringify(body),
       }),
-    onSuccess: (campaign) => {
+    onSuccess: (result) => {
       queryClient.invalidateQueries({ queryKey: ["campaigns"] })
-      navigate(`/campaigns/${campaign.id}`)
+      if (result.warnings.length > 0) {
+        setWarnings(result.warnings)
+        setError(null)
+      }
+      navigate("/campaigns")
     },
     onError: (e) => setError(String(e)),
   })
 
-  // Filter departments/areas to the selected campaign type
   const depts = allDepts
     .map((d) => ({
       ...d,
@@ -126,12 +151,10 @@ export default function NewCampaign() {
     }))
     .filter((d) => d.areas.length > 0)
 
-  // Reset selected areas when type changes
   const handleTypeChange = useCallback(
     (t: CampaignType) => {
       setCampaignType(t)
       setSelectedAreas(new Set())
-      // Only refill the variants if the user hasn't manually edited them
       if (!templatesEdited) setTemplates([...(DEFAULT_TEMPLATES[t] ?? DEFAULT_TEMPLATES["STIK"])])
     },
     [templatesEdited],
@@ -186,6 +209,25 @@ export default function NewCampaign() {
     })
   }
 
+  const preview = useMemo(() => {
+    const rows: { areaId: string; dept: string; area: string; name: string; total: number; valid: number }[] = []
+    for (const d of depts) {
+      for (const a of d.areas) {
+        if (selectedAreas.has(a.id)) {
+          rows.push({
+            areaId: a.id,
+            dept: d.name,
+            area: a.name,
+            name: bulkName(a.name, campaignType, monthWord, tahun),
+            total: a._count?.contacts ?? 0,
+            valid: a.validContacts ?? 0,
+          })
+        }
+      }
+    }
+    return rows
+  }, [depts, selectedAreas, month, year, campaignType])
+
   const effectiveTarget =
     parseInt(targetReplies) || config?.defaultTargetRepliesPerArea || 20
   const effectiveRate =
@@ -195,18 +237,18 @@ export default function NewCampaign() {
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     const cleanTemplates = templates.map((t) => t.trim()).filter((t) => t.length > 0)
-    if (!name || !bulan || cleanTemplates.length === 0 || selectedAreas.size === 0) {
-      setError("All fields are required, at least one template variant, and at least one area must be selected")
+    if (cleanTemplates.length === 0 || selectedAreas.size === 0) {
+      setError("At least one template variant and at least one area are required")
       return
     }
     setError(null)
-    createMutation.mutate({
-      name,
-      template: cleanTemplates[0],
-      templates: cleanTemplates,
+    setWarnings([])
+    bulkMutation.mutate({
       bulan,
+      tahun,
       campaignType,
       areaIds: Array.from(selectedAreas),
+      templates: cleanTemplates,
       ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies) }),
       ...(replyRate && { expectedReplyRate: parseFloat(replyRate) / 100 }),
       ...(targetReplyMode !== "ALL" && { targetReplyMode }),
@@ -218,7 +260,7 @@ export default function NewCampaign() {
       <div>
         <h2 className="text-2xl font-bold tracking-tight">New Campaign</h2>
         <p className="text-muted-foreground">
-          Configure and launch a WhatsApp campaign
+          Select areas, input month — creates 1 campaign per area
         </p>
       </div>
 
@@ -228,42 +270,55 @@ export default function NewCampaign() {
             {error}
           </div>
         )}
+        {warnings.length > 0 && (
+          <div className="rounded-md border border-yellow-500/50 bg-yellow-500/10 px-4 py-3 text-sm">
+            {warnings.map((w) => (
+              <div key={w}>{w}</div>
+            ))}
+          </div>
+        )}
 
-        {/* Name */}
-        <div className="space-y-1.5">
-          <label htmlFor="camp-name" className="text-sm font-medium">
-            Campaign name
-          </label>
-          <input
-            id="camp-name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. December 2025 Confirmation"
-            className="w-full border rounded-md px-3 py-2 text-sm bg-background"
-          />
-        </div>
-
-        {/* Bulan */}
-        <div className="space-y-1.5">
-          <label htmlFor="camp-bulan" className="text-sm font-medium">
-            Month (bulan)
-          </label>
-          <input
-            id="camp-bulan"
-            value={bulan}
-            onChange={(e) => setBulan(e.target.value)}
-            placeholder='e.g. "12" or "Desember"'
-            className="w-full border rounded-md px-3 py-2 text-sm bg-background"
-          />
+        {/* Bulan + tahun (shared for all) */}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1.5">
+            <label htmlFor="bulk-month" className="text-sm font-medium">
+              Bulan — shared for all campaigns
+            </label>
+            <select
+              id="bulk-month"
+              value={month}
+              onChange={(e) => setMonth(parseInt(e.target.value) || 1)}
+              className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+            >
+              {MONTHS.map((m, i) => (
+                <option key={m} value={i + 1}>
+                  {i + 1} - {m}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="bulk-year" className="text-sm font-medium">
+              Tahun
+            </label>
+            <input
+              id="bulk-year"
+              type="number"
+              min={2000}
+              max={2100}
+              value={year}
+              onChange={(e) => setYear(e.target.value)}
+              placeholder={String(CURRENT_YEAR)}
+              className="w-full border rounded-md px-3 py-2 text-sm bg-background"
+            />
+          </div>
         </div>
 
         {/* Campaign type */}
         <div className="space-y-2">
           <p className="text-sm font-medium">Campaign type</p>
           <div className="flex gap-3">
-            {(
-              ["STIK", "KARDUS", "YOYIC", "CRISPY_BALLS"] as CampaignType[]
-            ).map((t) => (
+            {(["STIK", "KARDUS", "YOYIC", "CRISPY_BALLS"] as CampaignType[]).map((t) => (
               <label key={t} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
@@ -272,9 +327,7 @@ export default function NewCampaign() {
                   checked={campaignType === t}
                   onChange={() => handleTypeChange(t)}
                 />
-                <span
-                  className={`text-sm px-2 py-0.5 rounded-full font-medium ${TYPE_BADGE[t]}`}
-                >
+                <span className={`text-sm px-2 py-0.5 rounded-full font-medium ${TYPE_BADGE[t]}`}>
                   {t}
                 </span>
               </label>
@@ -285,11 +338,11 @@ export default function NewCampaign() {
           </p>
         </div>
 
-        {/* Templates */}
+        {/* Templates (shared) */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <label className="text-sm font-medium">
-              Message templates ({templates.length})
+              Message templates — shared for all ({templates.length})
             </label>
             <button
               type="button"
@@ -329,7 +382,7 @@ export default function NewCampaign() {
                 </div>
               </div>
               <textarea
-                id={`camp-template-${i}`}
+                id={`bulk-template-${i}`}
                 value={t}
                 onChange={(e) => updateVariant(i, e.target.value)}
                 rows={4}
@@ -338,9 +391,7 @@ export default function NewCampaign() {
             </div>
           ))}
           <p className="text-xs text-muted-foreground">
-            One variant is picked at random per contact when messages are
-            created — contacts receive different texts. Variables:{" "}
-            {"{{nama_toko}}"} {"{{bulan}}"} {"{{department}}"}{" "}
+            Variables: {"{{nama_toko}}"} {"{{bulan}}"} {"{{department}}"}{" "}
             {"{{area}}"} {"{{tipe}}"}
           </p>
         </div>
@@ -351,17 +402,7 @@ export default function NewCampaign() {
             <p className="text-sm font-medium">Target areas ({campaignType})</p>
             {selectedAreas.size > 0 && (
               <span className="text-xs text-primary font-medium">
-                {selectedAreas.size} selected ·{" "}
-                {depts
-                  .flatMap((d) => d.areas)
-                  .filter((a) => selectedAreas.has(a.id))
-                  .reduce((sum, a) => sum + (a._count?.contacts ?? 0), 0)}{" "}
-                contacts ·{" "}
-                {depts
-                  .flatMap((d) => d.areas)
-                  .filter((a) => selectedAreas.has(a.id))
-                  .reduce((sum, a) => sum + (a.validContacts ?? 0), 0)}{" "}
-                valid
+                {selectedAreas.size} selected → {selectedAreas.size} campaigns
               </span>
             )}
           </div>
@@ -398,10 +439,7 @@ export default function NewCampaign() {
                           {dept.name}
                         </span>
                         <span className="text-xs text-muted-foreground ml-auto">
-                          {
-                            dept.areas.filter((a) => selectedAreas.has(a.id))
-                              .length
-                          }
+                          {dept.areas.filter((a) => selectedAreas.has(a.id)).length}
                           /{dept.areas.length}
                         </span>
                         <span className="text-xs">{expanded ? "▲" : "▼"}</span>
@@ -433,19 +471,41 @@ export default function NewCampaign() {
           )}
         </div>
 
-        {/* Send configuration */}
+        {/* Preview */}
+        {preview.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-sm font-medium">
+              Preview — {preview.length} campaign{preview.length > 1 ? "s" : ""} will be created
+            </p>
+            <div className="rounded-lg border divide-y max-h-60 overflow-y-auto">
+              {preview.map((r) => (
+                <div key={r.areaId} className="px-3 py-2">
+                  <div className="text-sm font-medium">{r.name}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {r.dept} · {r.total} total · {r.valid} valid contacts
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Name format: {"{Area} {Type} - {Bulan} {Tahun}"} (uppercase), bulan tersimpan sebagai angka
+            </p>
+          </div>
+        )}
+
+        {/* Send configuration (shared) */}
         <div className="rounded-lg border bg-muted/30 p-4 space-y-4">
-          <p className="text-sm font-semibold">Send Configuration</p>
+          <p className="text-sm font-semibold">Send Configuration — shared for all</p>
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label
-                htmlFor="target-replies"
+                htmlFor="bulk-target-replies"
                 className="text-xs font-medium text-muted-foreground"
               >
                 Target replies per area
               </label>
               <input
-                id="target-replies"
+                id="bulk-target-replies"
                 type="number"
                 min={1}
                 value={targetReplies}
@@ -456,13 +516,13 @@ export default function NewCampaign() {
             </div>
             <div className="space-y-1.5">
               <label
-                htmlFor="reply-rate"
+                htmlFor="bulk-reply-rate"
                 className="text-xs font-medium text-muted-foreground"
               >
                 Expected reply rate (%)
               </label>
               <input
-                id="reply-rate"
+                id="bulk-reply-rate"
                 type="number"
                 min={1}
                 max={100}
@@ -523,10 +583,14 @@ export default function NewCampaign() {
         <div className="flex gap-3 pt-2">
           <button
             type="submit"
-            disabled={createMutation.isPending}
+            disabled={bulkMutation.isPending}
             className="bg-primary text-primary-foreground text-sm px-5 py-2 rounded-md disabled:opacity-50"
           >
-            {createMutation.isPending ? "Creating…" : "Create Campaign"}
+            {bulkMutation.isPending
+              ? "Creating…"
+              : preview.length > 0
+                ? `Create ${preview.length} Campaigns`
+                : "Create Campaigns"}
           </button>
           <button
             type="button"

@@ -134,7 +134,7 @@ router.get('/', async (req, res) => {
 // ─── POST /api/campaigns ──────────────────────────────────────────────────────
 
 const CreateCampaign = z.object({
-  name:                    z.string().min(1),
+  name:                    z.string().min(1).optional(),
   template:                z.string().min(1),
   templates:               z.array(z.string().min(1)).min(1).max(5).optional(),
   bulan:                   z.string().min(1),
@@ -152,8 +152,10 @@ router.post('/', async (req, res) => {
     res.status(400).json({ ok: false, error: parsed.error.message })
     return
   }
-  const { name, template, bulan, campaignType, areaIds,
+  const { template, bulan, campaignType, areaIds,
           targetRepliesPerArea, expectedReplyRate, stopOnTargetReached, targetReplyMode } = parsed.data
+  // Name is just a human label — auto-default so callers don't have to type it.
+  const name = parsed.data.name?.trim() || `${campaignType} - ${bulan}`
   // Template variants: explicit list wins; otherwise single-template campaign.
   // First entry always mirrors `template` (used by detail pages / manual prefill).
   const rawVariants = parsed.data.templates ?? [template]
@@ -174,6 +176,152 @@ router.post('/', async (req, res) => {
       },
     })
     res.status(201).json({ ok: true, data: campaign })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err) })
+  }
+})
+
+// ─── POST /api/campaigns/bulk ─────────────────────────────────────────────────
+// Bulk creation: 1 campaign = 1 area. Shared template/config for all.
+// NOTE: registered before `/:id` routes so `bulk` is not treated as an id.
+
+const BulkCreateCampaign = z.object({
+  bulan:               z.string().min(1),
+  tahun:               z.string().min(1).max(4).optional(),
+  campaignType:        z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
+  areaIds:             z.array(z.string()).min(1).max(100),
+  templates:           z.array(z.string().min(1)).min(1).max(5),
+  targetRepliesPerArea: z.number().int().min(1).optional(),
+  expectedReplyRate:    z.number().min(0.01).max(1).optional(),
+  stopOnTargetReached:  z.boolean().optional(),
+  targetReplyMode:      z.enum(['ALL', 'YES', 'YES_NO']).optional(),
+  namePattern:          z.string().min(1).max(200).optional(),
+})
+
+const BULAN_WORDS = [
+  'JANUARI', 'FEBRUARI', 'MARET', 'APRIL', 'MEI', 'JUNI',
+  'JULI', 'AGUSTUS', 'SEPTEMBER', 'OKTOBER', 'NOVEMBER', 'DESEMBER',
+] as const
+
+// Stored `bulan` is numeric ("9") — campaign names use the word ("SEPTEMBER").
+function bulanWord(bulan: string): string {
+  const n = parseInt(bulan)
+  if (!Number.isNaN(n) && n >= 1 && n <= 12) return BULAN_WORDS[n - 1]
+  return bulan.toUpperCase()
+}
+
+function renderBulkName(
+  pattern: string,
+  parts: { area: string; department: string; bulan: string; tahun: string; type: string },
+): string {
+  return pattern
+    .replaceAll('{area}', parts.area)
+    .replaceAll('{department}', parts.department)
+    .replaceAll('{market}', parts.department)
+    .replaceAll('{bulan}', parts.bulan)
+    .replaceAll('{tahun}', parts.tahun)
+    .replaceAll('{type}', parts.type)
+    .toUpperCase()
+}
+
+router.post('/bulk', async (req, res) => {
+  const parsed = BulkCreateCampaign.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json({ ok: false, error: parsed.error.message })
+    return
+  }
+  const { bulan, campaignType, targetRepliesPerArea, expectedReplyRate,
+          stopOnTargetReached, targetReplyMode } = parsed.data
+  const areaIds = [...new Set(parsed.data.areaIds)]
+  const cleanTemplates = parsed.data.templates.map((t) => t.trim()).filter((t) => t.length > 0)
+  if (cleanTemplates.length === 0) {
+    res.status(400).json({ ok: false, error: 'At least one non-empty template is required' })
+    return
+  }
+  const template = cleanTemplates[0]
+  const variants = [template, ...cleanTemplates.slice(1).filter((t) => t !== template)]
+  const pattern = parsed.data.namePattern ?? '{area} {type} - {bulan} {tahun}'
+  const tahun = parsed.data.tahun?.trim() || String(new Date().getFullYear())
+  const word = bulanWord(bulan)
+  try {
+    const areas = await db.area.findMany({
+      where: { id: { in: areaIds } },
+      include: { department: true },
+    })
+    if (areas.length !== areaIds.length) {
+      const found = new Set(areas.map((a) => a.id))
+      const missing = areaIds.filter((id) => !found.has(id))
+      res.status(400).json({ ok: false, error: `Unknown areaIds: ${missing.join(', ')}` })
+      return
+    }
+    const wrongType = areas.filter((a) => a.contactType !== campaignType)
+    if (wrongType.length > 0) {
+      res.status(400).json({
+        ok: false,
+        error: `Areas with wrong type (expected ${campaignType}): ${wrongType.map((a) => a.name).join(', ')}`,
+      })
+      return
+    }
+    // Keep input order for predictable naming/results
+    const byId = new Map(areas.map((a) => [a.id, a]))
+    const ordered = areaIds.map((id) => byId.get(id)!)
+
+    // Non-blocking warnings for likely duplicates (same area + bulan + type)
+    const existing = await db.campaign.findMany({
+      where: {
+        bulan,
+        campaignType,
+        areas: { some: { areaId: { in: areaIds } } },
+      },
+      include: { areas: true },
+    })
+    const warnings: string[] = []
+    for (const c of existing) {
+      const dupAreaIds = c.areas.map((a) => a.areaId).filter((id) => byId.has(id))
+      for (const areaId of dupAreaIds) {
+        const a = byId.get(areaId)!
+        warnings.push(`"${c.name}" already covers ${a.department.name} / ${a.name} for ${word} ${tahun} ${campaignType}`)
+      }
+    }
+
+    const created = await db.$transaction(
+      ordered.map((a) =>
+        db.campaign.create({
+          data: {
+            name: renderBulkName(pattern, {
+              area: a.name,
+              department: a.department.name,
+              bulan: word,
+              tahun,
+              type: campaignType,
+            }),
+            template,
+            templateVariants: variants.length > 1 ? variants : undefined,
+            bulan,
+            campaignType,
+            ...(targetRepliesPerArea !== undefined && { targetRepliesPerArea }),
+            ...(expectedReplyRate    !== undefined && { expectedReplyRate }),
+            ...(stopOnTargetReached  !== undefined && { stopOnTargetReached }),
+            ...(targetReplyMode      !== undefined && { targetReplyMode }),
+            areas: { create: [{ areaId: a.id }] },
+          },
+        }),
+      ),
+    )
+    res.status(201).json({
+      ok: true,
+      data: {
+        count: created.length,
+        campaigns: created.map((c, i) => ({
+          id: c.id,
+          name: c.name,
+          areaId: ordered[i].id,
+          areaName: ordered[i].name,
+          departmentName: ordered[i].department.name,
+        })),
+        warnings,
+      },
+    })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }
