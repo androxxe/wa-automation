@@ -5,9 +5,16 @@ import type { AppConfigData, ContactTypeTree, ColumnMapping, ParsedSheet } from 
 
 type ImportStep = 'scan' | 'parse' | 'mapping' | 'done'
 
+interface SelectedFile {
+  deptName:     string
+  areaName:     string
+  filePath:     string
+  contactType:  string
+}
+
 interface ImportState {
   step:              ImportStep
-  selectedFile?:     { deptName: string; areaName: string; filePath: string; contactType: string }
+  selectedFile?:     SelectedFile
   parsed?:           ParsedSheet
   confirmedMapping?: ColumnMapping
   result?:           { imported: number; invalid: number; duplicates: number }
@@ -18,6 +25,17 @@ const TYPE_BADGE: Record<string, string> = {
   KARDUS:        'bg-orange-100 text-orange-700',
   YOYIC:         'bg-green-100 text-green-700',
   CRISPY_BALLS:  'bg-purple-100 text-purple-700',
+}
+
+function FileHeader({ file }: { file: SelectedFile }) {
+  return (
+    <div className="flex items-center gap-2">
+      <p className="text-sm font-medium">{file.areaName}</p>
+      <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_BADGE[file.contactType] ?? ''}`}>
+        {file.contactType}
+      </span>
+    </div>
+  )
 }
 
 export default function Import() {
@@ -131,12 +149,7 @@ export default function Import() {
       {state.step === 'parse' && state.parsed && (
         <div className="space-y-4">
           <div className="rounded-lg border p-4 space-y-2">
-            <div className="flex items-center gap-2">
-              <p className="text-sm font-medium">{state.selectedFile?.areaName}</p>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_BADGE[state.selectedFile?.contactType ?? ''] ?? ''}`}>
-                {state.selectedFile?.contactType}
-              </span>
-            </div>
+            <FileHeader file={state.selectedFile!} />
             <p className="text-xs text-muted-foreground">
               {state.parsed.totalRows} rows — {state.parsed.headers.length} columns
             </p>
@@ -159,6 +172,7 @@ export default function Import() {
 
       {state.step === 'mapping' && state.confirmedMapping && (
         <div className="space-y-4">
+          <FileHeader file={state.selectedFile!} />
           <p className="text-sm font-medium">Confirm column mapping</p>
           <div className="rounded-lg border divide-y">
             {Object.entries(state.confirmedMapping).map(([field, header]) => (
@@ -181,6 +195,7 @@ export default function Import() {
 
       {state.step === 'done' && state.result && (
         <div className="rounded-lg border p-6 space-y-3 bg-card">
+          <FileHeader file={state.selectedFile!} />
           <p className="font-semibold">Import complete</p>
           <div className="grid grid-cols-3 gap-4 text-center">
             <div>
