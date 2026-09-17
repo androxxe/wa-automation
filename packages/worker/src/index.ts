@@ -744,18 +744,15 @@ async function handleReply(params: {
     return
   }
 
-  // Manual fallback path: refresh latest existing reply text/analysis without
-  // touching counters.
+  // Manual fallback path: refresh latest existing reply text/screenshot without
+  // touching counters OR classification. A poll must never overwrite a category /
+  // jawaban that an operator has manually corrected in the Responses UI.
   if (allowUpdateExisting && latestRepliedMessage) {
     await db.reply.update({
       where: { messageId: latestRepliedMessage.id },
       data: {
         body:           text,
         screenshotPath,
-        claudeCategory:  (analysisData.category  as string) ?? null,
-        claudeSentiment: (analysisData.sentiment as string) ?? null,
-        claudeSummary:   (analysisData.summary   as string) ?? null,
-        jawaban:         (analysisData.jawaban   as number | null) ?? null,
         receivedAt:      new Date(),
       },
     }).catch((err) => {
