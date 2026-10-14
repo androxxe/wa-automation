@@ -4,7 +4,7 @@
  * Usage: npx ts-node packages/api/src/scripts/import-csv.ts <csv-file-path>
  */
 
-import path from 'path'
+import path from 'node:path'
 import { importCSV } from '../lib/csv-import'
 
 async function main() {
@@ -26,7 +26,7 @@ async function main() {
     ? csvPath
     : path.resolve(process.cwd(), csvPath)
 
-  console.log('\n' + '='.repeat(60))
+  console.log(`\n${'='.repeat(60)}`)
   console.log('🚀 CSV IMPORT SCRIPT')
   console.log('='.repeat(60))
   console.log(`📄 File: ${absolutePath}\n`)
@@ -36,8 +36,8 @@ async function main() {
     
     // Exit with error code if there were any invalid records
     process.exit(stats.invalid > 0 ? 1 : 0)
-  } catch (error: any) {
-    console.error('\n❌ Import failed:', error.message)
+  } catch (error) {
+    console.error('\n❌ Import failed:', error instanceof Error ? error.message : String(error))
     process.exit(1)
   }
 }

@@ -1,5 +1,5 @@
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import * as XLSX from 'xlsx'
 import { db } from './db'
 
@@ -35,7 +35,7 @@ export async function buildResponseWorkbook(filters: {
         sentAt: { gte: new Date(filters.startDate) },
       }),
       ...(filters.endDate && {
-        sentAt: { lte: new Date(filters.endDate + 'T23:59:59Z') },
+        sentAt: { lte: new Date(`${filters.endDate}T23:59:59Z`) },
       }),
       contact: {
         ...(filters.departmentId && { departmentId: filters.departmentId }),

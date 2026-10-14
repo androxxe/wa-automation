@@ -206,7 +206,7 @@ const BULAN_WORDS = [
 
 // Stored `bulan` is numeric ("9") — campaign names use the word ("SEPTEMBER").
 function bulanWord(bulan: string): string {
-  const n = parseInt(bulan)
+  const n = parseInt(bulan, 10)
   if (!Number.isNaN(n) && n >= 1 && n <= 12) return BULAN_WORDS[n - 1]
   return bulan.toUpperCase()
 }
@@ -265,7 +265,11 @@ router.post('/bulk', async (req, res) => {
     }
     // Keep input order for predictable naming/results
     const byId = new Map(areas.map((a) => [a.id, a]))
-    const ordered = areaIds.map((id) => byId.get(id)!)
+    const ordered = areaIds.map((id) => {
+      const a = byId.get(id)
+      if (!a) throw new Error(`Area not found: ${id}`)
+      return a
+    })
 
     // Non-blocking warnings for likely duplicates (same area + bulan + type)
     const existing = await db.campaign.findMany({
@@ -280,7 +284,8 @@ router.post('/bulk', async (req, res) => {
     for (const c of existing) {
       const dupAreaIds = c.areas.map((a) => a.areaId).filter((id) => byId.has(id))
       for (const areaId of dupAreaIds) {
-        const a = byId.get(areaId)!
+        const a = byId.get(areaId)
+        if (!a) continue
         warnings.push(`"${c.name}" already covers ${a.department.name} / ${a.name} for ${word} ${tahun} ${campaignType}`)
       }
     }

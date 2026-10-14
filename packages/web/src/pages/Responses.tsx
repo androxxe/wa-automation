@@ -104,12 +104,6 @@ const JAWABAN_OPTIONS: { value: string; label: string }[] = [
   { value: 'null', label: 'Tidak Jelas' },
 ]
 
-const REASON_LABELS: Record<string, string> = {
-  NO_OUTGOING:         'No outgoing message in chat DOM',
-  STALE_ANCHOR:        'Anchor element became stale',
-  FINGERPRINT_MISSING: 'Message fingerprint missing after retries',
-}
-
 function MetadataCell({ metadata }: { metadata: MessageMetadata | null }) {
   if (!metadata) return <span className="text-muted-foreground/40 text-xs">—</span>
   return (

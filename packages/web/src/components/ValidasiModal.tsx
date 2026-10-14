@@ -42,7 +42,6 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
     staleTime: 0,
   })
 
-  const unchecked = data?.unchecked ?? 0
   const areas     = data?.areas ?? []
 
   // Group areas by contactType — ordered by CONTACT_TYPE_OPTIONS, unknown types appended
@@ -57,7 +56,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
     const extra = [...byType.keys()]
       .filter((t) => !(CONTACT_TYPE_OPTIONS as readonly string[]).includes(t))
       .sort()
-    return [...known, ...extra].map((type) => ({ type, areas: byType.get(type)! }))
+    return [...known, ...extra].map((type) => ({ type, areas: byType.get(type) ?? [] }))
   }, [areas])
 
   // Filter by search — matches area name or department name
@@ -202,7 +201,6 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   }
 
   // Count how many selected areas are recheck vs normal
-  const selectedNormalCount  = areas.filter((a) => selectedIds.has(a.areaId) && a.unchecked > 0).length
   const selectedRecheckCount = areas.filter((a) => selectedIds.has(a.areaId) && a.unchecked === 0).length
 
   return (

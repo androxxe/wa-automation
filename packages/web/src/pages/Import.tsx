@@ -57,17 +57,20 @@ export default function Import() {
   })
 
   const importMutation = useMutation({
-    mutationFn: () =>
-      apiFetch<{ imported: number; invalid: number; duplicates: number }>('/api/files/import', {
+    mutationFn: () => {
+      const file = state.selectedFile
+      if (!file) throw new Error('No file selected')
+      return apiFetch<{ imported: number; invalid: number; duplicates: number }>('/api/files/import', {
         method: 'POST',
         body: JSON.stringify({
-          filePath:       state.selectedFile!.filePath,
-          departmentName: state.selectedFile!.deptName,
-          areaName:       state.selectedFile!.areaName,
-          contactType:    state.selectedFile!.contactType,
+          filePath:       file.filePath,
+          departmentName: file.deptName,
+          areaName:       file.areaName,
+          contactType:    file.contactType,
           mapping:        state.confirmedMapping,
         }),
-      }),
+      })
+    },
     onSuccess: (result) => {
       setState((s) => ({ ...s, step: 'done', result }))
       setError(null)
@@ -140,10 +143,10 @@ export default function Import() {
         </div>
       )}
 
-      {state.step === 'parse' && state.parsed && (
+      {state.step === 'parse' && state.parsed && state.selectedFile && (
         <div className="space-y-4">
           <div className="rounded-lg border p-4 space-y-2">
-            <FileHeader file={state.selectedFile!} />
+            <FileHeader file={state.selectedFile} />
             <p className="text-xs text-muted-foreground">
               {state.parsed.totalRows} rows — {state.parsed.headers.length} columns
             </p>
@@ -155,7 +158,10 @@ export default function Import() {
           </div>
           <button
             type="button"
-            onClick={() => mappingMutation.mutate({ headers: state.parsed!.headers, sampleRows: state.parsed!.sampleRows })}
+            onClick={() => {
+              if (!state.parsed) return
+              mappingMutation.mutate({ headers: state.parsed.headers, sampleRows: state.parsed.sampleRows })
+            }}
             disabled={isLoading}
             className="bg-primary text-primary-foreground text-sm px-4 py-2 rounded-md disabled:opacity-50"
           >
@@ -164,9 +170,9 @@ export default function Import() {
         </div>
       )}
 
-      {state.step === 'mapping' && state.confirmedMapping && (
+      {state.step === 'mapping' && state.confirmedMapping && state.selectedFile && (
         <div className="space-y-4">
-          <FileHeader file={state.selectedFile!} />
+          <FileHeader file={state.selectedFile} />
           <p className="text-sm font-medium">Confirm column mapping</p>
           <div className="rounded-lg border divide-y">
             {Object.entries(state.confirmedMapping).map(([field, header]) => (
@@ -187,9 +193,9 @@ export default function Import() {
         </div>
       )}
 
-      {state.step === 'done' && state.result && (
+      {state.step === 'done' && state.result && state.selectedFile && (
         <div className="rounded-lg border p-6 space-y-3 bg-card">
-          <FileHeader file={state.selectedFile!} />
+          <FileHeader file={state.selectedFile} />
           <p className="font-semibold">Import complete</p>
           <div className="grid grid-cols-3 gap-4 text-center">
             <div>

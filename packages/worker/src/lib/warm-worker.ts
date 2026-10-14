@@ -108,15 +108,17 @@ function buildPairings(agentIds: number[]): Array<[number, number]> {
   let added = 0
 
   while (added < total) {
+    const before = added
     for (const sender of agentIds) {
-      const recipients = bySender.get(sender)!
-      const p = ptr.get(sender)!
-      if (p < recipients.length) {
+      const recipients = bySender.get(sender)
+      const p = ptr.get(sender) ?? 0
+      if (recipients && p < recipients.length) {
         result.push([sender, recipients[p]])
         ptr.set(sender, p + 1)
         added++
       }
     }
+    if (added === before) throw new Error('buildPairings: no progress — duplicate or too few agentIds')
   }
 
   return result
@@ -184,7 +186,7 @@ async function completeWarmSession(sessionId: string): Promise<void> {
  */
 async function checkSessionCompletion(sessionId: string): Promise<void> {
   const session = await db.warmSession.findUnique({ where: { id: sessionId } })
-  if (!session || session.status !== 'RUNNING') return
+  if (session?.status !== 'RUNNING') return
 
   const resolvedCount = await db.warmExchange.count({
     where: { warmSessionId: sessionId, status: { in: ['REPLIED', 'FAILED'] } },
@@ -201,7 +203,7 @@ const REACTION_EMOJIS = ['👍', '❤️', '😂', '🔥', '😮']
 async function maybeReact(job: WarmJob): Promise<void> {
   if (Math.random() > 0.25) return // only 25% chance
   const sender = agentManager.getAgent(job.senderAgentId)
-  if (!sender || sender.status !== 'connected') return
+  if (sender?.status !== 'connected') return
   // BrowserAgent.reactToLastMessage is implemented if available on the agent
   const agent = sender as unknown as { reactToLastMessage?: (phone: string, emoji: string) => Promise<void> }
   if (typeof agent.reactToLastMessage !== 'function') return
@@ -237,7 +239,7 @@ async function processWarmJob(job: Job<WarmJob>): Promise<void> {
   const text        = isReply ? replyMessage : message
 
   const agent = agentManager.getAgent(agentId)
-  if (!agent || agent.status !== 'connected') {
+  if (agent?.status !== 'connected') {
     throw new Error(`Agent ${agentId} not connected`)
   }
   if (await agentManager.isRestricted(agentId).catch(() => false)) {

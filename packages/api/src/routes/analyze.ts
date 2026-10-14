@@ -1,7 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { mapHeaders, analyzeReply, varyMessage } from '../lib/llm'
-import { db } from '../lib/db'
 
 const router: import('express').Router = Router()
 

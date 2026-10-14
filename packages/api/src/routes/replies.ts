@@ -1,5 +1,5 @@
-import path from 'path'
-import fs   from 'fs'
+import path from 'node:path'
+import fs   from 'node:fs'
 import { Router } from 'express'
 import { Prisma } from '@prisma/client'
 import { db } from '../lib/db'
@@ -181,8 +181,8 @@ router.patch('/:id', async (req, res) => {
     const { id } = req.params
     const body = req.body as { category?: string | null; jawaban?: number | null }
 
-    const hasCategory = Object.prototype.hasOwnProperty.call(body, 'category')
-    const hasJawaban  = Object.prototype.hasOwnProperty.call(body, 'jawaban')
+    const hasCategory = Object.hasOwn(body, 'category')
+    const hasJawaban  = Object.hasOwn(body, 'jawaban')
 
     if (!hasCategory && !hasJawaban) {
       res.status(400).json({ ok: false, error: 'Provide at least one field: category or jawaban' })
@@ -307,13 +307,14 @@ router.post('/poll-manual', async (req, res) => {
 
     // Deduplicate unreplied by phone (keep most recent sentAt)
     for (const m of unrepliedMessages) {
+      if (m.agentId === null) continue
       const ts = m.sentAt ?? m.createdAt
       const existing = selectedByPhone.get(m.phone)
       if (!existing || ts > existing.sentAt) {
         selectedByPhone.set(m.phone, {
           phone: m.phone,
           sentAt: ts,
-          agentId: m.agentId!,
+          agentId: m.agentId,
           mode: 'unreplied',
           body: m.body,
         })
@@ -337,13 +338,14 @@ router.post('/poll-manual', async (req, res) => {
       })
 
       for (const m of fallbackMessages) {
+        if (m.agentId === null) continue
         const ts = m.sentAt ?? m.createdAt
         const existing = selectedByPhone.get(m.phone)
         if (!existing || ts > existing.sentAt) {
           selectedByPhone.set(m.phone, {
             phone: m.phone,
             sentAt: ts,
-            agentId: m.agentId!,
+            agentId: m.agentId,
             mode: 'fallback_latest',
             body: m.body,
           })
@@ -354,8 +356,12 @@ router.post('/poll-manual', async (req, res) => {
     // Group by agentId for Redis payload
     const byAgent = new Map<number, Map<string, string>>() // agentId → phone → sentAt ISO
     for (const selected of selectedByPhone.values()) {
-      if (!byAgent.has(selected.agentId)) byAgent.set(selected.agentId, new Map())
-      byAgent.get(selected.agentId)!.set(selected.phone, selected.sentAt.toISOString())
+      let agentMap = byAgent.get(selected.agentId)
+      if (!agentMap) {
+        agentMap = new Map()
+        byAgent.set(selected.agentId, agentMap)
+      }
+      agentMap.set(selected.phone, selected.sentAt.toISOString())
     }
 
     // Track which phones were found and which were not
@@ -636,10 +642,10 @@ router.post('/', async (req, res) => {
           phone,
           body,
           screenshotPath,
-          claudeCategory:  source === 'manual' ? category! : ((analysisData.category  as string) ?? null),
+          claudeCategory:  source === 'manual' ? category : ((analysisData.category  as string) ?? null),
           claudeSentiment: source === 'manual' ? (sentiment ?? null) : ((analysisData.sentiment as string) ?? null),
           claudeSummary:   source === 'manual' ? (summary   ?? null) : ((analysisData.summary   as string) ?? null),
-          jawaban:         source === 'manual' ? jawaban! : ((analysisData.jawaban   as number | null) ?? null),
+          jawaban:         source === 'manual' ? jawaban : ((analysisData.jawaban   as number | null) ?? null),
           claudeRaw:       { source },
         },
       }).catch((e) => {
@@ -650,9 +656,11 @@ router.post('/', async (req, res) => {
       if (!reply) continue
       created.push(reply.id)
 
-      const existingMeta = (msg.metadata && typeof msg.metadata === 'object' ? { ...(msg.metadata as Record<string, unknown>) } : {}) as Record<string, unknown>
+      const existingMeta: Record<string, Prisma.InputJsonValue> = msg.metadata && typeof msg.metadata === 'object'
+        ? { ...(msg.metadata as Record<string, Prisma.InputJsonValue>) }
+        : {}
       existingMeta.replySource = source
-      await db.message.update({ where: { id: msg.id }, data: { metadata: existingMeta as any } }).catch(() => {})
+      await db.message.update({ where: { id: msg.id }, data: { metadata: existingMeta } }).catch(() => {})
 
       if (msg.status !== 'READ') {
         await db.message.update({ where: { id: msg.id }, data: { status: 'READ', readAt: new Date() } })

@@ -107,7 +107,10 @@ export default function Agents() {
   // Poll the cropped QR code every 5s while the scan modal is open
   const { data: qrData } = useQuery<{ qr: string | null }>({
     queryKey:       ['agent-qr', qrAgent?.id],
-    queryFn:        () => apiFetch<{ qr: string | null }>(`/api/agents/${qrAgent!.id}/qr`),
+    queryFn: () => {
+      if (!qrAgent) throw new Error('No QR agent selected')
+      return apiFetch<{ qr: string | null }>(`/api/agents/${qrAgent.id}/qr`)
+    },
     enabled:        qrAgent !== null,
     refetchInterval: 5000,
   })
@@ -212,12 +215,12 @@ export default function Agents() {
         name:           editForm.name,
         phoneNumber:    editForm.phoneNumber,
         departmentId:   editForm.departmentId || null,
-        dailySendCap:   editForm.dailySendCap  ? parseInt(editForm.dailySendCap)          : null,
-        breakEvery:     editForm.breakEvery    ? parseInt(editForm.breakEvery)             : null,
-        breakMinMs:     editForm.breakMinMs    ? parseInt(editForm.breakMinMs) * 1000      : null,
-        breakMaxMs:     editForm.breakMaxMs    ? parseInt(editForm.breakMaxMs) * 1000      : null,
-        typeDelayMinMs: editForm.typeDelayMin  ? parseInt(editForm.typeDelayMin)            : null,
-        typeDelayMaxMs: editForm.typeDelayMax  ? parseInt(editForm.typeDelayMax)            : null,
+        dailySendCap:   editForm.dailySendCap  ? parseInt(editForm.dailySendCap, 10)          : null,
+        breakEvery:     editForm.breakEvery    ? parseInt(editForm.breakEvery, 10)             : null,
+        breakMinMs:     editForm.breakMinMs    ? parseInt(editForm.breakMinMs, 10) * 1000      : null,
+        breakMaxMs:     editForm.breakMaxMs    ? parseInt(editForm.breakMaxMs, 10) * 1000      : null,
+        typeDelayMinMs: editForm.typeDelayMin  ? parseInt(editForm.typeDelayMin, 10)            : null,
+        typeDelayMaxMs: editForm.typeDelayMax  ? parseInt(editForm.typeDelayMax, 10)            : null,
         warmMode:       editForm.warmMode,
         validationOnly: editForm.validationOnly,
       },
@@ -230,12 +233,12 @@ export default function Agents() {
       name:        form.name,
       phoneNumber: form.phoneNumber,
       ...(form.departmentId && { departmentId:   form.departmentId }),
-      ...(form.dailySendCap && { dailySendCap:   parseInt(form.dailySendCap) }),
-      ...(form.breakEvery   && { breakEvery:     parseInt(form.breakEvery) }),
-      ...(form.breakMinMs   && { breakMinMs:     parseInt(form.breakMinMs) * 1000 }),
-      ...(form.breakMaxMs   && { breakMaxMs:     parseInt(form.breakMaxMs) * 1000 }),
-      ...(form.typeDelayMin && { typeDelayMinMs: parseInt(form.typeDelayMin) }),
-      ...(form.typeDelayMax && { typeDelayMaxMs: parseInt(form.typeDelayMax) }),
+      ...(form.dailySendCap && { dailySendCap:   parseInt(form.dailySendCap, 10) }),
+      ...(form.breakEvery   && { breakEvery:     parseInt(form.breakEvery, 10) }),
+      ...(form.breakMinMs   && { breakMinMs:     parseInt(form.breakMinMs, 10) * 1000 }),
+      ...(form.breakMaxMs   && { breakMaxMs:     parseInt(form.breakMaxMs, 10) * 1000 }),
+      ...(form.typeDelayMin && { typeDelayMinMs: parseInt(form.typeDelayMin, 10) }),
+      ...(form.typeDelayMax && { typeDelayMaxMs: parseInt(form.typeDelayMax, 10) }),
     })
   }
 
@@ -500,12 +503,26 @@ export default function Agents() {
             <div className="flex items-start gap-4">
               <div className="shrink-0 w-40 h-28 rounded-md overflow-hidden border bg-muted flex items-center justify-center">
                 {agent.screenshot ? (
-                  <img
-                    src={`data:image/jpeg;base64,${agent.screenshot}`}
-                    alt={`${agent.name} preview`}
-                    onClick={() => ['QR', 'STARTING'].includes(agent.status) && setQrAgent(agent)}
-                    className={`w-full h-full object-cover ${['QR', 'STARTING'].includes(agent.status) ? 'cursor-pointer hover:opacity-80' : ''}`}
-                  />
+                  ['QR', 'STARTING'].includes(agent.status) ? (
+                    <button
+                      type="button"
+                      onClick={() => setQrAgent(agent)}
+                      className="w-full h-full cursor-pointer hover:opacity-80"
+                      title={`Open ${agent.name} QR`}
+                    >
+                      <img
+                        src={`data:image/jpeg;base64,${agent.screenshot}`}
+                        alt={`${agent.name} preview`}
+                        className="w-full h-full object-cover"
+                      />
+                    </button>
+                  ) : (
+                    <img
+                      src={`data:image/jpeg;base64,${agent.screenshot}`}
+                      alt={`${agent.name} preview`}
+                      className="w-full h-full object-cover"
+                    />
+                  )
                 ) : (
                   <span className="text-xs text-muted-foreground">No preview</span>
                 )}

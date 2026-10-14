@@ -61,7 +61,7 @@ function checkOptionalRatio(key: string): { pass: boolean; reason?: string; note
   const val = process.env[key]
   if (!val) return { pass: true, note: 'not set — using default' }
   const num = parseFloat(val)
-  if (isNaN(num) || num < 0 || num > 1) return { pass: false, reason: 'must be a number between 0.0 and 1.0' }
+  if (Number.isNaN(num) || num < 0 || num > 1) return { pass: false, reason: 'must be a number between 0.0 and 1.0' }
   return { pass: true }
 }
 
@@ -69,7 +69,7 @@ function checkOptionalPositiveInt(key: string): { pass: boolean; reason?: string
   const val = process.env[key]
   if (!val) return { pass: true, note: 'not set — using default' }
   const num = parseInt(val, 10)
-  if (isNaN(num) || num < 0) return { pass: false, reason: 'must be a positive integer' }
+  if (Number.isNaN(num) || num < 0) return { pass: false, reason: 'must be a positive integer' }
   return { pass: true }
 }
 

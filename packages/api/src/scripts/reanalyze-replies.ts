@@ -11,7 +11,7 @@
 //   pnpm --filter @aice/api reanalyze:replies -- --limit 100 --offset 50
 //   pnpm --filter @aice/api reanalyze:replies -- --batch-size 25
 
-import { PrismaClient, Prisma } from "@prisma/client"
+import { PrismaClient, type Prisma } from "@prisma/client"
 import { randomUUID } from "node:crypto"
 
 const db = new PrismaClient()
@@ -255,7 +255,6 @@ interface BatchResult {
 
 async function processBatch(
   replies: StubReply[],
-  batchSize: number,
 ): Promise<BatchResult> {
   const inputs: ReplyInput[] = replies.map((r) => ({
     id: r.id,
@@ -427,7 +426,7 @@ async function main(): Promise<void> {
       `[reanalyze] [${i + 1}/${totalBatches}] processing ${batch.length} replies…`,
     )
 
-    const result = await processBatch(batch, flags.batchSize)
+    const result = await processBatch(batch)
 
     if (result.failed) {
       failedBatches++

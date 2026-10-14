@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 import type { ConversationEntry } from '@aice/shared'
 
@@ -65,7 +65,6 @@ export default function ReplyConversationModal({
   onClose:       () => void
   onRefresh:     () => void
 }) {
-  const queryClient = useQueryClient()
   const [body, setBody]         = useState('')
   const [error, setError]       = useState<string | null>(null)
   const [screenshot, setScreenshot] = useState<string | null>(null)
@@ -139,8 +138,8 @@ export default function ReplyConversationModal({
           {entries.length === 0 && (
             <p className="text-xs text-muted-foreground text-center py-4">Belum ada balasan terkirim.</p>
           )}
-          {entries.map((e, i) => (
-            <div key={i} className="flex justify-end">
+          {entries.map((e) => (
+            <div key={e.requestId ?? `${e.sentAt}-${e.body}`} className="flex justify-end">
               <div className="max-w-[85%] bg-primary/10 rounded-lg rounded-br-none px-3 py-2 text-sm shadow-sm">
                 <p className="whitespace-pre-wrap break-words">{e.body}</p>
                 <div className="flex items-center gap-1.5 mt-1.5">
@@ -160,7 +159,7 @@ export default function ReplyConversationModal({
                 {e.screenshotPath && (
                   <button
                     type="button"
-                    onClick={() => setScreenshot(e.screenshotPath!)}
+                    onClick={() => setScreenshot(e.screenshotPath ?? null)}
                     className="mt-1.5 block"
                     title="View screenshot"
                   >

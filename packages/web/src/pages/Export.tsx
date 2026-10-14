@@ -10,7 +10,6 @@ interface Campaign {
   campaignType: string
 }
 
-const CAMPAIGN_TYPES = ['STIK', 'KARDUS']
 const CATEGORIES = ['confirmed', 'denied', 'question', 'unclear', 'invalid', 'other', '']
 const CATEGORY_LABELS: Record<string, string> = {
   confirmed: 'Confirmed',

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
 
@@ -253,7 +253,7 @@ function CreateModal({
             min={10}
             max={500}
             value={totalExchanges}
-            onChange={(e) => setTotal(parseInt(e.target.value) || 30)}
+            onChange={(e) => setTotal(parseInt(e.target.value, 10) || 30)}
             className="w-full text-sm rounded-md border px-3 py-1.5 bg-background"
           />
           <p className="text-xs text-muted-foreground">

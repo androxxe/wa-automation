@@ -727,12 +727,6 @@ const MSG_STATUS_COLORS: Record<string, string> = {
   EXPIRED:   'bg-orange-100 text-orange-600',
 }
 
-const REASON_LABELS: Record<string, string> = {
-  NO_OUTGOING:       'No outgoing message in chat DOM',
-  STALE_ANCHOR:      'Anchor element became stale',
-  FINGERPRINT_MISSING: 'Message fingerprint missing after retries',
-}
-
 function MetadataCell({ metadata }: { metadata: MessageMetadata | null }) {
   if (!metadata) return <span className="text-muted-foreground/40 text-xs">—</span>
   return (
@@ -856,7 +850,7 @@ export default function CampaignDetail() {
     const input = prompt('How many contacts to top up per area?\n(Leave empty to use default formula)')
     if (input === null) return // cancelled
     const count = input.trim() === '' ? undefined : parseInt(input, 10)
-    if (count !== undefined && (isNaN(count) || count <= 0)) {
+    if (count !== undefined && (Number.isNaN(count) || count <= 0)) {
       alert('Please enter a valid positive number.')
       return
     }
@@ -960,8 +954,7 @@ export default function CampaignDetail() {
       )}
       {screenshot && <ScreenshotModal path={screenshot} onClose={() => setScreenshot(null)} />}
       {invalidReplyId && messages.length > 0 && (
-        <>
-          {(() => {
+        (() => {
             const msg = messages.find((m) => m.reply?.id === invalidReplyId)
             if (!msg?.reply) return null
             const currentJawaban = msg.reply.jawaban === null ? 'null' : String(msg.reply.jawaban)
@@ -973,8 +966,7 @@ export default function CampaignDetail() {
                 loading={updateReplyMutation.isPending}
               />
             )
-          })()}
-        </>
+          })()
       )}
       {viewReplyMsgId && (() => {
         const msg = messages.find((m) => m.id === viewReplyMsgId)
@@ -1209,7 +1201,7 @@ export default function CampaignDetail() {
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
-                          onClick={() => setFailModal(m.failReason!)}
+                          onClick={() => setFailModal(m.failReason)}
                           disabled={!m.failReason}
                           className="text-xs px-2 py-0.5 rounded-full font-medium bg-red-100 text-red-600 hover:bg-red-200 disabled:opacity-50 cursor-help"
                           title={m.failReason ? 'Click to view fail reason' : 'No fail reason available'}
@@ -1308,14 +1300,14 @@ export default function CampaignDetail() {
                               title="View conversation"
                               className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 font-medium hover:bg-blue-200"
                             >
-                              → {m.reply!.conversation!.length}
+                              → {m.reply.conversation?.length ?? 0}
                             </button>
                           )}
                           {/* Screenshot button */}
                           {m.reply.screenshotPath ? (
                             <button
                               type="button"
-                              onClick={() => setScreenshot(m.reply!.screenshotPath)}
+                              onClick={() => setScreenshot(m.reply?.screenshotPath ?? null)}
                               aria-label="View screenshot"
                               className="text-muted-foreground hover:text-foreground transition-colors"
                             >
@@ -1334,7 +1326,7 @@ export default function CampaignDetail() {
                           {m.reply.claudeCategory !== 'invalid' && (
                             <button
                               type="button"
-                              onClick={() => setInvalidReplyId(m.reply!.id)}
+                              onClick={() => m.reply && setInvalidReplyId(m.reply.id)}
                               aria-label="Mark as invalid"
                               className="text-muted-foreground hover:text-red-600 transition-colors"
                               title="Mark this reply as invalid"

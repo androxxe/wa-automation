@@ -14,10 +14,10 @@
  * correctly (e.g. packages/api for Prisma commands).
  */
 
-import path     from 'path'
-import readline from 'readline'
+import path     from 'node:path'
+import readline from 'node:readline'
 import { config }    from 'dotenv'
-import { execSync }  from 'child_process'
+import { execSync }  from 'node:child_process'
 
 // ── Load root .env ────────────────────────────────────────────────────────────
 // __dirname is scripts/ so ../  resolves to the project root.

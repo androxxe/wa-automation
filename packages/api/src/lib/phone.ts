@@ -31,10 +31,10 @@ export function normalizePhone(raw: string): PhoneResult {
   }
 
   // ── Handle scientific notation (e.g. 8.21167464117E+11) ──────────────────
-  if (/^[\d.]+[eE][+\-]?\d+$/.test(input)) {
+  if (/^[\d.]+[eE][+-]?\d+$/.test(input)) {
     // Parse as float then convert to integer string
     const num = parseFloat(input)
-    if (!isNaN(num) && isFinite(num)) {
+    if (!Number.isNaN(num) && Number.isFinite(num)) {
       input = Math.round(num).toString()
     }
   }
@@ -55,15 +55,15 @@ export function normalizePhone(raw: string): PhoneResult {
     // 62... → keep as-is
   } else if (digits.startsWith('0')) {
     // 08... → strip leading 0, prepend 62
-    digits = '62' + digits.slice(1)
+    digits = `62${digits.slice(1)}`
   } else if (digits.startsWith('8')) {
     // 8... → Excel stripped the leading 0; prepend 62
-    digits = '62' + digits
+    digits = `62${digits}`
   } else {
     return { raw, normalized: raw, valid: false, reason: 'unrecognised format' }
   }
 
-  const normalized = '+' + digits
+  const normalized = `+${digits}`
 
   // ── Validate suffix length ─────────────────────────────────────────────────
   // After +62 the subscriber number must be 8–14 digits.

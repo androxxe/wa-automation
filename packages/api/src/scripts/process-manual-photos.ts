@@ -9,11 +9,12 @@
 //
 // Files are moved to processed/ subfolder after successful processing.
 
-import path from 'path'
-import fs from 'fs'
+import path from 'node:path'
+import fs from 'node:fs'
+import type { Prisma } from '@prisma/client'
 import * as opencode from '../lib/opencode'
 
-const FOLDER = process.env.MANUAL_PHOTOS_FOLDER!
+const FOLDER = process.env.MANUAL_PHOTOS_FOLDER
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp'])
 const MIME_MAP: Record<string, string> = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
@@ -191,10 +192,12 @@ async function main() {
           if (!reply) continue
           created++
 
-          const existingMeta = (msg.metadata && typeof msg.metadata === 'object' ? { ...(msg.metadata as Record<string, unknown>) } : {}) as Record<string, unknown>
+          const existingMeta: Record<string, Prisma.InputJsonValue> = msg.metadata && typeof msg.metadata === 'object'
+            ? { ...(msg.metadata as Record<string, Prisma.InputJsonValue>) }
+            : {}
           existingMeta.replySource = 'batch'
           existingMeta.replySourceFile = filename
-          await db.message.update({ where: { id: msg.id }, data: { metadata: existingMeta as any } }).catch(() => {})
+          await db.message.update({ where: { id: msg.id }, data: { metadata: existingMeta } }).catch(() => {})
 
           if (msg.status !== 'READ') {
             await db.message.update({ where: { id: msg.id }, data: { status: 'READ', readAt: new Date() } })

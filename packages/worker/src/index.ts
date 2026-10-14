@@ -157,7 +157,7 @@ const worker = new Worker<MessageJob>(
     const AGENT_WAIT_TIMEOUT = 10 * 60 * 1000
     const agentWaitStart     = Date.now()
 
-    let agent: ReturnType<typeof agentManager.getAgent> = undefined
+    let agent: ReturnType<typeof agentManager.getAgent> 
     while (!agent) {
       if (Date.now() - agentWaitStart > AGENT_WAIT_TIMEOUT) {
         throw new Error('No agent online after 10 minutes — scan the QR code in the Agents page')
@@ -512,9 +512,13 @@ async function getUnrepliedPhonesByAgent(): Promise<Map<number, Map<string, Poll
   // Group by agentId, deduplicating by phone within each agent (keep MOST RECENT sentAt + body)
   const byAgent = new Map<number, Map<string, PollPhoneInfo>>()
   for (const m of messages) {
-    const agentId = m.agentId!
-    if (!byAgent.has(agentId)) byAgent.set(agentId, new Map())
-    const agentMap = byAgent.get(agentId)!
+    const agentId = m.agentId
+    if (agentId === null) continue
+    let agentMap = byAgent.get(agentId)
+    if (!agentMap) {
+      agentMap = new Map()
+      byAgent.set(agentId, agentMap)
+    }
     const ts = m.sentAt ?? new Date(0)
     const existing = agentMap.get(m.phone)
     if (!existing || ts > existing.sentAt) {
@@ -877,7 +881,7 @@ function startReplyPolling() {
 
       for (const [agentId, phones] of byAgent) {
         const entry = allAgents.find(({ agentId: id }) => id === agentId)
-        if (!entry || entry.agent.status !== 'connected') {
+        if (entry?.agent.status !== 'connected') {
           // Sending agent is offline — skip, we can't check its chats from another session
           continue
         }
@@ -1035,7 +1039,7 @@ async function appendConversation(replyId: string, entry: ConversationEntry): Pr
       where: { id: replyId },
       select: { conversation: true },
     })
-    const current = Array.isArray(reply?.conversation) ? (reply!.conversation as unknown as ConversationEntry[]) : []
+    const current = Array.isArray(reply?.conversation) ? (reply.conversation as unknown as ConversationEntry[]) : []
     await db.reply.update({
       where: { id: replyId },
       data:  { conversation: [...current, entry] as unknown as Prisma.InputJsonValue },
@@ -1270,7 +1274,7 @@ async function startManualPollListener(): Promise<void> {
           const agentId = parseInt(agentIdStr, 10)
           const entry   = allAgents.find(({ agentId: id }) => id === agentId)
 
-          if (!entry || entry.agent.status !== 'connected') {
+          if (entry?.agent.status !== 'connected') {
             console.warn(`[manual-poll] agent:${agentId} is not connected, skipping ${Object.keys(phoneEntries).length} phone(s)`)
             continue
           }

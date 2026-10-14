@@ -1,4 +1,3 @@
-import OpenAI from "openai"
 import type { ColumnMapping, ReplyAnalysis } from "@aice/shared"
 import { randomUUID } from "node:crypto"
 
@@ -14,11 +13,6 @@ const SESSION_ID = process.env.OPCODE_SESSION_ID ?? `aice-api-${randomUUID()}`
 const USER_AGENT = "aice-whatsapp-automation/1.0"
 
 if (!process.env.OPCODE_API_KEY) throw new Error("OPCODE_API_KEY is not set")
-
-const client = new OpenAI({
-  apiKey: process.env.OPCODE_API_KEY,
-  baseURL: BASE_URL,
-})
 
 function parseJsonFrom(text: string, context: string): unknown {
   const json = text.match(/\{[\s\S]*\}/)?.[0]

@@ -1,7 +1,7 @@
 import { defineConfig, type Connect } from 'vite'
 import react from '@vitejs/plugin-react'
-import path from 'path'
-import type { ServerResponse, IncomingMessage } from 'http'
+import path from 'node:path'
+import type { ServerResponse, IncomingMessage } from 'node:http'
 
 const API_TARGET = process.env.VITE_API_URL ?? 'http://localhost:3001'
 

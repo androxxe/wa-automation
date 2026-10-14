@@ -12,8 +12,8 @@
  * Falls back to ./browser-profile if neither env var is set.
  */
 
-import fs   from 'fs'
-import path from 'path'
+import fs   from 'node:fs'
+import path from 'node:path'
 import { config } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 

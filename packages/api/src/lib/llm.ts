@@ -25,7 +25,6 @@ function getProvider() {
       return openai
     case 'gemini':
       return gemini
-    case 'anthropic':
     default:
       return claude
   }

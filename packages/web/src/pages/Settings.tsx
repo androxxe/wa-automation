@@ -56,7 +56,7 @@ export default function Settings() {
         method:  'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          defaultTargetRepliesPerArea: parseInt(target),
+          defaultTargetRepliesPerArea: parseInt(target, 10),
           defaultExpectedReplyRate:    parseFloat(rate) / 100,
         }),
       }),
@@ -145,7 +145,7 @@ export default function Settings() {
     manualPollMutation.mutate(phones)
   }
 
-  const effectiveTarget = parseInt(target) || 20
+  const effectiveTarget = parseInt(target, 10) || 20
   const effectiveRate   = parseFloat(rate) / 100 || 0.5
   const sendPerArea     = Math.ceil(effectiveTarget / effectiveRate)
 
@@ -246,7 +246,7 @@ export default function Settings() {
               id="poll-concurrency"
               value={config.replyPollConcurrency}
               onChange={(e) => {
-                const val = parseInt(e.target.value)
+                const val = parseInt(e.target.value, 10)
                 apiFetch('/api/config', {
                   method: 'PATCH',
                   headers: { 'Content-Type': 'application/json' },

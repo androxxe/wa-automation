@@ -40,13 +40,21 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
 }
 
 function pickTemplate(type: string, exclude: string[] = []): string {
-  const pool = DEFAULT_TEMPLATES[type] ?? DEFAULT_TEMPLATES["STIK"]
+  const pool = DEFAULT_TEMPLATES[type] ?? DEFAULT_TEMPLATES.STIK
   const fresh = pool.filter((t) => !exclude.includes(t))
   const src = fresh.length > 0 ? fresh : pool
   return src[Math.floor(Math.random() * src.length)]
 }
 
 const MAX_VARIANTS = 10
+
+interface TemplateVariant { id: number; text: string }
+
+let variantSeq = 0
+
+function makeVariants(texts: string[]): TemplateVariant[] {
+  return texts.map((text) => ({ id: ++variantSeq, text }))
+}
 
 interface AreaItem {
   id: string
@@ -91,11 +99,11 @@ export default function NewBulkCampaign() {
 
   const [month, setMonth] = useState<number>(() => new Date().getMonth() + 1)
   const [year, setYear] = useState<string>(() => String(CURRENT_YEAR))
-  const tahun = String(parseInt(year) || CURRENT_YEAR)
+  const tahun = String(parseInt(year, 10) || CURRENT_YEAR)
   const bulan = String(month) // numeric — stored as-is in DB
   const monthWord = MONTHS[month - 1] ?? ""
   const [campaignType, setCampaignType] = useState<CampaignType>("STIK")
-  const [templates, setTemplates] = useState<string[]>(() => [...DEFAULT_TEMPLATES["STIK"]])
+  const [templates, setTemplates] = useState<TemplateVariant[]>(() => makeVariants(DEFAULT_TEMPLATES.STIK))
   const [templatesEdited, setTemplatesEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>("")
   const [replyRate, setReplyRate] = useState<string>("")
@@ -157,31 +165,31 @@ export default function NewBulkCampaign() {
     (t: CampaignType) => {
       setCampaignType(t)
       setSelectedAreas(new Set())
-      if (!templatesEdited) setTemplates([...(DEFAULT_TEMPLATES[t] ?? DEFAULT_TEMPLATES["STIK"])])
+      if (!templatesEdited) setTemplates(makeVariants(DEFAULT_TEMPLATES[t] ?? DEFAULT_TEMPLATES.STIK))
     },
     [templatesEdited],
   )
 
-  function updateVariant(i: number, value: string) {
-    setTemplates((prev) => prev.map((t, idx) => (idx === i ? value : t)))
+  function updateVariant(id: number, value: string) {
+    setTemplates((prev) => prev.map((t) => (t.id === id ? { ...t, text: value } : t)))
     setTemplatesEdited(true)
   }
 
-  function rerollVariant(i: number) {
+  function rerollVariant(id: number) {
     setTemplates((prev) =>
-      prev.map((t, idx) => (idx === i ? pickTemplate(campaignType, prev) : t)),
+      prev.map((t) => (t.id === id ? { ...t, text: pickTemplate(campaignType, prev.map((p) => p.text)) } : t)),
     )
   }
 
   function addVariant() {
     setTemplates((prev) =>
-      prev.length >= MAX_VARIANTS ? prev : [...prev, pickTemplate(campaignType, prev)],
+      prev.length >= MAX_VARIANTS ? prev : [...prev, ...makeVariants([pickTemplate(campaignType, prev.map((p) => p.text))])],
     )
     setTemplatesEdited(true)
   }
 
-  function removeVariant(i: number) {
-    setTemplates((prev) => (prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)))
+  function removeVariant(id: number) {
+    setTemplates((prev) => (prev.length <= 1 ? prev : prev.filter((t) => t.id !== id)))
     setTemplatesEdited(true)
   }
 
@@ -228,17 +236,17 @@ export default function NewBulkCampaign() {
       }
     }
     return rows
-  }, [depts, selectedAreas, month, year, campaignType])
+  }, [depts, selectedAreas, campaignType, monthWord, tahun])
 
   const effectiveTarget =
-    parseInt(targetReplies) || config?.defaultTargetRepliesPerArea || 20
+    parseInt(targetReplies, 10) || config?.defaultTargetRepliesPerArea || 20
   const effectiveRate =
     parseFloat(replyRate) / 100 || config?.defaultExpectedReplyRate || 0.5
   const sendPerArea = Math.ceil(effectiveTarget / effectiveRate)
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const cleanTemplates = templates.map((t) => t.trim()).filter((t) => t.length > 0)
+    const cleanTemplates = templates.map((t) => t.text.trim()).filter((t) => t.length > 0)
     if (cleanTemplates.length === 0 || selectedAreas.size === 0) {
       setError("At least one template variant and at least one area are required")
       return
@@ -251,7 +259,7 @@ export default function NewBulkCampaign() {
       campaignType,
       areaIds: Array.from(selectedAreas),
       templates: cleanTemplates,
-      ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies) }),
+      ...(targetReplies && { targetRepliesPerArea: parseInt(targetReplies, 10) }),
       ...(replyRate && { expectedReplyRate: parseFloat(replyRate) / 100 }),
       ...(targetReplyMode !== "ALL" && { targetReplyMode }),
     })
@@ -289,7 +297,7 @@ export default function NewBulkCampaign() {
             <select
               id="bulk-month"
               value={month}
-              onChange={(e) => setMonth(parseInt(e.target.value) || 1)}
+              onChange={(e) => setMonth(parseInt(e.target.value, 10) || 1)}
               className="w-full border rounded-md px-3 py-2 text-sm bg-background"
             >
               {MONTHS.map((m, i) => (
@@ -343,9 +351,9 @@ export default function NewBulkCampaign() {
         {/* Templates (shared) */}
         <div className="space-y-2">
           <div className="flex items-center justify-between">
-            <label className="text-sm font-medium">
+            <span className="text-sm font-medium">
               Message templates — shared for all ({templates.length})
-            </label>
+            </span>
             <button
               type="button"
               onClick={addVariant}
@@ -357,7 +365,7 @@ export default function NewBulkCampaign() {
             </button>
           </div>
           {templates.map((t, i) => (
-            <div key={i} className="space-y-1.5 rounded-md border p-2.5">
+            <div key={t.id} className="space-y-1.5 rounded-md border p-2.5">
               <div className="flex items-center justify-between">
                 <span className="text-xs font-medium text-muted-foreground">
                   Variant {i + 1}
@@ -365,7 +373,7 @@ export default function NewBulkCampaign() {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => rerollVariant(i)}
+                    onClick={() => rerollVariant(t.id)}
                     className="text-xs text-muted-foreground hover:text-foreground"
                     title="Replace with a different default variant"
                   >
@@ -374,7 +382,7 @@ export default function NewBulkCampaign() {
                   {templates.length > 1 && (
                     <button
                       type="button"
-                      onClick={() => removeVariant(i)}
+                      onClick={() => removeVariant(t.id)}
                       className="text-xs text-destructive/70 hover:text-destructive"
                       title="Remove this variant"
                     >
@@ -384,9 +392,9 @@ export default function NewBulkCampaign() {
                 </div>
               </div>
               <textarea
-                id={`bulk-template-${i}`}
-                value={t}
-                onChange={(e) => updateVariant(i, e.target.value)}
+                id={`bulk-template-${t.id}`}
+                value={t.text}
+                onChange={(e) => updateVariant(t.id, e.target.value)}
                 rows={4}
                 className="w-full border rounded-md px-3 py-2 text-sm bg-background font-mono resize-y"
               />

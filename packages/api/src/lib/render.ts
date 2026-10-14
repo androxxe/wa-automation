@@ -52,7 +52,7 @@ export function renderTemplate(
   // Stored `bulan` is numeric ("9") — messages use the word ("September").
   // Non-numeric values (old campaigns like "Desember" / "JULI 2026") pass through.
   const bulanWord = (() => {
-    const n = parseInt(campaign.bulan)
+    const n = parseInt(campaign.bulan, 10)
     if (!Number.isNaN(n) && n >= 1 && n <= 12) {
       const w = BULAN_WORDS[n - 1].toLowerCase()
       return w.charAt(0).toUpperCase() + w.slice(1)

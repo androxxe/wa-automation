@@ -1,5 +1,5 @@
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import { chromium, type BrowserContext, type Page } from 'playwright'
 import type { BrowserStatus } from '@aice/shared'
 
@@ -145,11 +145,17 @@ export class BrowserAgent {
    * page.goto() uses CDP Page.navigate which activates the window on macOS.
    * In-page location.href assignment stays in the renderer process and avoids it.
    */
+  /** Return the active page, throwing if the browser is not ready. */
+  private requirePage(): Page {
+    if (!this.page) throw new Error("Browser page is not ready")
+    return this.page
+  }
+
   private async _gotoQuiet(
     url: string,
     waitUntil: 'load' | 'domcontentloaded' = 'domcontentloaded',
   ): Promise<void> {
-    const page = this.page!
+    const page = this.requirePage()
     // evaluate may throw when navigation destroys the execution context — that's expected
     await page.evaluate((u) => { location.href = u }, url).catch(() => {})
     await page.waitForLoadState(waitUntil)
@@ -262,7 +268,7 @@ export class BrowserAgent {
    */
   private async _dismissInterstitialIfNeeded(): Promise<boolean> {
     if (!this.page) return false
-    const page = this.page
+    const page = this.requirePage()
     try {
       // ── Fast check: is there a dialog that looks like the interstitial? ──────
       const probe = await page
@@ -524,7 +530,7 @@ export class BrowserAgent {
   private _publishQr() {
     if (!this.qrPublisher || this._status !== 'qr') return
     this.qrScreenshot()
-      .then((b64) => { if (b64) return this.qrPublisher!(b64) })
+      .then((b64) => { if (b64 && this.qrPublisher) return this.qrPublisher(b64) })
       .catch(() => {})
   }
 
@@ -563,7 +569,7 @@ export class BrowserAgent {
 
   async sendMessage(phone: string, body: string, chatLoadTimeoutMs = 30000): Promise<void> {
     return this._withBrowserLock(async () => {
-      const page   = this.page!
+      const page   = this.requirePage()
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
@@ -590,7 +596,7 @@ export class BrowserAgent {
    */
   async sendMessageViaSidebar(phone: string, body: string, chatLoadTimeoutMs = 30000): Promise<void> {
     return this._withBrowserLock(async () => {
-      const page = this.page!
+      const page = this.requirePage()
       const opened = await this._openChatViaSidebar(phone).catch(() => false)
       if (!opened) {
         console.log(`[agent:${this.agentId}] sidebar open failed for ${phone}, falling back to URL nav`)
@@ -609,7 +615,7 @@ export class BrowserAgent {
    * Never throws — returns false on any problem so callers fall back to URL.
    */
   private async _openChatViaSidebar(phone: string): Promise<boolean> {
-    const page   = this.page!
+    const page   = this.requirePage()
     const digits = phone.replace(/\D/g, '')
     if (!digits) return false
     const tail    = digits.slice(-8)
@@ -690,7 +696,7 @@ export class BrowserAgent {
 
   /** Best-effort search reset so the next sidebar send starts from a blank box. */
   private async _clearSidebarSearch(): Promise<void> {
-    const page  = this.page!
+    const page  = this.requirePage()
     const field = page.locator('input[data-tab="3"][role="textbox"], #side input[data-tab="3"]').first()
     if ((await field.count().catch(() => 0)) === 0) return
     await field.click({ timeout: 3000 }).catch(() => {})
@@ -818,7 +824,7 @@ export class BrowserAgent {
 
   async checkPhoneRegistered(phone: string): Promise<boolean> {
     return this._withBrowserLock(async () => {
-      const page   = this.page!
+      const page   = this.requirePage()
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
@@ -843,9 +849,9 @@ export class BrowserAgent {
             restrictionKeywords: string[]
           }): string | false => {
             const w = window as unknown as Record<string, unknown>
-            if (w['__wc_runId'] !== id) {
-              w['__wc_runId']       = id
-              w['__wc_composeSince'] = 0
+            if (w.__wc_runId !== id) {
+              w.__wc_runId       = id
+              w.__wc_composeSince = 0
             }
             const modal = document.querySelector('[data-animate-modal-popup="true"]')
             if (modal) {
@@ -873,10 +879,10 @@ export class BrowserAgent {
                 'footer div[contenteditable="true"]',
             )
             if (compose) {
-              if (!w['__wc_composeSince']) w['__wc_composeSince'] = Date.now()
-              if ((Date.now() - (w['__wc_composeSince'] as number)) >= stabiliseMs) return 'registered'
+              if (!w.__wc_composeSince) w.__wc_composeSince = Date.now()
+              if ((Date.now() - (w.__wc_composeSince as number)) >= stabiliseMs) return 'registered'
             } else {
-              w['__wc_composeSince'] = 0
+              w.__wc_composeSince = 0
             }
             return false
           },
@@ -913,7 +919,7 @@ export class BrowserAgent {
    */
   async probeRestriction(phone: string): Promise<'restricted' | 'ok'> {
     return this._withBrowserLock(async () => {
-      const page   = this.page!
+      const page   = this.requirePage()
       const number = phone.replace('+', '')
       const url    = `https://web.whatsapp.com/send?phone=${number}&text=`
 
@@ -983,7 +989,7 @@ export class BrowserAgent {
         : null
 
       await this._withBrowserLock(async () => {
-        const page = this.page!
+        const page = this.requirePage()
         const number    = phone.replace('+', '')
         const url       = `https://web.whatsapp.com/send?phone=${number}`
         const sentAtMs  = sentAt.getTime()

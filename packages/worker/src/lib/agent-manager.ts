@@ -1,13 +1,7 @@
-import path from "path"
 import type IORedis from "ioredis"
 import type { AgentStatus } from "@aice/shared"
 import { BrowserAgent } from "./browser-agent"
 import { db } from "./db"
-
-const PROFILES_DIR =
-  process.env.BROWSER_PROFILE_PATH ??
-  process.env.BROWSER_PROFILES_DIR ??
-  "./browser-profile"
 
 const redisKey = (agentId: number) => `agent:${agentId}:status`
 

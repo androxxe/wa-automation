@@ -134,12 +134,13 @@ export default function NewReply() {
 
         {/* Phone input */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium">
+          <label htmlFor="reply-phone" className="text-sm font-medium">
             Phone <span className="text-destructive">*</span>
           </label>
           <div className="flex gap-2">
             <input
               type="text"
+              id="reply-phone"
               value={phone}
               onChange={(e) => { setPhone(e.target.value); setLookupResult(null); setLookupError(null); setSuccess(null) }}
               onBlur={() => lookupPhone(phone)}
@@ -172,9 +173,10 @@ export default function NewReply() {
 
         {/* Campaign (readonly) */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium text-muted-foreground">Campaign</label>
+          <label htmlFor="reply-campaign" className="text-sm font-medium text-muted-foreground">Campaign</label>
           <input
             type="text"
+            id="reply-campaign"
             value={selectedPhone?.campaignName ?? ''}
             readOnly
             className="w-full border rounded-md px-3 py-2 text-sm bg-muted/50 text-muted-foreground"
@@ -183,10 +185,11 @@ export default function NewReply() {
 
         {/* Reply text */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium">
+          <label htmlFor="reply-body" className="text-sm font-medium">
             Reply Text <span className="text-destructive">*</span>
           </label>
           <textarea
+            id="reply-body"
             value={body}
             onChange={(e) => setBody(e.target.value)}
             rows={4}
@@ -199,10 +202,11 @@ export default function NewReply() {
         {/* Jawaban + Category row */}
         <div className="grid grid-cols-2 gap-4">
           <div className="space-y-1.5">
-            <label className="text-sm font-medium">
+            <label htmlFor="reply-jawaban" className="text-sm font-medium">
               Jawaban <span className="text-destructive">*</span>
             </label>
             <select
+              id="reply-jawaban"
               value={jawaban}
               onChange={(e) => setJawaban(Number(e.target.value))}
               className="w-full border rounded-md px-3 py-2 text-sm bg-background"
@@ -215,10 +219,11 @@ export default function NewReply() {
             </select>
           </div>
           <div className="space-y-1.5">
-            <label className="text-sm font-medium">
+            <label htmlFor="reply-category" className="text-sm font-medium">
               Category <span className="text-destructive">*</span>
             </label>
             <select
+              id="reply-category"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               className="w-full border rounded-md px-3 py-2 text-sm bg-background"
@@ -238,7 +243,7 @@ export default function NewReply() {
 
         {/* Photo upload */}
         <div className="space-y-1.5">
-          <label className="text-sm font-medium">
+          <label htmlFor="reply-photo" className="text-sm font-medium">
             Proof Photo <span className="text-destructive">*</span>
           </label>
           <p className="text-xs text-muted-foreground">
@@ -247,6 +252,7 @@ export default function NewReply() {
           <div className="flex items-center gap-3">
             <input
               ref={fileRef}
+              id="reply-photo"
               type="file"
               accept="image/*"
               onChange={handleFileChange}

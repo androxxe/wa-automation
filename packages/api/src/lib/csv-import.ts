@@ -1,9 +1,8 @@
-import fs from 'fs'
-import { createReadStream } from 'fs'
-import path from 'path'
-import { Readable } from 'stream'
+import fs from 'node:fs'
+import { createReadStream } from 'node:fs'
+import path from 'node:path'
 import dotenv from 'dotenv'
-import { PrismaClient } from '@prisma/client'
+import { Prisma, PrismaClient } from '@prisma/client'
 
 // Load environment variables - go up 4 levels from lib/ to project root
 const projectRoot = path.resolve(__dirname, '../../../..')
@@ -260,31 +259,39 @@ export async function importCSV(filePath: string): Promise<ImportStats> {
               `  ✓ Processed ${stats.imported + stats.invalid}/${rows.length} (${stats.imported} imported, ${stats.invalid} invalid)`,
             )
           }
-        } catch (error: any) {
-          // Check if it's a duplicate constraint violation
-          if (error.code === 'P2002' && error.meta?.target?.includes('areaId_phoneNorm')) {
+        } catch (error) {
+          // Check if it's a duplicate constraint violation — meta.target is an index
+          // name (string) on MySQL and a field-name array on other providers.
+          const target = error instanceof Prisma.PrismaClientKnownRequestError ? error.meta?.target : undefined
+          const isDuplicatePhone =
+            error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === 'P2002' &&
+            (typeof target === 'string'
+              ? target.includes('areaId_phoneNorm')
+              : Array.isArray(target) && target.includes('areaId_phoneNorm'))
+          if (isDuplicatePhone) {
             stats.duplicates++
           } else {
             throw error
           }
         }
-      } catch (error: any) {
+      } catch (error) {
         stats.invalid++
         stats.details.invalidRows.push({
           row: rowNum,
-          reason: `${row.nama}: ${error.message}`,
+          reason: `${row.nama}: ${error instanceof Error ? error.message : String(error)}`,
         })
       }
     }
 
-    console.log('\n' + '='.repeat(60))
+    console.log(`\n${'='.repeat(60)}`)
     console.log('📊 IMPORT SUMMARY')
     console.log('='.repeat(60))
     console.log(`  Total Records:     ${stats.total}`)
     console.log(`  ✅ Imported:        ${stats.imported}`)
     console.log(`  ⚠️  Invalid:        ${stats.invalid}`)
     console.log(`  🔄 Duplicates:     ${stats.duplicates}`)
-    console.log('='.repeat(60) + '\n')
+    console.log(`${'='.repeat(60)}\n`)
 
     if (stats.invalid > 0 && stats.details.invalidRows.length > 0) {
       console.log('❌ Invalid Records:')

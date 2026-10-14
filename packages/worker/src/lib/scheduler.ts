@@ -5,8 +5,8 @@ const TIMEZONE = process.env.TIMEZONE ?? 'Asia/Jakarta'
 // Parse HH:MM into total minutes since midnight
 function toMinutes(hhmm: string, fallback: number): number {
   const [h, m] = hhmm.split(':').map(Number)
-  if (isNaN(h)) return fallback
-  return h * 60 + (isNaN(m) ? 0 : m)
+  if (Number.isNaN(h)) return fallback
+  return h * 60 + (Number.isNaN(m) ? 0 : m)
 }
 
 const START_MINUTES = toMinutes(process.env.WORKING_HOURS_START ?? '8:00',  8  * 60)
@@ -36,7 +36,7 @@ export function isWorkingHours(): boolean {
 export function msUntilNextOpen(): number {
   const now    = new Date()
   const zoned  = toZonedTime(now, TIMEZONE)
-  let candidate = new Date(zoned)
+  const candidate = new Date(zoned)
 
   // Advance to next START_HOUR:START_MIN
   candidate.setHours(START_HOUR, START_MIN, 0, 0)

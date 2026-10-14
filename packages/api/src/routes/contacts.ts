@@ -149,10 +149,10 @@ router.get('/validate-wa/count', async (_req, res) => {
           total,
         }
       })
-      .filter(Boolean)
-      .sort((a, b) => a!.name.localeCompare(b!.name))
+      .filter((a): a is NonNullable<typeof a> => a !== null)
+      .sort((a, b) => a.name.localeCompare(b.name))
 
-    const areaCount = areas.filter((a) => a!.unchecked > 0).length
+    const areaCount = areas.filter((a) => a.unchecked > 0).length
 
     res.json({ ok: true, data: { unchecked: globalUnchecked, areaCount, areas } })
   } catch (err) {
@@ -284,7 +284,7 @@ router.post('/validate-wa', async (req, res) => {
     await pipeline.exec()
 
     const normalLabel  = hasNormalAreas ? `${effectiveAreaIds.length} areas` : 'all areas'
-    const recheckLabel = hasRecheckAreas ? `, ${recheckAreaIds!.length} recheck areas` : ''
+    const recheckLabel = hasRecheckAreas ? `, ${recheckAreaIds.length} recheck areas` : ''
     console.log(`[api] validate-wa — ${jobs.length} unique phones queued (${contacts.length} contacts, ${normalLabel}${recheckLabel}${limitPerArea ? `, limit ${limitPerArea}/area` : ''})`)
 
     res.json({ ok: true, data: { queued: jobs.length } })

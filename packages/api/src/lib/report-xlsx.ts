@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs'
-import fs from 'fs'
-import path from 'path'
+import fs from 'node:fs'
+import path from 'node:path'
 import { db } from './db'
 
 const OUTPUT_FOLDER = process.env.OUTPUT_FOLDER ?? ''
@@ -129,14 +129,13 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
     })
 
     let rowNo = 1
-    let invalidCount = 0
     for (const contact of sentContacts) {
       const message     = contact.messages[0]
       const reply       = message?.reply
       const agentPhone  = message?.agent?.phoneNumber ?? ''
       const hasReply    = reply != null
       // null jawaban (unclear/question/other) counts as 0 (Tidak) in the report
-      const jawaban      = hasReply ? ((reply!.jawaban ?? 0) as 0 | 1) : null
+      const jawaban      = hasReply ? ((reply?.jawaban ?? 0) as 0 | 1) : null
       const jawabanLabel = jawaban === 1 ? 1 : jawaban === 0 ? 0 : ''
       const kategori     = reply?.claudeCategory ?? ''
       const isInvalid    = reply?.claudeCategory === 'invalid'
@@ -144,7 +143,6 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
       const excelRowIdx  = rowNo + 1
 
       if (isInvalid) {
-        invalidCount++
         totalInvalidReplies++
       }
 
@@ -237,9 +235,8 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
          try {
            const ext       = path.extname(absPath).toLowerCase().replace('.', '')
            const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-           // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
-           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+           // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
+           const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
            // col 12 = column M (0-indexed), row = excelRowIdx - 1 (0-indexed)
            sheet.addImage(imageId, {
              tl:     { col: 12, row: excelRowIdx - 1 },
@@ -281,9 +278,7 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
   meta.addRow(['Total replies valid', totalRows - totalInvalidReplies])
   meta.addRow(['Total replies invalid', totalInvalidReplies])
   meta.getRow(1).font = { bold: true, size: 13 }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return Buffer.from((await workbook.xlsx.writeBuffer()) as any)
+  return Buffer.from(await workbook.xlsx.writeBuffer())
 }
 
 /**
@@ -315,7 +310,7 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
   for (const campaign of campaigns) {
     // Use campaign name with timestamp to ensure uniqueness
     // Format: {campaignName}_{YYYYMMDD}
-    let sheetName = `${campaign.name}_${timestamp}`.slice(0, 31)
+    const sheetName = `${campaign.name}_${timestamp}`.slice(0, 31)
     
     const sheet = workbook.addWorksheet(sheetName)
 
@@ -378,9 +373,8 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
         const reply = message?.reply
         const agentPhone = message?.agent?.phoneNumber ?? ''
         const hasReply = reply != null
-         const jawaban = hasReply ? ((reply!.jawaban ?? 0) as 0 | 1) : null
+         const jawaban = hasReply ? ((reply?.jawaban ?? 0) as 0 | 1) : null
          const jawabanLabel = jawaban === 1 ? 1 : jawaban === 0 ? 0 : ''
-         const jawabanColor = jawaban === 1 ? 'FFD1FAE5' : jawaban === 0 ? 'FFFEE2E2' : 'FFFFFFFF'
         const kategori = reply?.claudeCategory ?? ''
         const isInvalid = reply?.claudeCategory === 'invalid'
         const statusLabel = isInvalid ? '⚠ Invalid' : (hasReply ? 'Valid' : '')
@@ -476,9 +470,8 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
              const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-             // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
-             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-             const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+             // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
+             const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
              sheet.addImage(imageId, {
                tl: { col: 12, row: excelRowIdx - 1 },
                ext: { width: IMG_W, height: IMG_H },
@@ -536,9 +529,7 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
     summary.addRow([`${c.bulan} - ${c.campaignType} - ${c.name}`])
   })
   summary.getRow(1).font = { bold: true, size: 13 }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return Buffer.from((await workbook.xlsx.writeBuffer()) as any)
+  return Buffer.from(await workbook.xlsx.writeBuffer())
 }
 
 /**
@@ -639,10 +630,10 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           campaignMap.set(campaignKey, { campaign, rows: [] })
         }
 
-        const jawaban = hasReply ? ((reply!.jawaban ?? 0) as 0 | 1) : null
+        const jawaban = hasReply ? ((reply?.jawaban ?? 0) as 0 | 1) : null
         const jawabanLabel = jawaban === 1 ? 1 : jawaban === 0 ? 0 : ''
 
-        campaignMap.get(campaignKey)!.rows.push({
+        campaignMap.get(campaignKey)?.rows.push({
           contact,
           area,
           message: msg,
@@ -747,7 +738,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
       let firstDataRowNum = 0 // Track first data row number for formula
 
       for (const rowData of rows) {
-        const { contact, area, message, reply, hasReply, jawaban, jawabanLabel } = rowData
+        const { contact, area, message, reply, hasReply, jawabanLabel } = rowData
         const isInvalid = reply?.claudeCategory === 'invalid'
 
         if (isInvalid) {
@@ -874,9 +865,8 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
              const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
-             // ExcelJS expects a Buffer but has incompatible type definitions; fs.readFileSync already returns correct binary data
-             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as any, extension })
+             // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
+              const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
               sheet.addImage(imageId, {
                 tl: { col: 12, row: sheetRowIndex - 1 },
                 ext: { width: IMG_W, height: IMG_H },
@@ -976,7 +966,5 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
   })
 
   summary.getRow(1).font = { bold: true, size: 13 }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return Buffer.from((await workbook.xlsx.writeBuffer()) as any)
+  return Buffer.from(await workbook.xlsx.writeBuffer())
 }
