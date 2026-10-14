@@ -704,6 +704,10 @@ interface AgentSummary {
   validationOnly: boolean
 }
 
+interface AppConfigData {
+  defaultTargetRepliesPerArea: number
+}
+
 const STATUS_COLORS: Record<CampaignStatus, string> = {
   DRAFT:     'bg-gray-100 text-gray-600',
   RUNNING:   'bg-green-100 text-green-700',
@@ -761,6 +765,11 @@ export default function CampaignDetail() {
     queryKey: ['agents'],
     queryFn:  () => apiFetch<AgentSummary[]>('/api/agents'),
     refetchInterval: 10000,
+  })
+
+  const { data: config } = useQuery<AppConfigData>({
+    queryKey: ['config'],
+    queryFn:  () => apiFetch<AppConfigData>('/api/config'),
   })
 
   const { data: messagesData } = useQuery<{ messages: Message[]; total: number }>({
@@ -1115,7 +1124,7 @@ export default function CampaignDetail() {
               </thead>
               <tbody className="divide-y">
                 {campaign.areas.map((ca) => {
-                  const target        = campaign.targetRepliesPerArea ?? 20
+                  const target        = campaign.targetRepliesPerArea ?? config?.defaultTargetRepliesPerArea ?? 20
                   const mode          = campaign.targetReplyMode ?? 'ALL'
                   const modeLabel     = mode === 'YES' ? 'Only YES' : mode === 'YES_NO' ? 'YES or NO' : 'Any reply'
                   const qualifies    = ca.qualifyingReplyCount ?? ca.replyCount

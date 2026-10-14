@@ -14,6 +14,7 @@ import repliesRouter  from './routes/replies'
 import warmerRouter   from './routes/warmer'
 import statsRouter    from './routes/stats'
 import messagesRouter from './routes/messages'
+import { startTargetSweep } from './lib/target-sweep'
 
 async function main() {
   await validateStartup()
@@ -42,6 +43,7 @@ async function main() {
   )
 
   app.listen(PORT, () => console.log(`[api] listening on http://localhost:${PORT}`))
+  startTargetSweep()
 }
 
 main().catch((err) => {
