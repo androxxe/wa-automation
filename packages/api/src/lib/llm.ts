@@ -49,6 +49,7 @@ export function getModelDisplayName(): string {
         'mimo-v2.5-pro':     'MiMo V2.5 Pro',
         'minimax-m2.5':      'MiniMax M2.5',
         'minimax-m2.7':      'MiniMax M2.7',
+        'muse-spark-1.3-contributor': 'Muse Spark 1.3 Contributor',
       }
       return names[m] ?? m
     }

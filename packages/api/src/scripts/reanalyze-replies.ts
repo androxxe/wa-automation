@@ -74,12 +74,52 @@ interface ReplyResult {
 
 // ─── opencode call (Option B — inline, no export from opencode.ts) ────────────
 
+const SYSTEM_PROMPT =
+  "Output only the exact requested JSON array. No reasoning, no markdown, no code blocks."
+
+interface ApiBody {
+  choices?: { message?: { content?: string } }[]
+  output?: { type?: string; content?: { type?: string; text?: string }[] }[]
+}
+
+function extractText(body: ApiBody, useResponsesApi: boolean): string | undefined {
+  if (!useResponsesApi) return body.choices?.[0]?.message?.content
+  const text = (body.output ?? [])
+    .filter((o) => o.type === "message")
+    .flatMap((o) => o.content ?? [])
+    .filter((c) => c.type === "output_text")
+    .map((c) => c.text ?? "")
+    .join("")
+  return text || undefined
+}
+
 async function callOpencode(prompt: string): Promise<string> {
   if (!process.env.OPCODE_API_KEY) {
     throw new Error("OPCODE_API_KEY is not set")
   }
   const model = process.env.OPCODE_MODEL ?? "deepseek-v4-flash"
-  const url = `${OPENCODE_URL}/chat/completions`
+  // Muse Spark speaks only the OpenAI Responses API — chat completions
+  // returns 400 ModelProtocolUnsupported. Everything else uses chat completions.
+  const useResponsesApi = /^muse-spark/.test(model)
+  const url = `${OPENCODE_URL}${useResponsesApi ? "/responses" : "/chat/completions"}`
+  const body = useResponsesApi
+    ? {
+        model,
+        max_output_tokens: 16384,
+        temperature: 0,
+        reasoning: { effort: process.env.OPCODE_REASONING_EFFORT ?? "low" },
+        instructions: SYSTEM_PROMPT,
+        input: prompt,
+      }
+    : {
+        model,
+        max_tokens: 16384,
+        temperature: 0,
+        messages: [
+          { role: "system", content: SYSTEM_PROMPT },
+          { role: "user", content: prompt },
+        ],
+      }
 
   let res: Response
   try {
@@ -91,19 +131,7 @@ async function callOpencode(prompt: string): Promise<string> {
         "x-opencode-session": SESSION_ID,
         "User-Agent": USER_AGENT,
       },
-      body: JSON.stringify({
-        model,
-        max_tokens: 16384,
-        temperature: 0,
-        messages: [
-          {
-            role: "system",
-            content:
-              "Output only the exact requested JSON array. No reasoning, no markdown, no code blocks.",
-          },
-          { role: "user", content: prompt },
-        ],
-      }),
+      body: JSON.stringify(body),
     })
   } catch (err) {
     const code = (err as { code?: string }).code
@@ -119,10 +147,8 @@ async function callOpencode(prompt: string): Promise<string> {
     })
   }
 
-  const body = (await res.json()) as {
-    choices?: { message?: { content?: string } }[]
-  }
-  const text = body.choices?.[0]?.message?.content
+  const parsed = (await res.json()) as ApiBody
+  const text = extractText(parsed, useResponsesApi)
   if (!text) throw new Error("Empty opencode response")
   return text
 }

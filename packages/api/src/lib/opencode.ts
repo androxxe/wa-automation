@@ -3,6 +3,10 @@ import type { ColumnMapping, ReplyAnalysis } from "@aice/shared"
 import { randomUUID } from "node:crypto"
 
 const MODEL = process.env.OPCODE_MODEL ?? "deepseek-v4-flash"
+// Muse Spark speaks only the OpenAI Responses API — chat completions returns
+// 400 ModelProtocolUnsupported. Everything else stays on chat completions.
+const USE_RESPONSES_API = /^muse-spark/.test(MODEL)
+const REASONING_EFFORT = process.env.OPCODE_REASONING_EFFORT ?? "low"
 const BASE_URL = "https://opencode.ai/zen/go/v1"
 // Stable per-process session id — required by OpenCode Go routing
 // (400 MissingSessionID without it). Override via OPCODE_SESSION_ID if needed.
@@ -49,38 +53,94 @@ function handleApiError(err: unknown, context: string): never {
   throw new Error(friendly)
 }
 
+// ─── Protocol helpers (chat completions vs Responses API) ────────────────────
+
+interface ApiBody {
+  choices?: { message?: { content?: string } }[]
+  status?: string
+  incomplete_details?: { reason?: string }
+  output?: { type?: string; content?: { type?: string; text?: string }[] }[]
+  error?: { message?: string; code?: string; type?: string }
+}
+
+function apiUrl(): string {
+  return `${BASE_URL}${USE_RESPONSES_API ? '/responses' : '/chat/completions'}`
+}
+
+function apiHeaders(): Record<string, string> {
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
+    'x-opencode-session': SESSION_ID,
+    'User-Agent': USER_AGENT,
+  }
+}
+
+function buildRequestBody(
+  systemPrompt: string,
+  input: unknown,
+  maxTokens: number,
+  temperature: number,
+): string {
+  if (USE_RESPONSES_API) {
+    return JSON.stringify({
+      model: MODEL,
+      max_output_tokens: maxTokens,
+      temperature,
+      reasoning: { effort: REASONING_EFFORT },
+      instructions: systemPrompt,
+      input: [{ role: 'user', content: input }],
+    })
+  }
+  return JSON.stringify({
+    model: MODEL,
+    max_tokens: maxTokens,
+    temperature,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: input },
+    ],
+  })
+}
+
+function extractText(body: ApiBody): string | undefined {
+  if (!USE_RESPONSES_API) return body.choices?.[0]?.message?.content
+  const text = (body.output ?? [])
+    .filter((o) => o.type === 'message')
+    .flatMap((o) => o.content ?? [])
+    .filter((c) => c.type === 'output_text')
+    .map((c) => c.text ?? '')
+    .join('')
+  return text || undefined
+}
+
+function apiError(body: ApiBody): Error {
+  return new Error(body.error?.message ?? JSON.stringify(body).slice(0, 500))
+}
+
 async function runChat(
   prompt: string,
   opts: { maxTokens: number; temperature: number },
 ): Promise<string> {
+  const system = 'You are a precise assistant. Output only the exact requested JSON. Do not include any reasoning, explanation, code blocks, or markdown formatting in your response.'
   try {
-    const res = await fetch(`${BASE_URL}/chat/completions`, {
+    const res = await fetch(apiUrl(), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
-        'x-opencode-session': SESSION_ID,
-        'User-Agent': USER_AGENT,
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: opts.maxTokens,
-        temperature: opts.temperature,
-        messages: [
-          { role: 'system', content: 'You are a precise assistant. Output only the exact requested JSON. Do not include any reasoning, explanation, code blocks, or markdown formatting in your response.' },
-          { role: 'user', content: prompt },
-        ],
-      }),
+      headers: apiHeaders(),
+      body: buildRequestBody(system, prompt, opts.maxTokens, opts.temperature),
     })
 
-    const body = await res.json() as { choices?: { message?: { content?: string } }[] }
+    const body = await res.json() as ApiBody
     console.error('[opencode] raw response:', JSON.stringify(body).slice(0, 1000))
 
     if (!res.ok) {
-      throw Object.assign(new Error(body as unknown as string), { status: res.status })
+      throw Object.assign(apiError(body), { status: res.status })
+    }
+    if (body.status === 'incomplete') {
+      console.error('[opencode] incomplete response:', body.incomplete_details?.reason)
     }
 
-    const text = body.choices?.[0]?.message?.content
+    const text = extractText(body)
     if (!text) {
       console.error('[opencode] empty content — full response:', JSON.stringify(body).slice(0, 2000))
       throw new Error('OpenCode returned empty response')
@@ -108,43 +168,36 @@ async function runImageChat(
   photoBase64: string,
   mimeType: string,
 ): Promise<string> {
+  const dataUrl = `data:${mimeType};base64,${photoBase64}`
+  const userContent = USE_RESPONSES_API
+    ? [
+        { type: 'input_text', text: userText },
+        { type: 'input_image', image_url: dataUrl },
+      ]
+    : [
+        { type: 'text', text: userText },
+        { type: 'image_url', image_url: { url: dataUrl } },
+      ]
+
   let lastErr: unknown = null
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(`${BASE_URL}/chat/completions`, {
+      const res = await fetch(apiUrl(), {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.OPCODE_API_KEY}`,
-          'x-opencode-session': SESSION_ID,
-          'User-Agent': USER_AGENT,
-        },
-        body: JSON.stringify({
-          model: MODEL,
-          max_tokens: 8192,
-          temperature: 0,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            {
-              role: 'user',
-              content: [
-                { type: 'text', text: userText },
-                { type: 'image_url', image_url: { url: `data:${mimeType};base64,${photoBase64}` } },
-              ],
-            },
-          ],
-        }),
+        headers: apiHeaders(),
+        body: buildRequestBody(systemPrompt, userContent, 8192, 0),
       })
 
-      const body = await res.json() as { choices?: { message?: { content?: string } }[] }
+      const body = await res.json() as ApiBody
       console.error('[opencode] image response:', JSON.stringify(body).slice(0, 1000))
 
       if (!res.ok) {
-        const status = (body as unknown as { error?: { code?: string } }).error?.code === 'rate_limit_exceeded' ? 429 : res.status
-        throw Object.assign(new Error(JSON.stringify(body).slice(0, 500)), { status })
+        const code = body.error?.code ?? body.error?.type
+        const status = code === 'rate_limit_exceeded' ? 429 : res.status
+        throw Object.assign(apiError(body), { status })
       }
 
-      const text = body.choices?.[0]?.message?.content
+      const text = extractText(body)
       if (!text) {
         console.error('[opencode] empty image content — full response:', JSON.stringify(body).slice(0, 2000))
         throw new Error('OpenCode returned empty response for image')
