@@ -90,6 +90,75 @@ function scanAreas(deptPath: string, contactType: ContactType): AreaFile[] {
     }))
 }
 
+// ─── Header-row detection ─────────────────────────────────────────────────────
+
+// AICE source templates carry title/instruction blocks above the real table.
+// The SheetJS default (first row = header) then turns the real header row into
+// data — importing cells like "终端联系电话 No telp" as phone numbers. Scan the
+// first rows and use the one that looks most like a header row instead.
+
+const HEADER_SCAN_LIMIT = 20
+const HEADER_MIN_HITS = 2
+const HEADER_MAX_CELL_LEN = 120
+
+const HEADER_KEYWORDS = [
+  'nama toko', '店名', '终端', 'no telp', 'no. telp', 'nomor telepon',
+  'no hp', 'no. hp', 'telepon', 'phone', 'whatsapp',
+  '序号', 'wilayah', 'provinsi', 'kota', 'kabupaten', 'kecamatan',
+  '经销商', '冰柜', 'freezer', 'frezer', 'merk', 'merek',
+  'alamat', 'address', 'keterangan', 'jumlah', 'agen', 'outlet',
+  'store', 'kode', 'tanggal',
+]
+
+function headerScore(row: unknown[]): number {
+  let hits = 0
+  for (const cell of row) {
+    const s = String(cell ?? '').trim().toLowerCase()
+    if (!s || s.length > HEADER_MAX_CELL_LEN) continue
+    if (HEADER_KEYWORDS.some((k) => s.includes(k))) hits++
+  }
+  return hits
+}
+
+/**
+ * Returns the absolute sheet row index of the detected header row, or null when
+ * no row in the first HEADER_SCAN_LIMIT rows looks like a header (caller then
+ * falls back to the SheetJS default).
+ */
+function detectHeaderRow(sheet: XLSX.WorkSheet): number | null {
+  const ref = sheet['!ref']
+  const startRow = ref ? XLSX.utils.decode_range(ref).s.r : 0
+  const raw = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: '' })
+
+  let best = 0
+  let bestScore = -1
+  const limit = Math.min(raw.length, HEADER_SCAN_LIMIT)
+  for (let i = 0; i < limit; i++) {
+    const score = headerScore(raw[i] ?? [])
+    if (score > bestScore) { bestScore = score; best = i }
+  }
+  return bestScore >= HEADER_MIN_HITS ? startRow + best : null
+}
+
+function sheetToRows(sheet: XLSX.WorkSheet): Record<string, unknown>[] {
+  const headerRow = detectHeaderRow(sheet)
+  if (headerRow !== null) {
+    const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      raw:    false,
+      defval: '',
+      range:  headerRow,
+    })
+    // Guard against index drift (e.g. leading empty rows) — if the parsed keys
+    // don't look like headers, fall back to the SheetJS default.
+    const probe = Object.keys(rows[0] ?? {})
+    if (probe.length > 0 && headerScore(probe) >= HEADER_MIN_HITS) return rows
+  }
+  return XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+    raw:    false,
+    defval: '',
+  })
+}
+
 /**
  * Parse a single xlsx file. Returns headers, 5 sample rows, and total row count.
  * Tries to find the most relevant sheet: prefers "Sheet1" if it exists,
@@ -104,11 +173,8 @@ export function parseSheet(filePath: string): ParsedSheet {
     sheetName = 'Sheet1'
   }
   
-  const sheet    = workbook.Sheets[sheetName]
-  const rows     = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    raw:    false,
-    defval: '',
-  })
+  const sheet = workbook.Sheets[sheetName]
+  const rows  = sheetToRows(sheet)
 
   if (rows.length === 0) return { headers: [], sampleRows: [], totalRows: 0 }
 
@@ -135,11 +201,8 @@ export function parseSheetWithMapping(
     sheetName = 'Sheet1'
   }
   
-  const sheet    = workbook.Sheets[sheetName]
-  const rows     = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
-    raw:    false,
-    defval: '',
-  })
+  const sheet = workbook.Sheets[sheetName]
+  const rows  = sheetToRows(sheet)
 
   const inverted: Record<string, string> = {}
   for (const [field, header] of Object.entries(mapping)) {

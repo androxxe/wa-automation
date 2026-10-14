@@ -127,6 +127,10 @@ router.post('/import', async (req, res) => {
       const phones = rawPhones.split('/').map((s) => s.trim()).filter(Boolean)
 
       for (const rawPhone of phones) {
+        // Guard: rows above the real table (title/instruction/header rows) can
+        // still slip through — skip values that contain no digits at all.
+        if (!/\d/.test(rawPhone)) { invalid++; continue }
+
         const { normalized, valid } = normalizePhone(rawPhone)
 
         const contactData = {
