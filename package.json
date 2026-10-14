@@ -27,11 +27,14 @@
     "redis:flush": "pnpm --filter @aice/api exec tsx ../../scripts/prod-guard.ts redis-cli -p 6380 FLUSHALL",
     "redis:flush:dev": "redis-cli -p 6379 FLUSHALL",
     "clean:profiles": "pnpm --filter @aice/api exec tsx ../../scripts/clean-profiles.ts",
+    "lint": "biome lint .",
+    "lint:fix": "biome lint --write .",
     "test:analyze": "pnpm --filter @aice/api test:analyze",
     "process:photos": "pnpm --filter @aice/api process:photos",
     "process:photos:prod": "pnpm --filter @aice/api process:photos:prod"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "dotenv-cli": "^11.0.0"
   }
 }

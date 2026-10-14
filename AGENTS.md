@@ -34,7 +34,11 @@ pnpm --filter @aice/web build      # tsc -b && vite build
 # Start production (built output)
 pnpm start
 
-# Type-check only (no separate lint/test commands exist)
+# Lint (Biome — `noExplicitAny` is an error, so `any` fails the check)
+pnpm lint
+pnpm lint:fix
+
+# Type-check only
 pnpm --filter @aice/api exec tsc --noEmit
 pnpm --filter @aice/worker exec tsc --noEmit
 pnpm --filter @aice/web exec tsc --noEmit
@@ -59,15 +63,24 @@ pnpm redis:flush:dev
 
 ## Testing
 
-**No test runner is configured** (no Jest, Vitest, or Playwright tests). The only existing check is:
+**No test runner is configured** (no Jest, Vitest, or Playwright tests). The existing checks are:
 
 ```bash
+pnpm lint           # Biome (fast, whole repo) — see biome.json
 pnpm test:analyze   # runs src/lib/test-analyze.ts via tsx
 ```
 
 If you add tests, prefer **Vitest** (aligns with Vite in web package) or **Node.js native test runner**.
 
 ## Code Style Guidelines
+
+### Linting (Biome)
+
+- Config: `biome.json`. Run `pnpm lint` (or `pnpm lint:fix` for safe autofixes).
+- `suspicious/noExplicitAny` is raised to **error** — no explicit `any`; use `unknown` + narrowing (or a precise type).
+- Recommended preset is on. No `// eslint-disable` comments — use `// biome-ignore lint/<rule>: <reason>` only when truly needed.
+- `**/*.css` is excluded: Tailwind v3 `@tailwind` / `@apply` directives aren't parseable by Biome's CSS parser.
+- Formatter is disabled — keep the manual style below (2-space indent, single quotes, no semicolons).
 
 ### TypeScript
 
