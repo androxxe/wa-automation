@@ -28,11 +28,14 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
     `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} atau 3 sudah mendapatkan 2pcs Crispy Balls gratis dari aice? Mohon konfirmasinya, terima kasih.`,
   ],
   NON_EVENT: [
-    `Selamat siang salam sejahtera Bapak/Ibu. Mohon izin sebelumnya, saya dari Aice ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya. Have an Aice day🙏`,
-    `Halo Bapak/Ibu, salam sejahtera. Saya dari Aice. Mohon izin menginfokan program terbaru: beli 5 dus varian wajib, gratis 10 pcs Crispy Balls Shine Muscat. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya🙏`,
-    `Salam sejahtera Bapak/Ibu. Mohon izin, saya dari Aice. Kami ingin konfirmasi apakah Bapak/Ibu tahu program Aice beli 5 dus varian wajib akan mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih, Have an Aice day🙏`,
-    `Selamat siang Bapak/Ibu. Mohon izin sebelumnya, saya dari Aice. Program Aice: beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya🙏`,
-    `Halo Bapak/Ibu, mohon izin. Saya dari Aice, ingin konfirmasi tahu atau tidaknya Bapak/Ibu soal program beli 5 dus varian wajib yang dapat 10 pcs Crispy Balls Shine Muscat gratis. Terima kasih banyak, Have an Aice day🙏`,
+    `Selamat siang salam sejahtera Bapak/Ibu toko {{nama_toko}} di {{area}}. Mohon izin sebelumnya, saya dari Aice ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya. Have an Aice day`,
+    `Selamat siang salam sejahtera Bapak/Ibu toko {{nama_toko}} di {{area}}. Mohon izin sebelumnya, saya dari Aice ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya. Have an Aice day 🙏`,
+    `Halo Bapak/Ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari Aice. Mau info sekaligus konfirmasi, apakah toko Bapak/Ibu sudah tahu program beli 5 dus varian wajib yang mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya`,
+    `Halo Bapak/Ibu mitra AICE {{area}} toko {{nama_toko}}, saya dari Aice. Mau info sekaligus konfirmasi, apakah toko Bapak/Ibu sudah tahu program beli 5 dus varian wajib yang mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya 🙏`,
+    `Salam sejahtera Bapak/Ibu {{nama_toko}} di {{area}}. Mohon izin, saya dari Aice. Kami ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib akan mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih, Have an Aice day`,
+    `Salam sejahtera Bapak/Ibu {{nama_toko}} di {{area}}. Mohon izin, saya dari Aice. Kami ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib akan mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih, Have an Aice day 🙏`,
+    `Selamat siang Bapak/Ibu toko {{nama_toko}} {{area}}. Mohon izin sebelumnya, saya dari Aice. Program Aice: beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya`,
+    `Selamat siang Bapak/Ibu toko {{nama_toko}} {{area}}. Mohon izin sebelumnya, saya dari Aice. Program Aice: beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya 🙏`,
   ],
 }
 
@@ -43,7 +46,7 @@ function pickTemplate(type: string, exclude: string[] = []): string {
   return src[Math.floor(Math.random() * src.length)]
 }
 
-const MAX_VARIANTS = 5
+const MAX_VARIANTS = 10
 
 interface AreaItem {
   id: string

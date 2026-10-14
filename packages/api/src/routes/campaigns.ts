@@ -137,7 +137,7 @@ router.get('/', async (req, res) => {
 const CreateCampaign = z.object({
   name:                    z.string().min(1).optional(),
   template:                z.string().min(1),
-  templates:               z.array(z.string().min(1)).min(1).max(5).optional(),
+  templates:               z.array(z.string().min(1)).min(1).max(10).optional(),
   bulan:                   z.string().min(1),
   campaignType:            z.enum(CONTACT_TYPES),
   areaIds:                 z.array(z.string()).min(1),
@@ -191,7 +191,7 @@ const BulkCreateCampaign = z.object({
   tahun:               z.string().min(1).max(4).optional(),
   campaignType:        z.enum(CONTACT_TYPES),
   areaIds:             z.array(z.string()).min(1).max(100),
-  templates:           z.array(z.string().min(1)).min(1).max(5),
+  templates:           z.array(z.string().min(1)).min(1).max(10),
   targetRepliesPerArea: z.number().int().min(1).optional(),
   expectedReplyRate:    z.number().min(0.01).max(1).optional(),
   stopOnTargetReached:  z.boolean().optional(),
