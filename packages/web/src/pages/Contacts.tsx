@@ -1,14 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
+import { CONTACT_TYPE_OPTIONS, TYPE_BADGE } from '@/lib/typeBadges'
 import ValidasiModal from '@/components/ValidasiModal'
-
-const TYPE_BADGE: Record<string, string> = {
-  STIK:          'bg-blue-100 text-blue-700',
-  KARDUS:        'bg-orange-100 text-orange-700',
-  YOYIC:         'bg-green-100 text-green-700',
-  CRISPY_BALLS:  'bg-purple-100 text-purple-700',
-}
 
 interface Contact {
   id: string
@@ -308,10 +302,9 @@ export default function Contacts() {
           className="text-sm border rounded-md px-3 py-1.5 bg-background"
         >
           <option value="">Semua Tipe</option>
-          <option value="STIK">STIK</option>
-          <option value="KARDUS">KARDUS</option>
-          <option value="YOYIC">YOYIC</option>
-          <option value="CRISPY_BALLS">CRISPY_BALLS</option>
+          {CONTACT_TYPE_OPTIONS.map((t) => (
+            <option key={t} value={t}>{t}</option>
+          ))}
         </select>
 
         {/* Department searchable combobox */}

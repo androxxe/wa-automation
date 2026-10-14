@@ -2,10 +2,11 @@ import fs from 'fs'
 import path from 'path'
 import * as XLSX from 'xlsx'
 import type { ContactTypeTree, DepartmentTree, AreaFile, ParsedSheet, ContactType } from '@aice/shared'
+import { CONTACT_TYPES } from '@aice/shared'
 
 const DATA_FOLDER = process.env.DATA_FOLDER ?? ''
 
-const VALID_TYPES: ContactType[] = ['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']
+const VALID_TYPES: readonly ContactType[] = CONTACT_TYPES
 
 /**
  * Scan DATA_FOLDER with 3-level structure: Type → Department → Area.xlsx

@@ -1,7 +1,10 @@
 // ─── Contact / Campaign types ─────────────────────────────────────────────────
 
-export type ContactType  = 'STIK' | 'KARDUS' | 'YOYIC' | 'CRISPY_BALLS'
-export type CampaignType = 'STIK' | 'KARDUS' | 'YOYIC' | 'CRISPY_BALLS'
+// Single source of truth. Contacts are typed by the top-level DATA_FOLDER subfolder.
+// To add a new type: append here, then add a badge colour in web `@/lib/typeBadges`.
+export const CONTACT_TYPES = ['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS', 'NON_EVENT'] as const
+export type ContactType  = typeof CONTACT_TYPES[number]
+export type CampaignType = ContactType
 
 // ─── Campaign ─────────────────────────────────────────────────────────────────
 

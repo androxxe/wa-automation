@@ -4,6 +4,7 @@ import { db } from '../lib/db'
 import { messageQueue } from '../lib/queue'
 import { variantList, renderBody } from '../lib/render'
 import type { MessageJob } from '@aice/shared'
+import { CONTACT_TYPES } from '@aice/shared'
 
 const router: import('express').Router = Router()
 const CAMPAIGN_STATUSES = ['DRAFT', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED'] as const
@@ -138,7 +139,7 @@ const CreateCampaign = z.object({
   template:                z.string().min(1),
   templates:               z.array(z.string().min(1)).min(1).max(5).optional(),
   bulan:                   z.string().min(1),
-  campaignType:            z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
+  campaignType:            z.enum(CONTACT_TYPES),
   areaIds:                 z.array(z.string()).min(1),
   targetRepliesPerArea:    z.number().int().min(1).optional(),
   expectedReplyRate:       z.number().min(0.01).max(1).optional(),
@@ -188,7 +189,7 @@ router.post('/', async (req, res) => {
 const BulkCreateCampaign = z.object({
   bulan:               z.string().min(1),
   tahun:               z.string().min(1).max(4).optional(),
-  campaignType:        z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
+  campaignType:        z.enum(CONTACT_TYPES),
   areaIds:             z.array(z.string()).min(1).max(100),
   templates:           z.array(z.string().min(1)).min(1).max(5),
   targetRepliesPerArea: z.number().int().min(1).optional(),

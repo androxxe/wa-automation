@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
+import { CONTACT_TYPE_OPTIONS } from '@/lib/typeBadges'
 
 interface AreaInfo {
   areaId:       string
@@ -44,22 +45,30 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
   const unchecked = data?.unchecked ?? 0
   const areas     = data?.areas ?? []
 
-  // Group areas by contactType
-  const stikAreas         = useMemo(() => areas.filter((a) => a.contactType === 'STIK'), [areas])
-  const kardusAreas       = useMemo(() => areas.filter((a) => a.contactType === 'KARDUS'), [areas])
-  const yoyicAreas        = useMemo(() => areas.filter((a) => a.contactType === 'YOYIC'), [areas])
-  const crispyBallsAreas  = useMemo(() => areas.filter((a) => a.contactType === 'CRISPY_BALLS'), [areas])
+  // Group areas by contactType — ordered by CONTACT_TYPE_OPTIONS, unknown types appended
+  const typeGroups = useMemo(() => {
+    const byType = new Map<string, AreaInfo[]>()
+    for (const a of areas) {
+      const list = byType.get(a.contactType)
+      if (list) list.push(a)
+      else byType.set(a.contactType, [a])
+    }
+    const known = CONTACT_TYPE_OPTIONS.filter((t) => byType.has(t))
+    const extra = [...byType.keys()]
+      .filter((t) => !(CONTACT_TYPE_OPTIONS as readonly string[]).includes(t))
+      .sort()
+    return [...known, ...extra].map((type) => ({ type, areas: byType.get(type)! }))
+  }, [areas])
 
   // Filter by search — matches area name or department name
-  const matchesSearch = (a: AreaInfo) =>
-    !search ||
-    a.name.toLowerCase().includes(search.toLowerCase()) ||
-    a.department.toLowerCase().includes(search.toLowerCase())
-
-  const filteredStik   = useMemo(() => stikAreas.filter(matchesSearch), [stikAreas, search])
-  const filteredKardus = useMemo(() => kardusAreas.filter(matchesSearch), [kardusAreas, search])
-  const filteredYoyic  = useMemo(() => yoyicAreas.filter(matchesSearch), [yoyicAreas, search])
-  const filteredCrispyBalls = useMemo(() => crispyBallsAreas.filter(matchesSearch), [crispyBallsAreas, search])
+  const filteredGroups = useMemo(() => {
+    const q = search.toLowerCase()
+    const matches = (a: AreaInfo) =>
+      !search ||
+      a.name.toLowerCase().includes(q) ||
+      a.department.toLowerCase().includes(q)
+    return typeGroups.map((g) => ({ ...g, filtered: g.areas.filter(matches) }))
+  }, [typeGroups, search])
 
   // Reset state when modal opens
   useEffect(() => {
@@ -128,7 +137,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
     const allSelected   = groupAreas.length > 0 && groupAreas.every((a) => selectedIds.has(a.areaId))
 
     return (
-      <div className="space-y-1">
+      <div key={label} className="space-y-1">
         {/* Group header */}
         <div className="flex items-center justify-between border-b pb-1">
           <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}</span>
@@ -255,10 +264,7 @@ export default function ValidasiModal({ open, onClose, onConfirm }: ValidasiModa
 
             {/* Scrollable area list */}
             <div className="overflow-y-auto flex-1 min-h-0 max-h-[40vh] space-y-4 pr-1">
-              {renderGroup('STIK', stikAreas, filteredStik)}
-              {renderGroup('KARDUS', kardusAreas, filteredKardus)}
-              {renderGroup('YOYIC', yoyicAreas, filteredYoyic)}
-              {renderGroup('CRISPY_BALLS', crispyBallsAreas, filteredCrispyBalls)}
+              {filteredGroups.map((g) => renderGroup(g.type, g.areas, g.filtered))}
             </div>
 
             {/* Summary */}

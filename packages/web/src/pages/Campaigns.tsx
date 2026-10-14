@@ -2,14 +2,8 @@ import { Link } from 'react-router-dom'
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
+import { TYPE_BADGE } from '@/lib/typeBadges'
 import type { CampaignStatus } from '@aice/shared'
-
-const TYPE_BADGE: Record<string, string> = {
-  STIK:   'bg-blue-100 text-blue-700',
-  KARDUS: 'bg-orange-100 text-orange-700',
-  YOYIC:         'bg-green-100 text-green-700',
-  CRISPY_BALLS:  'bg-amber-900 text-amber-100',
-}
 
 interface Campaign {
   id: string

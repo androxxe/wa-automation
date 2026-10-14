@@ -5,6 +5,7 @@ import { mapHeaders } from '../lib/llm'
 import { normalizePhone } from '../lib/phone'
 import { db } from '../lib/db'
 import type { ContactType } from '@aice/shared'
+import { CONTACT_TYPES } from '@aice/shared'
 
 const router: import('express').Router = Router()
 
@@ -68,7 +69,7 @@ const ImportBody = z.object({
   filePath:       z.string(),
   departmentName: z.string(),
   areaName:       z.string(),
-  contactType:    z.enum(['STIK', 'KARDUS', 'YOYIC', 'CRISPY_BALLS']),
+  contactType:    z.enum(CONTACT_TYPES),
   mapping: z.object({
     phone:          z.string().nullable(),
     store_name:     z.string().nullable(),

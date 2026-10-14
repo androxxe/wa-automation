@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import { useNavigate } from "react-router-dom"
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query"
 import { apiFetch } from "@/lib/utils"
-import type { AppConfigData, BulkCreateCampaignResult } from "@aice/shared"
+import { CONTACT_TYPE_OPTIONS, TYPE_BADGE } from "@/lib/typeBadges"
+import type { AppConfigData, BulkCreateCampaignResult, CampaignType } from "@aice/shared"
 
 // Same defaults as NewCampaign — one shared set applied to every bulk campaign.
 const DEFAULT_TEMPLATES: Record<string, string[]> = {
@@ -26,6 +27,13 @@ const DEFAULT_TEMPLATES: Record<string, string[]> = {
     `Halo bapak/ibu {{nama_toko}} di {{area}}, saya dari tim inspeksi AICE pusat Jakarta. Boleh saya meminta konfirmasi, apakah pada bulan {{bulan}} atau 3 toko bapak/ibu sudah dapat 2pcs Crispy Balls gratis dari aice? Terimakasih`,
     `Halo bapak/ibu, saya dari tim AICE pusat Jakarta. Terkait toko {{nama_toko}} di wilayah {{area}}, kami ingin mengkonfirmasi apakah pada bulan {{bulan}} atau 3 sudah mendapatkan 2pcs Crispy Balls gratis dari aice? Mohon konfirmasinya, terima kasih.`,
   ],
+  NON_EVENT: [
+    `Selamat siang salam sejahtera Bapak/Ibu. Mohon izin sebelumnya, saya dari Aice ingin konfirmasi apakah Bapak/Ibu sudah tahu program Aice beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih banyak ya. Have an Aice day🙏`,
+    `Halo Bapak/Ibu, salam sejahtera. Saya dari Aice. Mohon izin menginfokan program terbaru: beli 5 dus varian wajib, gratis 10 pcs Crispy Balls Shine Muscat. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya🙏`,
+    `Salam sejahtera Bapak/Ibu. Mohon izin, saya dari Aice. Kami ingin konfirmasi apakah Bapak/Ibu tahu program Aice beli 5 dus varian wajib akan mendapat 10 pcs Crispy Balls Shine Muscat gratis? Terima kasih, Have an Aice day🙏`,
+    `Selamat siang Bapak/Ibu. Mohon izin sebelumnya, saya dari Aice. Program Aice: beli 5 dus varian wajib, dapat 10 pcs Crispy Balls Shine Muscat gratis. Apakah Bapak/Ibu sudah tahu program ini? Terima kasih banyak ya🙏`,
+    `Halo Bapak/Ibu, mohon izin. Saya dari Aice, ingin konfirmasi tahu atau tidaknya Bapak/Ibu soal program beli 5 dus varian wajib yang dapat 10 pcs Crispy Balls Shine Muscat gratis. Terima kasih banyak, Have an Aice day🙏`,
+  ],
 }
 
 function pickTemplate(type: string, exclude: string[] = []): string {
@@ -36,8 +44,6 @@ function pickTemplate(type: string, exclude: string[] = []): string {
 }
 
 const MAX_VARIANTS = 5
-
-type CampaignType = "STIK" | "KARDUS" | "YOYIC" | "CRISPY_BALLS"
 
 interface AreaItem {
   id: string
@@ -51,13 +57,6 @@ interface DeptWithAreas {
   id: string
   name: string
   areas: AreaItem[]
-}
-
-const TYPE_BADGE: Record<string, string> = {
-  STIK: "bg-blue-100 text-blue-700",
-  KARDUS: "bg-orange-100 text-orange-700",
-  YOYIC: "bg-green-100 text-green-700",
-  CRISPY_BALLS: "bg-purple-100 text-purple-700",
 }
 
 const MONTHS = [
@@ -97,7 +96,7 @@ export default function NewBulkCampaign() {
   const [templatesEdited, setTemplatesEdited] = useState(false)
   const [targetReplies, setTargetReplies] = useState<string>("")
   const [replyRate, setReplyRate] = useState<string>("")
-  const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("YES")
+  const [targetReplyMode, setTargetReplyMode] = useState<"ALL" | "YES" | "YES_NO">("YES_NO")
   const [config, setConfig] = useState<AppConfigData | null>(null)
 
   const [allDepts, setAllDepts] = useState<DeptWithAreas[]>([])
@@ -318,7 +317,7 @@ export default function NewBulkCampaign() {
         <div className="space-y-2">
           <p className="text-sm font-medium">Campaign type</p>
           <div className="flex gap-3">
-            {(["STIK", "KARDUS", "YOYIC", "CRISPY_BALLS"] as CampaignType[]).map((t) => (
+            {CONTACT_TYPE_OPTIONS.map((t) => (
               <label key={t} className="flex items-center gap-2 cursor-pointer">
                 <input
                   type="radio"
