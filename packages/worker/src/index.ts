@@ -1,5 +1,6 @@
 import { Worker, Queue, DelayedError, type Job } from 'bullmq'
 import type { Prisma } from '@prisma/client'
+import { localDateKey } from '@aice/shared'
 import type { MessageJob, PhoneCheckJob, ConversationEntry } from '@aice/shared'
 import { db } from './lib/db'
 import { redis } from './lib/redis'
@@ -59,15 +60,17 @@ let roundRobinIndex = 0
 const lastPolledAt = new Map<string, number>()
 
 // ─── Daily cap helpers ────────────────────────────────────────────────────────
+// Keyed by the WIB date (localDateKey) so the cap rolls over at WIB midnight,
+// matching the API/UI and the DailySendLog.date column.
 
 async function todaySendCount(agentId: number): Promise<number> {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateKey()
   const log   = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId, date: today } } })
   return log?.count ?? 0
 }
 
 async function incrementDailyCount(agentId: number): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateKey()
   await db.dailySendLog.upsert({
     where:  { agentId_date: { agentId, date: today } },
     update: { count: { increment: 1 } },

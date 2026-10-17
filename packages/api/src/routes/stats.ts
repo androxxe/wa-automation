@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { localDateKey, localDayStart } from '@aice/shared'
 import { db } from '../lib/db'
 import { redis } from '../lib/queue'
 
@@ -7,13 +8,9 @@ const router: import('express').Router = Router()
 // GET /api/stats — dashboard stats
 router.get('/', async (_req, res) => {
   try {
-    // Today in WIB (UTC+7)
-    const now = new Date()
-    const wib = new Date(now.getTime() + 7 * 60 * 60 * 1000)
-    const todayWIB = wib.toISOString().slice(0, 10) // "YYYY-MM-DD"
-
-    // Start of today in UTC (for date comparisons)
-    const todayStartUTC = new Date(`${todayWIB}T00:00:00+07:00`)
+    // Today in the app timezone (Asia/Jakarta) — same key as the worker cap log.
+    const todayWIB      = localDateKey()
+    const todayStartUTC = localDayStart()
 
     const [
       totalContacts,

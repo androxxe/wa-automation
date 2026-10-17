@@ -329,3 +329,21 @@ export interface AppConfigData {
   // LLM model display name — read-only from env vars
   llmModelName:            string
 }
+
+// ─── Timezone helpers ─────────────────────────────────────────────────────────
+// Canonical app timezone for daily boundaries (daily send cap, "today" stats).
+// Hardcoded to WIB (Asia/Jakarta): the daily cap must roll over at WIB midnight
+// consistently across the API and the worker. Do NOT read process.env.TIMEZONE
+// here — that variable only governs working-hours scheduling in the worker.
+
+export const APP_TIME_ZONE = 'Asia/Jakarta'
+
+/** "YYYY-MM-DD" for the given instant in the app timezone (WIB). */
+export function localDateKey(date: Date = new Date()): string {
+  return date.toLocaleDateString('en-CA', { timeZone: APP_TIME_ZONE })
+}
+
+/** UTC instant of the start of the app-timezone day (WIB 00:00) for the given instant. */
+export function localDayStart(date: Date = new Date()): Date {
+  return new Date(`${localDateKey(date)}T00:00:00+07:00`)
+}

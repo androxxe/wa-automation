@@ -196,7 +196,7 @@ model DailySendLog {
   id        String   @id @default(cuid())
   agentId   Int
   agent     Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  date      String   // "YYYY-MM-DD" in WIB
+  date      String   // "YYYY-MM-DD" in WIB (Asia/Jakarta) — see @aice/shared localDateKey
   count     Int      @default(0)
   updatedAt DateTime @updatedAt
 

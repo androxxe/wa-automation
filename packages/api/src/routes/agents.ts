@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { Router } from 'express'
 import { z } from 'zod'
+import { localDateKey } from '@aice/shared'
 import { db } from '../lib/db'
 import { redis } from '../lib/queue'
 
@@ -14,17 +15,13 @@ const parseId = (id: string) => parseInt(id, 10)
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function todayWIB(): string {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' }) // "YYYY-MM-DD"
-}
-
 async function agentWithLiveStatus(agentId: number) {
   const agent       = await db.agent.findUnique({ where: { id: agentId }, include: { department: true } })
   if (!agent) return null
   const status      = (await redis.get(`agent:${agentId}:status`)) ?? 'OFFLINE'
   const screenshot  = await redis.get(`agent:${agentId}:screenshot`)
   const activeJobs  = parseInt((await redis.get(`agent:${agentId}:active_jobs`)) ?? '0', 10)
-  const log         = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId, date: todayWIB() } } })
+  const log         = await db.dailySendLog.findUnique({ where: { agentId_date: { agentId, date: localDateKey() } } })
   const sentToday   = log?.count ?? 0
   return { ...agent, status, screenshot, activeJobCount: activeJobs, sentToday }
 }
@@ -38,7 +35,7 @@ router.get('/', async (_req, res) => {
       include: { department: true },
       orderBy: { createdAt: 'asc' },
     })
-    const today = todayWIB()
+    const today = localDateKey()
     const withStatus = await Promise.all(
       agents.map(async (a) => {
         const status     = (await redis.get(`agent:${a.id}:status`)) ?? 'OFFLINE'
