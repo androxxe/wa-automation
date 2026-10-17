@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { chromium, type BrowserContext, type Page } from 'playwright'
+import { chromium, type BrowserContext, type Locator, type Page } from 'playwright'
 import type { BrowserStatus } from '@aice/shared'
 
 const HEADLESS = process.env.BROWSER_HEADLESS === 'true'
@@ -53,26 +53,45 @@ const RESTRICTION_KEYWORDS = [
 ]
 
 // ─── Interstitial / onboarding modal (e.g. "What's new on WhatsApp Web" → Continue) ───
-// Verified live 2026-09-04 via Playwright MCP after QR scan:
-//   <div role="dialog" active>  ← also has data-animate-modal-popup="true" in some builds
-//     <h1>What’s new on WhatsApp Web</h1>
-//     <button>Continue</button>   ← id-ID: "Lanjutkan"
-//     <button aria-label="Close">Close</button>
-// This overlay blocks the chat list and must be dismissed before reporting "connected".
+// Verified live 2026-10-17 via Playwright after QR scan:
+//   <div role="dialog" aria-modal="true">              ← outer overlay wrapper
+//     <div data-animate-modal-popup="true" data-testid="confirm-popup">
+//       <h1 data-testid="popup-title">What’s new on WhatsApp Web</h1>
+//       <button>Continue</button>                      ← id-ID: "Lanjutkan"
+//       <button aria-label="Close">                    ← icon ligature text "ic-close"
+// Both the outer wrapper and the inner card match INTERSTITIAL_DIALOG_SELECTORS and
+// both contain the same nested buttons — always take the first *visible* match.
 const INTERSTITIAL_DIALOG_SELECTORS = [
   '[data-animate-modal-popup="true"]',
   'div[role="dialog"]',
 ].join(', ')
 
+// Matched against dialog text with curly quotes normalised to straight ones,
+// because the real title uses "What’s" (U+2019) which never matched "what's new".
 const INTERSTITIAL_TITLE_KEYWORDS = [
   "what's new",
-  'whats new',
   'apa yang baru',
   'yang baru di whatsapp',
 ]
 
-const CONTINUE_BUTTON_REGEX = /^(continue|lanjutkan|got it|mengerti|ok)$/i
-const CONTINUE_BUTTON_REGEX_LOOSE = /continue|lanjutkan|got it|mengerti/i
+// Dialogs that must NEVER be dismissed as an interstitial — the "not registered"
+// modal is handled separately in _typeAndSendBody / checkPhoneRegistered.
+const INTERSTITIAL_EXCLUDE_KEYWORDS = ['tidak terdaftar', 'not registered']
+
+// Accept / advance buttons used when *clicking* — locale-robust (en + id + generic).
+const INTERSTITIAL_ACTION_REGEX =
+  /^(continue|lanjutkan|lanjut|got it|mengerti|ok|oke|next|berikutnya|selesai|done)$/i
+// Buttons that mark a dialog as the onboarding interstitial in the first place.
+// Deliberately narrower than INTERSTITIAL_ACTION_REGEX so a stray modal whose only
+// button is "OK"/"Selesai"/"Tutup" is never treated as an interstitial and clicked.
+// Mirrors the previous loose match so detection recall is unchanged.
+const INTERSTITIAL_ONSET_REGEX = /continue|lanjutkan|got it|mengerti/i
+// Close / dismiss affordance (aria-label or text).
+const INTERSTITIAL_CLOSE_REGEX = /^(close|tutup|dismiss)$/i
+
+const INTERSTITIAL_MAX_ROUNDS = 3
+const INTERSTITIAL_SETTLE_MS = 600
+const INTERSTITIAL_CLICK_TIMEOUT_MS = 3000
 
 const STEALTH_SCRIPT = `
   Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -112,6 +131,8 @@ export class BrowserAgent {
   private _status:       BrowserStatus         = 'disconnected'
   private _browserLock:  boolean               = false
   private _pollTimer:    ReturnType<typeof setTimeout> | null = null
+  /** Shared promise so concurrent callers don't race on the same interstitial. */
+  private _dismissInFlight: Promise<boolean> | null = null
 
   /** Incremented when a job is assigned; decremented when it finishes. */
   activeJobCount = 0
@@ -261,144 +282,148 @@ export class BrowserAgent {
 
   /**
    * Dismiss the "What's new on WhatsApp Web" / onboarding interstitial that appears
-   * after QR scan and blocks the chat list.
-   * Verified live 2026-09-04: dialog[role="dialog"] with h1 "What’s new on WhatsApp Web"
-   * and button "Continue" (id-ID: "Lanjutkan"). Also seen as [data-animate-modal-popup="true"].
-   * Returns true if a dialog was found and dismissed.
+   * after QR scan and blocks the chat list. Verified live 2026-10-17 — see the
+   * INTERSTITIAL_DIALOG_SELECTORS comment for the DOM shape.
+   *
+   * Hardened against the failure modes that produced
+   * "[agent:N] interstitial found but no dismiss button worked":
+   *   - concurrent callers — the agent's own poll loop, AgentManager's 60s status
+   *     loop and the job paths all call this. Two runs used to probe the same
+   *     dialog, one would win and the other logged the warning.
+   *   - hidden / lingering dialog nodes — every check is visibility-aware instead
+   *     of `document.querySelector`.
+   *   - multi-modal onboarding sequences — loops until nothing dismissible remains.
+   *   - transient detach / mid-animation renders — retries, then dumps diagnostics.
+   *
+   * Returns true if at least one interstitial was dismissed.
    */
   private async _dismissInterstitialIfNeeded(): Promise<boolean> {
+    // Coalesce concurrent calls so two loops never race on the same modal.
+    if (this._dismissInFlight) return this._dismissInFlight
+    const run = this._dismissInterstitial().finally(() => {
+      this._dismissInFlight = null
+    })
+    this._dismissInFlight = run
+    return run
+  }
+
+  /** Single, non-concurrent pass of the interstitial dismissal. */
+  private async _dismissInterstitial(): Promise<boolean> {
     if (!this.page) return false
     const page = this.requirePage()
+    let dismissed = false
+    let announced = false
+
     try {
-      // ── Fast check: is there a dialog that looks like the interstitial? ──────
-      const probe = await page
-        .evaluate(
-          (args: { sel: string; titleKws: string[]; invalidKws: string[] }) => {
-            const dialogs = Array.from(document.querySelectorAll(args.sel))
-            // NOTE: plain for-loops only — nested closures break under tsx
-            // (esbuild __name injection) and Playwright serialization fails.
-            for (const d of dialogs) {
-              const text = (d.textContent ?? '').toLowerCase()
-              // Never treat the "not registered" / "tidak terdaftar" modal as interstitial —
-              // it is handled separately in _typeAndSendBody / checkPhoneRegistered.
-              let isInvalid = false
-              for (const kw of args.invalidKws) {
-                if (text.includes(kw)) { isInvalid = true; break }
-              }
-              if (isInvalid) continue
-              let titleHit = false
-              for (const kw of args.titleKws) {
-                if (text.includes(kw)) { titleHit = true; break }
-              }
-              if (titleHit) return { found: true, snippet: text.slice(0, 120) }
-              // Also match if dialog contains a Continue/Lanjutkan button
-              const btns = Array.from(d.querySelectorAll('button'))
-              for (const b of btns) {
-                const bt = (b.textContent ?? '').toLowerCase().trim()
-                if (/^(continue|lanjutkan)$/i.test(bt) || /continue|lanjutkan|got it|mengerti/i.test(bt)) {
-                  return { found: true, snippet: text.slice(0, 120) }
-                }
-              }
-            }
-            return { found: false, snippet: '' }
-          },
-          {
-            sel: INTERSTITIAL_DIALOG_SELECTORS,
-            titleKws: INTERSTITIAL_TITLE_KEYWORDS,
-            invalidKws: ['tidak terdaftar', 'not registered'],
-          },
-        )
-        .catch(() => ({ found: false as const, snippet: '' }))
+      for (let round = 0; round < INTERSTITIAL_MAX_ROUNDS; round++) {
+        // Both the wrapper and the inner card match the selector, so take the
+        // first *visible* one (Playwright's :visible is not usable on a comma list).
+        const dialog = page.locator(INTERSTITIAL_DIALOG_SELECTORS).filter({ visible: true }).first()
+        if (!(await dialog.isVisible().catch(() => false))) break
 
-      if (!probe.found) return false
+        const rawText = (await dialog.textContent().catch(() => '')) ?? ''
+        const lower = rawText.toLowerCase().replace(/[\u2018\u2019]/g, "'")
 
-      console.log(
-        `[agent:${this.agentId}] interstitial detected — attempting dismiss (snippet: "${probe.snippet.slice(0, 80)}...")`,
-      )
+        // Never touch the "not registered" modal — handled separately.
+        if (INTERSTITIAL_EXCLUDE_KEYWORDS.some((kw) => lower.includes(kw))) break
 
-      // ── Try to click Continue / Lanjutkan inside the dialog ──────────────────
-      // Order: dialog-scoped Continue → global Continue → Close button
-      const dialog = page.locator(INTERSTITIAL_DIALOG_SELECTORS).first()
+        const hasOnset = (await this._firstVisible(dialog.getByRole('button', { name: INTERSTITIAL_ONSET_REGEX }))) !== null
+        const looksInterstitial = INTERSTITIAL_TITLE_KEYWORDS.some((kw) => lower.includes(kw)) || hasOnset
+        if (!looksInterstitial) break
 
-      // Strategy 1: dialog-scoped button with Continue text
-      try {
-        const btn = dialog.getByRole('button', { name: CONTINUE_BUTTON_REGEX_LOOSE }).first()
-        if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
-          await btn.click({ timeout: 2000 })
-          await page.waitForTimeout(800)
-          const gone = await page
-            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
-            .catch(() => false)
-          if (gone) {
-            console.log(`[agent:${this.agentId}] interstitial dismissed via Continue (dialog-scoped)`)
-            return true
-          }
+        const action = await this._findInterstitialAction(page, dialog)
+        if (!action) {
+          // A title match with no usable button is exactly the case that used to
+          // log the warning — dump what we saw so the next occurrence is debuggable.
+          await this._dumpInterstitial(page)
+          console.warn(`[agent:${this.agentId}] interstitial found but no dismiss button worked`)
+          break
         }
-      } catch {}
 
-      // Strategy 2: any visible Continue/Lanjutkan button on page (fallback)
-      try {
-        const globalContinue = page.getByRole('button', { name: CONTINUE_BUTTON_REGEX }).first()
-        if (await globalContinue.isVisible({ timeout: 800 }).catch(() => false)) {
-          await globalContinue.click({ timeout: 2000 })
-          await page.waitForTimeout(800)
-          const gone = await page
-            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
-            .catch(() => false)
-          if (gone) {
-            console.log(`[agent:${this.agentId}] interstitial dismissed via Continue (global)`)
-            return true
-          }
-        }
-      } catch {}
-
-      // Strategy 3: locator with text selector inside dialog
-      try {
-        const textBtn = page
-          .locator(`${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Continue"), ${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Lanjutkan")`)
-          .first()
-        if (await textBtn.isVisible({ timeout: 800 }).catch(() => false)) {
-          await textBtn.click({ timeout: 2000 })
-          await page.waitForTimeout(800)
-          const gone = await page
-            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
-            .catch(() => false)
-          if (gone) {
-            console.log(`[agent:${this.agentId}] interstitial dismissed via text selector`)
-            return true
-          }
-        }
-      } catch {}
-
-      // Strategy 4: Close / X button as last resort
-      try {
-        const closeBtn = page
-          .locator(
-            `${INTERSTITIAL_DIALOG_SELECTORS} button[aria-label="Close"], ${INTERSTITIAL_DIALOG_SELECTORS} button:has-text("Close"), [aria-label="Close"]`,
+        if (!announced) {
+          announced = true
+          console.log(
+            `[agent:${this.agentId}] interstitial detected — attempting dismiss (snippet: "${lower.slice(0, 80)}...")`,
           )
-          .first()
-        if (await closeBtn.isVisible({ timeout: 800 }).catch(() => false)) {
-          await closeBtn.click({ timeout: 2000 })
-          await page.waitForTimeout(800)
-          const gone = await page
-            .evaluate((sel: string) => !document.querySelector(sel), INTERSTITIAL_DIALOG_SELECTORS)
-            .catch(() => false)
-          if (gone) {
-            console.log(`[agent:${this.agentId}] interstitial dismissed via Close`)
-            return true
-          }
         }
-      } catch {}
 
-      console.warn(`[agent:${this.agentId}] interstitial found but no dismiss button worked`)
-      return false
+        try {
+          await action.click({ timeout: INTERSTITIAL_CLICK_TIMEOUT_MS })
+          dismissed = true
+        } catch (err) {
+          // Detached / re-rendered mid-click — retry on the next round instead of
+          // giving up on the whole modal.
+          console.warn(
+            `[agent:${this.agentId}] interstitial click failed (round ${round + 1}):`,
+            err instanceof Error ? err.message : String(err),
+          )
+        }
+
+        await page.waitForTimeout(INTERSTITIAL_SETTLE_MS).catch(() => {})
+        // Loop: a multi-step onboarding modal reveals another page; a dismissed one
+        // leaves nothing visible and the guard at the top of the loop breaks out.
+      }
+
+      if (dismissed) {
+        console.log(`[agent:${this.agentId}] interstitial dismissed`)
+      }
+      return dismissed
     } catch (err) {
       console.warn(
         `[agent:${this.agentId}] dismiss interstitial failed:`,
         err instanceof Error ? err.message : String(err),
       )
-      return false
+      return dismissed
     }
+  }
+
+  /** First visible interstitial action button: action buttons, then close affordances. */
+  private async _findInterstitialAction(page: Page, dialog: Locator): Promise<Locator | null> {
+    return (
+      (await this._firstVisible(dialog.getByRole('button', { name: INTERSTITIAL_ACTION_REGEX }))) ??
+      (await this._firstVisible(page.getByRole('button', { name: INTERSTITIAL_ACTION_REGEX }))) ??
+      (await this._firstVisible(dialog.getByRole('button', { name: INTERSTITIAL_CLOSE_REGEX }))) ??
+      (await this._firstVisible(page.getByRole('button', { name: INTERSTITIAL_CLOSE_REGEX })))
+    )
+  }
+
+  /** Resolve a locator to its first element only when that element is visible. */
+  private async _firstVisible(locator: Locator): Promise<Locator | null> {
+    const count = await locator.count().catch(() => 0)
+    if (count === 0) return null
+    const first = locator.first()
+    return (await first.isVisible().catch(() => false)) ? first : null
+  }
+
+  /** Log the shape of every dialog currently matching the interstitial selector. */
+  private async _dumpInterstitial(page: Page): Promise<void> {
+    try {
+      const dump = await page.evaluate(
+        (args: { sel: string }) => {
+          // NOTE: plain for-loops only — nested closures break under tsx
+          // (esbuild __name injection) and Playwright serialization fails.
+          const nodes = Array.from(document.querySelectorAll(args.sel))
+          const out: Array<{ role: string | null; popup: string | null; title: string; text: string; buttons: string[] }> = []
+          for (const d of nodes) {
+            const heading = d.querySelector('h1, [data-testid="popup-title"]')
+            const buttons: string[] = []
+            for (const b of Array.from(d.querySelectorAll('button'))) {
+              buttons.push(`${b.getAttribute('aria-label') ?? ''}|${(b.textContent ?? '').trim().slice(0, 40)}`)
+            }
+            out.push({
+              role: d.getAttribute('role'),
+              popup: d.getAttribute('data-animate-modal-popup'),
+              title: (heading?.textContent ?? '').slice(0, 100),
+              text: (d.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
+              buttons,
+            })
+          }
+          return out
+        },
+        { sel: INTERSTITIAL_DIALOG_SELECTORS },
+      )
+      console.warn(`[agent:${this.agentId}] interstitial dump:`, JSON.stringify(dump))
+    } catch {}
   }
 
   // ─── Launch ───────────────────────────────────────────────────────────────
