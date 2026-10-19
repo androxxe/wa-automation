@@ -50,6 +50,11 @@ const SEND_DISABLED_RESCHEDULE   = 5 * 60 * 1000 // 5 minutes
 // Paused campaigns hold their jobs via self-delay (never a global queue pause,
 // which would silently block every other campaign).
 const PAUSED_RESCHEDULE_MS = 5 * 60 * 1000 // 5 minutes
+// Daily caps reset at WIB midnight (localDateKey), NOT at the next working-hours
+// open. Delaying until the next open parked jobs for ~16h after the cap was hit
+// at midday. Re-check every 5 minutes instead so a cap bump or the midnight
+// rollover is picked up promptly.
+const DAILY_CAP_RESCHEDULE_MS = 5 * 60 * 1000 // 5 minutes
 const CHAT_LOAD_TIMEOUT_MS       = 15000
 const CHAT_LOAD_RETRY_TIMEOUT_MS = Math.max(1000, Math.floor(CHAT_LOAD_TIMEOUT_MS / 2))
 
@@ -230,10 +235,11 @@ const worker = new Worker<MessageJob>(
       }
 
       if (!agent) {
-        // All online agents have hit their cap — release job back to BullMQ delayed queue
-        const delay = msUntilNextOpen()
-        console.log(`[worker] all agents at daily cap, rescheduling in ${Math.round(delay / 60000)}m`)
-        await job.moveToDelayed(Date.now() + delay, token)
+        // All online agents have hit their cap — release job back to BullMQ delayed
+        // queue. Cap resets at WIB midnight, not at the next working-hours open, so
+        // re-check on a short interval instead of sleeping until the next open.
+        console.log(`[worker] all agents at daily cap, rescheduling in ${DAILY_CAP_RESCHEDULE_MS / 60000}m`)
+        await job.moveToDelayed(Date.now() + DAILY_CAP_RESCHEDULE_MS, token)
         throw new DelayedError()
       }
     }
