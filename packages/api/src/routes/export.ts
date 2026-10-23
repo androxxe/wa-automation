@@ -2,12 +2,23 @@ import { Router } from 'express'
 import type { Response } from 'express'
 import { buildResponseWorkbook, writeOutputFiles } from '../lib/exporter'
 import { generateAreaReport, generateAllReports } from '../lib/report'
-import { buildCampaignReportXlsx, buildAllCampaignsReportXlsx, buildDepartmentReportXlsx } from '../lib/report-xlsx'
+import { buildCampaignReportXlsx, buildAllCampaignsReportXlsx, buildDepartmentReportXlsx, parseReportColumns } from '../lib/report-xlsx'
 import type { ReportXlsxOptions } from '../lib/report-xlsx'
 import { buildReportZip } from '../lib/archive'
 import type { ArchivePhoto } from '../lib/archive'
 
 const router: import('express').Router = Router()
+
+// `columns` query param: comma-separated and/or repeated. Returns undefined when
+// absent (all columns). Throws with 'No valid columns selected' when present but empty.
+function parseColumnsQuery(query: Record<string, string | string[] | undefined>): string[] | undefined {
+  return parseReportColumns(query.columns)
+}
+
+// Map the shared column-selection error to a 400; callers fall through to 500 otherwise.
+function isColumnError(err: unknown): boolean {
+  return err instanceof Error && err.message === 'No valid columns selected'
+}
 
 /**
  * Build a report and respond as XLSX (legacy, photos embedded) by default,
@@ -42,12 +53,14 @@ async function sendReport(
 router.get('/responses', async (req, res) => {
   const { startDate, endDate, departmentId, areaId } = req.query as Record<string, string>
   try {
-    const buffer   = await buildResponseWorkbook({ startDate, endDate, departmentId, areaId })
+    const columns  = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
+    const buffer   = await buildResponseWorkbook({ startDate, endDate, departmentId, areaId, columns })
     const filename = `responses_${new Date().toISOString().slice(0, 10)}.xlsx`
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
     res.send(buffer)
   } catch (err) {
+    if (isColumnError(err)) { res.status(400).json({ ok: false, error: String(err) }); return }
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
@@ -111,10 +124,12 @@ router.get('/report-xlsx', async (req, res) => {
     return
   }
   try {
+    const columns  = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
     const date     = new Date().toISOString().slice(0, 10)
     const filename = `laporan_${campaignId}_${date}.xlsx`
-    await sendReport(res, filename, (options) => buildCampaignReportXlsx(campaignId, options), format)
+    await sendReport(res, filename, (options) => buildCampaignReportXlsx(campaignId, { ...options, columns }), format)
   } catch (err) {
+    if (isColumnError(err)) { res.status(400).json({ ok: false, error: String(err) }); return }
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
@@ -123,10 +138,12 @@ router.get('/report-xlsx', async (req, res) => {
 router.get('/report-xlsx-all', async (req, res) => {
   const { format } = req.query as Record<string, string | undefined>
   try {
+    const columns  = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
     const date     = new Date().toISOString().slice(0, 10)
     const filename = `laporan_semua_campaign_${date}.xlsx`
-    await sendReport(res, filename, (options) => buildAllCampaignsReportXlsx(undefined, options), format)
+    await sendReport(res, filename, (options) => buildAllCampaignsReportXlsx(undefined, { ...options, columns }), format)
   } catch (err) {
+    if (isColumnError(err)) { res.status(400).json({ ok: false, error: String(err) }); return }
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
@@ -135,6 +152,7 @@ router.get('/report-xlsx-all', async (req, res) => {
 router.get('/report-xlsx-filtered', async (req, res) => {
   const { bulan, campaignType, format } = req.query as Record<string, string | undefined>
   try {
+    const columns  = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
     const date     = new Date().toISOString().slice(0, 10)
     let filename   = 'laporan_'
     if (bulan && campaignType) {
@@ -149,10 +167,11 @@ router.get('/report-xlsx-filtered', async (req, res) => {
     await sendReport(
       res,
       filename,
-      (options) => buildAllCampaignsReportXlsx({ bulan, campaignType }, options),
+      (options) => buildAllCampaignsReportXlsx({ bulan, campaignType }, { ...options, columns }),
       format,
     )
   } catch (err) {
+    if (isColumnError(err)) { res.status(400).json({ ok: false, error: String(err) }); return }
     res.status(500).json({ ok: false, error: String(err) })
   }
 })
@@ -186,6 +205,7 @@ router.get('/report-xlsx-dept', async (req, res) => {
       filename += `${date}.xlsx`
     }
 
+    const columns = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
     await sendReport(
       res,
       filename,
@@ -194,10 +214,11 @@ router.get('/report-xlsx-dept', async (req, res) => {
         campaignType: campaignType as string | undefined,
         categories: categoryArray as string[] | undefined,
         jawabans: jawabanArray as (0 | 1 | null)[] | undefined,
-      }, options),
+      }, { ...options, columns }),
       typeof format === 'string' ? format : undefined,
     )
   } catch (err) {
+    if (isColumnError(err)) { res.status(400).json({ ok: false, error: String(err) }); return }
     res.status(500).json({ ok: false, error: String(err) })
   }
 })

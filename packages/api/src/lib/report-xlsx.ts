@@ -15,6 +15,8 @@ export interface ReportXlsxOptions {
   embedImages?: boolean
   /** Collect each existing screenshot (zip mode) — invoked with its archive path. */
   onPhoto?: (photo: { archivePath: string; absPath: string }) => void
+  /** Subset of column keys to include. Absent = all supported columns. */
+  columns?: string[]
 }
 
 function sanitizeDirName(name: string): string {
@@ -28,6 +30,26 @@ function sanitizeDirName(name: string): string {
 
 function sanitizeFileName(name: string): string {
   return name.trim().replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').slice(0, 80)
+}
+
+// Excel limits sheet names to 31 chars and forbids : \ / ? * [ ].
+// Names must be unique (case-insensitive) across the workbook.
+function uniqueSheetName(used: Set<string>, base: string): string {
+  const root = base
+    .replace(/[\\/:*?"<>|[\]]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 31) || 'Sheet'
+
+  let name = root
+  let n = 2
+  while (used.has(name.toLowerCase())) {
+    const suffix = `_${n}`
+    name = `${root.slice(0, 31 - suffix.length)}${suffix}`
+    n++
+  }
+  used.add(name.toLowerCase())
+  return name
 }
 
 function extractScreenshotTimestamp(screenshotPath: string | null): string {
@@ -47,6 +69,62 @@ function buildScreenshotRef(
   const filename = `${phone.replace('+', '')}${namePart ? `_${namePart}` : ''}_${extractScreenshotTimestamp(absPath)}${path.extname(absPath) || '.jpg'}`
   const archivePath = `screenshots/${sanitizeDirName(campaignName)}/${filename}`
   return { archivePath, ref: archivePath }
+}
+
+// ─── Column selection ─────────────────────────────────────────────────────────
+// Canonical column keys shared by every report builder. Each builder declares
+// which of these it supports; `columns` from the query keeps their order.
+
+export type ReportColumnKey =
+  | 'no' | 'market' | 'storeName' | 'phone' | 'owner'
+  | 'dept' | 'area' | 'agentPhone' | 'jawaban' | 'kategori'
+  | 'status' | 'dikirimPada' | 'dibalasPada' | 'rawResponse' | 'screenshot'
+
+const REPORT_COLUMN_WIDTHS: Record<ReportColumnKey, number> = {
+  no: 5, market: 12, storeName: 28, phone: 20, owner: 28,
+  dept: 18, area: 20, agentPhone: 18, jawaban: 12, kategori: 14,
+  status: 12, dikirimPada: 20, dibalasPada: 20, rawResponse: 40, screenshot: 32,
+}
+
+const REPORT_COLUMN_HEADERS: Record<ReportColumnKey, string> = {
+  no: 'No', market: 'Market', storeName: 'Nama Toko', phone: 'Nomor HP Toko', owner: 'Pemilik Toko',
+  dept: 'Department', area: 'Area', agentPhone: 'Agent Phone', jawaban: 'Jawaban', kategori: 'Kategori',
+  status: 'Status', dikirimPada: 'Dikirim pada', dibalasPada: 'Dibalas pada', rawResponse: 'Raw Response', screenshot: 'Screenshot',
+}
+
+// Columns each builder can render (canonical order).
+const CAMPAIGN_SHEET_COLUMNS: ReportColumnKey[] = [
+  'no', 'storeName', 'phone', 'dept', 'area', 'agentPhone', 'jawaban',
+  'kategori', 'status', 'dikirimPada', 'dibalasPada', 'rawResponse', 'screenshot',
+]
+const DEPT_SHEET_COLUMNS: ReportColumnKey[] = [
+  'no', 'market', 'storeName', 'phone', 'owner', 'agentPhone', 'jawaban',
+  'kategori', 'status', 'dikirimPada', 'dibalasPada', 'rawResponse', 'screenshot',
+]
+
+function resolveColumns(requested: string[] | undefined, supported: ReportColumnKey[]): ReportColumnKey[] {
+  if (!requested) return supported
+  const want = new Set(requested.map((c) => c.trim()).filter(Boolean))
+  const cols = supported.filter((k) => want.has(k))
+  if (cols.length === 0) throw new Error('No valid columns selected')
+  return cols
+}
+
+// 1-based ExcelJS column index for a key, or -1 when the column is excluded.
+function colIdx(cols: ReportColumnKey[], key: ReportColumnKey): number {
+  const i = cols.indexOf(key)
+  return i === -1 ? -1 : i + 1
+}
+
+// Parse a `columns` query param: comma-separated and/or repeated (?columns=a&columns=b).
+// Returns undefined when absent (meaning: all columns). Throws when present but empty.
+export function parseReportColumns(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined
+  const parts = (typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [])
+    .flatMap((s) => String(s).split(','))
+  const cols = [...new Set(parts.map((s) => s.trim()).filter(Boolean))]
+  if (cols.length === 0) throw new Error('No valid columns selected')
+  return cols
 }
 
 /**
@@ -73,6 +151,7 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
 
   let totalRows = 0
   let totalInvalidReplies = 0
+  const usedSheetNames = new Set<string>()
 
   for (const ca of campaign.areas) {
     const area = ca.area
@@ -98,27 +177,16 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
     const sentContacts = contacts.filter((c) => c.messages.length > 0)
     if (sentContacts.length === 0) continue
 
-    const sheetName = area.name.slice(0, 31)
+    const sheetName = uniqueSheetName(usedSheetNames, area.name)
     const sheet     = workbook.addWorksheet(sheetName)
 
-    sheet.columns = [
-      { key: 'no',          width: 5  },
-      { key: 'storeName',   width: 28 },
-      { key: 'phone',       width: 20 },
-      { key: 'dept',        width: 18 },
-      { key: 'areaName',    width: 20 },
-      { key: 'agentPhone',  width: 18 },
-      { key: 'jawaban',     width: 12 },
-      { key: 'kategori',    width: 14 },
-      { key: 'status',      width: 12 },
-      { key: 'dikirimPada', width: 20 },
-      { key: 'dibalasPada', width: 20 },
-      { key: 'rawResponse', width: 40 },
-      { key: 'screenshot',  width: 32 },
-    ]
+    const cols = resolveColumns(options?.columns, CAMPAIGN_SHEET_COLUMNS)
+    const at = (key: ReportColumnKey): number => colIdx(cols, key)
+
+    sheet.columns = cols.map((key) => ({ key, width: REPORT_COLUMN_WIDTHS[key] }))
 
     // Header row
-    const headers   = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Status', 'Dikirim pada', 'Dibalas pada', 'Raw Response', 'Screenshot']
+    const headers   = cols.map((key) => REPORT_COLUMN_HEADERS[key])
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
@@ -154,33 +222,44 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
 
       const rawResponse = reply?.body ?? ''
 
+      const shotIdx = at('screenshot')
       const absPath = reply?.screenshotPath && OUTPUT_FOLDER
         ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
         : null
-      const hasImg  = absPath !== null && fs.existsSync(absPath)
+      const hasImg  = shotIdx !== -1 && absPath !== null && fs.existsSync(absPath)
       const embed   = options?.embedImages !== false
 
-      // col 13 = column M (0-indexed: 12) for screenshot image
-      const dataRow = sheet.addRow([rowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, statusLabel, dikirimPada, dibalasPada, rawResponse, ''])
+      // Row values follow the selected column order
+      const values: Record<ReportColumnKey, string | number> = {
+        no: rowNo, market: '', storeName: contact.storeName, phone: contact.phoneNorm,
+        owner: '', dept: dept.name, area: area.name, agentPhone,
+        jawaban: jawabanLabel, kategori, status: statusLabel,
+        dikirimPada, dibalasPada, rawResponse, screenshot: '',
+      }
+      const dataRow = sheet.addRow(cols.map((key) => values[key]))
       dataRow.height = hasImg && embed ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
-      dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(2).alignment = { vertical: 'middle', wrapText: true }
-      dataRow.getCell(3).alignment = { vertical: 'middle' }
-      dataRow.getCell(3).font      = { color: { argb: 'FF6B7280' } }
-      dataRow.getCell(4).alignment = { vertical: 'middle' }
-      dataRow.getCell(5).alignment = { vertical: 'middle' }
-      dataRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(6).font      = { color: { argb: 'FF6B7280' } }
-
-      const jawabanCell     = dataRow.getCell(7)
-      jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
-      if (hasReply) {
-        jawabanCell.font = { bold: true, color: { argb: jawaban === 1 ? 'FF065F46' : 'FF991B1B' } }
-      } else {
-        jawabanCell.font  = { italic: true, color: { argb: 'FF9CA3AF' } }
-        jawabanCell.value = 'Pending'
+      const withCell = (key: ReportColumnKey, fn: (cell: ExcelJS.Cell) => void): void => {
+        const idx = at(key)
+        if (idx !== -1) fn(dataRow.getCell(idx))
       }
+
+      withCell('no', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' } })
+      withCell('storeName', (c) => { c.alignment = { vertical: 'middle', wrapText: true } })
+      withCell('phone', (c) => { c.alignment = { vertical: 'middle' }; c.font = { color: { argb: 'FF6B7280' } } })
+      withCell('dept', (c) => { c.alignment = { vertical: 'middle' } })
+      withCell('area', (c) => { c.alignment = { vertical: 'middle' } })
+      withCell('agentPhone', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+
+      withCell('jawaban', (jawabanCell) => {
+        jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        if (hasReply) {
+          jawabanCell.font = { bold: true, color: { argb: jawaban === 1 ? 'FF065F46' : 'FF991B1B' } }
+        } else {
+          jawabanCell.font  = { italic: true, color: { argb: 'FF9CA3AF' } }
+          jawabanCell.value = 'Pending'
+        }
+      })
 
       // Kategori cell (col 8)
       const kategoriColors: Record<string, string> = {
@@ -191,67 +270,71 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
         invalid:   'FFFBBF24',
         other:     'FFBFDBFE',
       }
-      const kategoriCell     = dataRow.getCell(8)
-      kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
-      if (kategori) {
-        kategoriCell.font = { color: { argb: 'FF374151' } }
-        kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
-      }
+      withCell('kategori', (kategoriCell) => {
+        kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        if (kategori) {
+          kategoriCell.font = { color: { argb: 'FF374151' } }
+          kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
+        }
+      })
 
-      // Status cell (col 9)
-      const statusCell = dataRow.getCell(9)
-      statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
-      if (isInvalid) {
-        statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
-        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
-      } else if (hasReply) {
-        statusCell.font = { color: { argb: 'FF059669' } }
-        statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
-      }
+      // Status cell
+      withCell('status', (statusCell) => {
+        statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        if (isInvalid) {
+          statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
+        } else if (hasReply) {
+          statusCell.font = { color: { argb: 'FF059669' } }
+          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
+        }
+      })
 
-      dataRow.getCell(10).alignment  = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(10).font       = { color: { argb: 'FF6B7280' } }
-      dataRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' }
-      dataRow.getCell(11).font      = { color: { argb: 'FF6B7280' } }
-      dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
-      dataRow.getCell(12).font      = { color: { argb: 'FF374151' } }
+      withCell('dikirimPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+      withCell('dibalasPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+      withCell('rawResponse', (c) => { c.alignment = { vertical: 'middle', wrapText: true }; c.font = { color: { argb: 'FF374151' } } })
 
       if (rowNo % 2 === 0) {
-        for (let c = 1; c <= 6; c++) {
-          const cell = dataRow.getCell(c)
-          if (!(cell.fill as ExcelJS.FillPattern)?.fgColor) {
-            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
-          }
+        for (const key of ['no', 'storeName', 'phone', 'dept', 'area', 'agentPhone'] as const) {
+          withCell(key, (cell) => {
+            if (!(cell.fill as ExcelJS.FillPattern)?.fgColor) {
+              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
+            }
+          })
         }
       }
 
        if (hasImg && !embed) {
          const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
          options?.onPhoto?.({ archivePath, absPath })
-         dataRow.getCell(13).value     = ref
-         dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-         dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+         withCell('screenshot', (c) => {
+           c.value     = ref
+           c.font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+           c.alignment = { vertical: 'middle', wrapText: true }
+         })
        } else if (hasImg) {
          try {
            const ext       = path.extname(absPath).toLowerCase().replace('.', '')
            const extension = (ext === 'jpg' ? 'jpeg' : ext) as 'jpeg' | 'png' | 'gif'
            // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
            const imageId   = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
-           // col 12 = column M (0-indexed), row = excelRowIdx - 1 (0-indexed)
+           // screenshot column (0-indexed), row = excelRowIdx - 1 (0-indexed)
            sheet.addImage(imageId, {
-             tl:     { col: 12, row: excelRowIdx - 1 },
+             tl:     { col: shotIdx - 1, row: excelRowIdx - 1 },
              ext:    { width: IMG_W, height: IMG_H },
              editAs: 'oneCell',
            })
          } catch {
-           dataRow.getCell(13).value     = absPath
-           dataRow.getCell(13).font      = { italic: true, color: { argb: 'FF9CA3AF' } }
-           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+           withCell('screenshot', (c) => {
+             c.value     = absPath
+             c.font      = { italic: true, color: { argb: 'FF9CA3AF' } }
+             c.alignment = { vertical: 'middle', wrapText: true }
+           })
          }
        }
 
         // Add black borders to all cells in the row
-        for (let c = 1; c <= 13; c++) {
+        for (let c = 1; c <= cols.length; c++) {
           const cell = dataRow.getCell(c)
           cell.border = {
             top: { style: 'thin', color: { argb: 'FF000000' } },
@@ -268,7 +351,7 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
   }
 
   // Info sheet
-  const meta = workbook.addWorksheet('Info')
+  const meta = workbook.addWorksheet(uniqueSheetName(usedSheetNames, 'Info'))
   meta.addRow(['Laporan AICE WhatsApp Automation'])
   meta.addRow(['Campaign',           campaign.name])
   meta.addRow(['Tipe',               campaign.campaignType])
@@ -305,33 +388,22 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
 
   let globalTotalRows = 0
   let globalTotalInvalidReplies = 0
-  const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')  // YYYYMMDD format
+  const usedSheetNames = new Set<string>()
 
   for (const campaign of campaigns) {
-    // Use campaign name with timestamp to ensure uniqueness
-    // Format: {campaignName}_{YYYYMMDD}
-    const sheetName = `${campaign.name}_${timestamp}`.slice(0, 31)
-    
+    // Campaign names can repeat (or share the same first 31 chars); the helper
+    // truncates to Excel's limit and appends _2, _3… on collision.
+    const sheetName = uniqueSheetName(usedSheetNames, `${campaign.name}_${campaign.bulan}`)
+
     const sheet = workbook.addWorksheet(sheetName)
 
-    sheet.columns = [
-      { key: 'no',          width: 5  },
-      { key: 'storeName',   width: 28 },
-      { key: 'phone',       width: 20 },
-      { key: 'dept',        width: 18 },
-      { key: 'areaName',    width: 20 },
-      { key: 'agentPhone',  width: 18 },
-      { key: 'jawaban',     width: 12 },
-      { key: 'kategori',    width: 14 },
-      { key: 'status',      width: 12 },
-      { key: 'dikirimPada', width: 20 },
-      { key: 'dibalasPada', width: 20 },
-      { key: 'rawResponse', width: 40 },
-      { key: 'screenshot',  width: 32 },
-    ]
+    const cols = resolveColumns(options?.columns, CAMPAIGN_SHEET_COLUMNS)
+    const at = (key: ReportColumnKey): number => colIdx(cols, key)
+
+    sheet.columns = cols.map((key) => ({ key, width: REPORT_COLUMN_WIDTHS[key] }))
 
     // Header row
-    const headers = ['No', 'Nama Toko', 'Nomor HP Toko', 'Department', 'Area', 'Agent Phone', 'Jawaban', 'Kategori', 'Status', 'Dikirim pada', 'Dibalas pada', 'Raw Response', 'Screenshot']
+    const headers = cols.map((key) => REPORT_COLUMN_HEADERS[key])
     const headerRow = sheet.addRow(headers)
     headerRow.height = 22
     headerRow.eachCell((cell) => {
@@ -392,32 +464,43 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
         const dibalasPada = fmtDate(reply?.receivedAt)
         const rawResponse = reply?.body ?? ''
 
+        const shotIdx = at('screenshot')
         const absPath = reply?.screenshotPath && OUTPUT_FOLDER
           ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
           : null
-        const hasImg = absPath !== null && fs.existsSync(absPath)
+        const hasImg = shotIdx !== -1 && absPath !== null && fs.existsSync(absPath)
         const embed  = options?.embedImages !== false
 
-        const dataRow = sheet.addRow([campaignRowNo, contact.storeName, contact.phoneNorm, dept.name, area.name, agentPhone, jawabanLabel, kategori, statusLabel, dikirimPada, dibalasPada, rawResponse, ''])
+        const values: Record<ReportColumnKey, string | number> = {
+          no: campaignRowNo, market: '', storeName: contact.storeName, phone: contact.phoneNorm,
+          owner: '', dept: dept.name, area: area.name, agentPhone,
+          jawaban: jawabanLabel, kategori, status: statusLabel,
+          dikirimPada, dibalasPada, rawResponse, screenshot: '',
+        }
+        const dataRow = sheet.addRow(cols.map((key) => values[key]))
         dataRow.height = hasImg && embed ? ROW_H_WITH_IMG : ROW_H_DEFAULT
 
-        dataRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(2).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(3).alignment = { vertical: 'middle' }
-        dataRow.getCell(3).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(4).alignment = { vertical: 'middle' }
-        dataRow.getCell(5).alignment = { vertical: 'middle' }
-        dataRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(6).font = { color: { argb: 'FF6B7280' } }
+        const withCell = (key: ReportColumnKey, fn: (cell: ExcelJS.Cell) => void): void => {
+          const idx = at(key)
+          if (idx !== -1) fn(dataRow.getCell(idx))
+        }
 
-        const jawabanCell = dataRow.getCell(7)
-         jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
-         if (hasReply) {
-           jawabanCell.font = { bold: true, color: { argb: jawaban === 1 ? 'FF065F46' : 'FF991B1B' } }
-         } else {
-           jawabanCell.font = { italic: true, color: { argb: 'FF9CA3AF' } }
-           jawabanCell.value = 'Pending'
-         }
+        withCell('no', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' } })
+        withCell('storeName', (c) => { c.alignment = { vertical: 'middle', wrapText: true } })
+        withCell('phone', (c) => { c.alignment = { vertical: 'middle' }; c.font = { color: { argb: 'FF6B7280' } } })
+        withCell('dept', (c) => { c.alignment = { vertical: 'middle' } })
+        withCell('area', (c) => { c.alignment = { vertical: 'middle' } })
+        withCell('agentPhone', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+
+        withCell('jawaban', (jawabanCell) => {
+          jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          if (hasReply) {
+            jawabanCell.font = { bold: true, color: { argb: jawaban === 1 ? 'FF065F46' : 'FF991B1B' } }
+          } else {
+            jawabanCell.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+            jawabanCell.value = 'Pending'
+          }
+        })
 
         const kategoriColors: Record<string, string> = {
           confirmed: 'FF6EE7B7',
@@ -427,45 +510,47 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
           invalid:   'FFFBBF24',
           other:     'FFBFDBFE',
         }
-        const kategoriCell = dataRow.getCell(8)
-        kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
-        if (kategori) {
-          kategoriCell.font = { color: { argb: 'FF374151' } }
-          kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
-        }
+        withCell('kategori', (kategoriCell) => {
+          kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          if (kategori) {
+            kategoriCell.font = { color: { argb: 'FF374151' } }
+            kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[kategori] ?? 'FFFFFFFF' } }
+          }
+        })
 
-        const statusCell = dataRow.getCell(9)
-        statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
-        if (isInvalid) {
-          statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
-          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
-        } else if (hasReply) {
-          statusCell.font = { color: { argb: 'FF059669' } }
-          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
-        }
+        withCell('status', (statusCell) => {
+          statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          if (isInvalid) {
+            statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
+          } else if (hasReply) {
+            statusCell.font = { color: { argb: 'FF059669' } }
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
+          }
+        })
 
-        dataRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(10).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(11).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(12).font = { color: { argb: 'FF374151' } }
+        withCell('dikirimPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+        withCell('dibalasPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } } })
+        withCell('rawResponse', (c) => { c.alignment = { vertical: 'middle', wrapText: true }; c.font = { color: { argb: 'FF374151' } } })
 
         if (campaignRowNo % 2 === 0) {
-          for (let c = 1; c <= 6; c++) {
-            const cell = dataRow.getCell(c)
-            if (!(cell.fill as ExcelJS.FillPattern)?.fgColor) {
-              cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
-            }
+          for (const key of ['no', 'storeName', 'phone', 'dept', 'area', 'agentPhone'] as const) {
+            withCell(key, (cell) => {
+              if (!(cell.fill as ExcelJS.FillPattern)?.fgColor) {
+                cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFAFAFA' } }
+              }
+            })
           }
         }
 
          if (hasImg && !embed) {
            const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
            options?.onPhoto?.({ archivePath, absPath })
-           dataRow.getCell(13).value = ref
-           dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+           withCell('screenshot', (c) => {
+             c.value = ref
+             c.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+             c.alignment = { vertical: 'middle', wrapText: true }
+           })
          } else if (hasImg) {
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
@@ -473,19 +558,21 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
              // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
              const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
              sheet.addImage(imageId, {
-               tl: { col: 12, row: excelRowIdx - 1 },
+               tl: { col: shotIdx - 1, row: excelRowIdx - 1 },
                ext: { width: IMG_W, height: IMG_H },
                editAs: 'oneCell',
              })
              } catch {
-              dataRow.getCell(13).value = absPath
-              dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-              dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+              withCell('screenshot', (c) => {
+                c.value = absPath
+                c.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+                c.alignment = { vertical: 'middle', wrapText: true }
+              })
             }
           }
 
         // Add black borders to all cells in the row
-        for (let c = 1; c <= 13; c++) {
+        for (let c = 1; c <= cols.length; c++) {
           const cell = dataRow.getCell(c)
           cell.border = {
             top: { style: 'thin', color: { argb: 'FF000000' } },
@@ -506,16 +593,16 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
     if (campaignTotalRows > 0) {
       const infoRow = sheet.addRow([])
       infoRow.height = 2
-      const summaryRow = sheet.addRow(['Summary:', '', '', '', '', '', '', '', '', '', '', '', ''])
+      const summaryRow = sheet.addRow(cols.map((key) => key === 'no' ? 'Summary:' : ''))
       summaryRow.getCell(1).font = { bold: true }
-      sheet.addRow(['Total rows:', campaignTotalRows, '', '', '', '', '', '', '', '', '', '', ''])
-      sheet.addRow(['Valid replies:', campaignTotalRows - campaignTotalInvalidReplies, '', '', '', '', '', '', '', '', '', '', ''])
-      sheet.addRow(['Invalid replies:', campaignTotalInvalidReplies, '', '', '', '', '', '', '', '', '', '', ''])
+      sheet.addRow(cols.map((key) => key === 'no' ? 'Total rows:' : key === 'storeName' ? campaignTotalRows : ''))
+      sheet.addRow(cols.map((key) => key === 'no' ? 'Valid replies:' : key === 'storeName' ? campaignTotalRows - campaignTotalInvalidReplies : ''))
+      sheet.addRow(cols.map((key) => key === 'no' ? 'Invalid replies:' : key === 'storeName' ? campaignTotalInvalidReplies : ''))
     }
   }
 
   // Summary sheet
-  const summary = workbook.addWorksheet('Summary', { state: 'visible' })
+  const summary = workbook.addWorksheet(uniqueSheetName(usedSheetNames, 'Summary'), { state: 'visible' })
   summary.addRow(['Laporan AICE WhatsApp Automation — All Campaigns'])
   summary.addRow([''])
   summary.addRow(['Generated', new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })])
@@ -657,30 +744,23 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
   let globalTotalRows = 0
   let globalTotalInvalidReplies = 0
   const summaryData: { dept: string; campaigns: number; totalRows: number; validRows: number; invalidRows: number }[] = []
+  const usedSheetNames = new Set<string>()
 
   // Create sheets per department
   for (const dept of departments) {
     const campaignMap = campaignsByDept.get(dept.id)
     if (!campaignMap) continue
 
-    const sheetName = dept.name.slice(0, 31)
+    const sheetName = uniqueSheetName(usedSheetNames, dept.name)
     const sheet = workbook.addWorksheet(sheetName)
 
-    sheet.columns = [
-      { key: 'no', width: 5 },
-      { key: 'market', width: 12 },
-      { key: 'storeName', width: 28 },
-      { key: 'phone', width: 20 },
-      { key: 'ownerName', width: 28 },
-      { key: 'agentPhone', width: 18 },
-      { key: 'jawaban', width: 40 },
-      { key: 'kategori', width: 14 },
-      { key: 'status', width: 12 },
-      { key: 'dikirimPada', width: 20 },
-      { key: 'dibalasPada', width: 20 },
-      { key: 'rawResponse', width: 40 },
-      { key: 'screenshot', width: 32 },
-    ]
+    const cols = resolveColumns(options?.columns, DEPT_SHEET_COLUMNS)
+    const at = (key: ReportColumnKey): number => colIdx(cols, key)
+
+    sheet.columns = cols.map((key) => ({
+      key,
+      width: key === 'jawaban' ? 40 : REPORT_COLUMN_WIDTHS[key],
+    }))
 
     let deptTotalRows = 0
     let deptTotalInvalidReplies = 0
@@ -703,21 +783,11 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
       isFirstCampaign = false
 
       // Header row with dynamic jawaban column name
-      const headers = [
-        'No',
-        'Market',
-        'Nama Toko',
-        'No HP',
-        'Pemilik Toko',
-        'Agent Phone',
-        `${campaign.template.replaceAll('{{bulan}}', campaign.bulan)} (ya=1, tidak=0)`,
-        'Kategori',
-        'Status',
-        'Dikirim pada',
-        'Dibalas pada',
-        'Raw Response',
-        'Screenshot',
-      ]
+      const headers = cols.map((key) => {
+        if (key === 'jawaban') return `${campaign.template.replaceAll('{{bulan}}', campaign.bulan)} (ya=1, tidak=0)`
+        if (key === 'phone') return 'No HP'
+        return REPORT_COLUMN_HEADERS[key]
+      })
       const headerRow = sheet.addRow(headers)
       headerRow.height = 102
       headerRow.eachCell((cell) => {
@@ -753,27 +823,27 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         const dibalasPada = fmtDate(reply?.receivedAt)
         const rawResponse = reply?.body ?? ''
 
+        const shotIdx = at('screenshot')
         const absPath = reply?.screenshotPath && OUTPUT_FOLDER
           ? path.join(OUTPUT_FOLDER, reply.screenshotPath)
           : null
-        const hasImg = absPath !== null && fs.existsSync(absPath)
+        const hasImg = shotIdx !== -1 && absPath !== null && fs.existsSync(absPath)
         const embed  = options?.embedImages !== false
 
-        const dataRow = sheet.addRow([
-          campaignRowNo,
-          area.name,
-          contact.storeName,
-          contact.phoneNorm.replaceAll("+", ""),
-          contact.storeName,
-          message?.agent?.phoneNumber ?? '',
-          jawabanLabel,
-          reply?.claudeCategory ?? '',
-          !hasReply ? '' : (isInvalid ? '⚠ Invalid' : 'Valid'),
-          dikirimPada,
-          dibalasPada,
-          rawResponse,
-          '',
-        ])
+        const values: Record<ReportColumnKey, string | number> = {
+          no: campaignRowNo, market: area.name, storeName: contact.storeName,
+          phone: contact.phoneNorm.replaceAll('+', ''), owner: contact.storeName,
+          dept: '', area: area.name, agentPhone: message?.agent?.phoneNumber ?? '',
+          jawaban: jawabanLabel, kategori: reply?.claudeCategory ?? '',
+          status: !hasReply ? '' : (isInvalid ? '⚠ Invalid' : 'Valid'),
+          dikirimPada, dibalasPada, rawResponse, screenshot: '',
+        }
+        const dataRow = sheet.addRow(cols.map((key) => values[key]))
+
+        const withCell = (key: ReportColumnKey, fn: (cell: ExcelJS.Cell) => void): void => {
+          const idx = at(key)
+          if (idx !== -1) fn(dataRow.getCell(idx))
+        }
         
         // Save first data row number for formula calculation
         if (firstDataRowNum === 0) {
@@ -789,31 +859,24 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           right: { style: 'thin' as const, color: { argb: 'FF000000' } },
         }
 
-        dataRow.getCell(1).alignment = { vertical: 'middle' }
-        dataRow.getCell(1).border = borderStyle
-        dataRow.getCell(2).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(2).border = borderStyle
-        dataRow.getCell(3).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(3).border = borderStyle
-         dataRow.getCell(4).alignment = { vertical: 'middle' }
-        dataRow.getCell(4).font = { color: { argb: 'FF000000' } }
-        dataRow.getCell(4).border = borderStyle
-        dataRow.getCell(5).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(5).border = borderStyle
-        dataRow.getCell(6).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(6).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(6).border = borderStyle
+        withCell('no', (c) => { c.alignment = { vertical: 'middle' }; c.border = borderStyle })
+        withCell('market', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.border = borderStyle })
+        withCell('storeName', (c) => { c.alignment = { vertical: 'middle', wrapText: true }; c.border = borderStyle })
+        withCell('phone', (c) => { c.alignment = { vertical: 'middle' }; c.font = { color: { argb: 'FF000000' } }; c.border = borderStyle })
+        withCell('owner', (c) => { c.alignment = { vertical: 'middle', wrapText: true }; c.border = borderStyle })
+        withCell('agentPhone', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } }; c.border = borderStyle })
 
-        // Jawaban cell (col 7)
-        const jawabanCell = dataRow.getCell(7)
-        jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
-        jawabanCell.border = borderStyle
-        if (hasReply) {
-          jawabanCell.font = { bold: true, color: { argb: 'FF000000' } }
-        } else {
-          jawabanCell.font = { italic: true, color: { argb: 'FF9CA3AF' } }
-          jawabanCell.value = 'Pending'
-        }
+        // Jawaban cell
+        withCell('jawaban', (jawabanCell) => {
+          jawabanCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          jawabanCell.border = borderStyle
+          if (hasReply) {
+            jawabanCell.font = { bold: true, color: { argb: 'FF000000' } }
+          } else {
+            jawabanCell.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+            jawabanCell.value = 'Pending'
+          }
+        })
 
         // Kategori cell (col 8)
         const kategoriColors: Record<string, string> = {
@@ -824,43 +887,41 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
           invalid: 'FFFBBF24',
           other: 'FFBFDBFE',
         }
-        const kategoriCell = dataRow.getCell(8)
-        kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
-        kategoriCell.border = borderStyle
-        if (reply?.claudeCategory) {
-          kategoriCell.font = { color: { argb: 'FF374151' } }
-          kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[reply.claudeCategory] ?? 'FFFFFFFF' } }
-        }
+        withCell('kategori', (kategoriCell) => {
+          kategoriCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          kategoriCell.border = borderStyle
+          if (reply?.claudeCategory) {
+            kategoriCell.font = { color: { argb: 'FF374151' } }
+            kategoriCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: kategoriColors[reply.claudeCategory] ?? 'FFFFFFFF' } }
+          }
+        })
 
-        // Status cell (col 9)
-        const statusCell = dataRow.getCell(9)
-        statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
-        statusCell.border = borderStyle
-        if (isInvalid) {
-          statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
-          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
-        } else if (hasReply) {
-          statusCell.font = { color: { argb: 'FF059669' } }
-          statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
-        }
+        // Status cell
+        withCell('status', (statusCell) => {
+          statusCell.alignment = { vertical: 'middle', horizontal: 'center' }
+          statusCell.border = borderStyle
+          if (isInvalid) {
+            statusCell.font = { bold: true, color: { argb: 'FFDC2626' } }
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } }
+          } else if (hasReply) {
+            statusCell.font = { color: { argb: 'FF059669' } }
+            statusCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } }
+          }
+        })
 
-        dataRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(10).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(10).border = borderStyle
-        dataRow.getCell(11).alignment = { vertical: 'middle', horizontal: 'center' }
-        dataRow.getCell(11).font = { color: { argb: 'FF6B7280' } }
-        dataRow.getCell(11).border = borderStyle
-        dataRow.getCell(12).alignment = { vertical: 'middle', wrapText: true }
-        dataRow.getCell(12).font = { color: { argb: 'FF374151' } }
-        dataRow.getCell(12).border = borderStyle
-        dataRow.getCell(13).border = borderStyle
+        withCell('dikirimPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } }; c.border = borderStyle })
+        withCell('dibalasPada', (c) => { c.alignment = { vertical: 'middle', horizontal: 'center' }; c.font = { color: { argb: 'FF6B7280' } }; c.border = borderStyle })
+        withCell('rawResponse', (c) => { c.alignment = { vertical: 'middle', wrapText: true }; c.font = { color: { argb: 'FF374151' } }; c.border = borderStyle })
+        withCell('screenshot', (c) => { c.border = borderStyle })
 
          if (hasImg && !embed) {
            const { archivePath, ref } = buildScreenshotRef(campaign.name, absPath, contact.phoneNorm, contact.storeName)
            options?.onPhoto?.({ archivePath, absPath })
-           dataRow.getCell(13).value = ref
-           dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-           dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+           withCell('screenshot', (c) => {
+             c.value = ref
+             c.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+             c.alignment = { vertical: 'middle', wrapText: true }
+           })
          } else if (hasImg) {
            try {
              const ext = path.extname(absPath).toLowerCase().replace('.', '')
@@ -868,14 +929,16 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
              // ExcelJS declares its own Buffer type (extends ArrayBuffer) which clashes with Node Buffer; binary-compatible at runtime
               const imageId = workbook.addImage({ buffer: fs.readFileSync(absPath) as unknown as ArrayBuffer, extension })
               sheet.addImage(imageId, {
-                tl: { col: 12, row: sheetRowIndex - 1 },
+                tl: { col: shotIdx - 1, row: sheetRowIndex - 1 },
                 ext: { width: IMG_W, height: IMG_H },
                 editAs: 'oneCell',
               })
             } catch {
-              dataRow.getCell(13).value = absPath
-              dataRow.getCell(13).font = { italic: true, color: { argb: 'FF9CA3AF' } }
-              dataRow.getCell(13).alignment = { vertical: 'middle', wrapText: true }
+              withCell('screenshot', (c) => {
+                c.value = absPath
+                c.font = { italic: true, color: { argb: 'FF9CA3AF' } }
+                c.alignment = { vertical: 'middle', wrapText: true }
+              })
            }
          }
 
@@ -886,48 +949,43 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
         sheetRowIndex++ // Increment row index
       }
 
-      // Add Pencapaian (Achievement) summary row after each campaign table
-      // Pencapaian row - starts at column 1 (Market/Area)
-      const lastDataRowNum = sheet.rowCount
-      const pencapaianRow = sheet.addRow([
-        'Pencapaian',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-        '',
-      ])
-      pencapaianRow.height = 20
+      // Add Pencapaian (Achievement) summary row after each campaign table.
+      // Needs the Jawaban column for its COUNTIF formula — skip when excluded.
+      const jawabanIdx = at('jawaban')
+      if (jawabanIdx !== -1) {
+        const lastDataRowNum = sheet.rowCount
+        const pencapaianRow = sheet.addRow(cols.map((key) => key === 'no' ? 'Pencapaian' : ''))
+        pencapaianRow.height = 20
 
-      // Set the formula in cell G (column 7) - Jawaban column
-      const formulaCell = pencapaianRow.getCell(7)
-      formulaCell.value = { formula: `COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},1)/(COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},1)+COUNTIF(G${firstDataRowNum}:G${lastDataRowNum},0))` }
+        // Set the formula in the Jawaban column (dynamic letter, e.g. G)
+        const colLetter = String.fromCharCode(64 + jawabanIdx)
+        const range = `${colLetter}${firstDataRowNum}:${colLetter}${lastDataRowNum}`
+        const formulaCell = pencapaianRow.getCell(jawabanIdx)
+        formulaCell.value = { formula: `COUNTIF(${range},1)/(COUNTIF(${range},1)+COUNTIF(${range},0))` }
+        formulaCell.font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
+        formulaCell.alignment = { vertical: 'middle', horizontal: 'center' }
+        formulaCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } }
+        formulaCell.numFmt = '0%'
 
-      // Merge columns B:E for "Pencapaian" label spanning
-      sheet.mergeCells(`A${pencapaianRow.number}:E${pencapaianRow.number}`)
+        // Merge label across the first columns (up to E)
+        if (cols.length > 1) {
+          const mergeEnd = String.fromCharCode(64 + Math.min(5, cols.length))
+          sheet.mergeCells(`A${pencapaianRow.number}:${mergeEnd}${pencapaianRow.number}`)
+        }
 
-       // Style the Pencapaian row
-      pencapaianRow.getCell(1).font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
-      pencapaianRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
-      formulaCell.font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
-      formulaCell.alignment = { vertical: 'middle', horizontal: 'center' }
-      formulaCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } }
-      formulaCell.numFmt = '0%'
+        // Style the Pencapaian row
+        pencapaianRow.getCell(1).font = { bold: true, size: 11, color: { argb: 'FF10B981' } }
+        pencapaianRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'center' }
 
-      // Add black borders to all cells in Pencapaian row
-      for (let c = 1; c <= 13; c++) {
-        const cell = pencapaianRow.getCell(c)
-        cell.border = {
-          top: { style: 'thin', color: { argb: 'FF000000' } },
-          bottom: { style: 'thin', color: { argb: 'FF000000' } },
-          left: { style: 'thin', color: { argb: 'FF000000' } },
-          right: { style: 'thin', color: { argb: 'FF000000' } },
+        // Add black borders to all cells in Pencapaian row
+        for (let c = 1; c <= cols.length; c++) {
+          const cell = pencapaianRow.getCell(c)
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } },
+          }
         }
       }
 
@@ -944,7 +1002,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
   }
 
   // Summary sheet
-  const summary = workbook.addWorksheet('Summary', { state: 'visible' })
+  const summary = workbook.addWorksheet(uniqueSheetName(usedSheetNames, 'Summary'), { state: 'visible' })
   summary.addRow(['Laporan AICE WhatsApp Automation — By Department'])
   summary.addRow([''])
   summary.addRow(['Generated', new Date().toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' })])

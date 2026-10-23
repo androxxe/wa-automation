@@ -19,6 +19,8 @@ interface Campaign {
   queuedCount: number
   failedCount: number
   alreadyRepliedCount: number
+  verifiedLeft: number
+  verifiedTotal: number
   targetRepliesPerArea: number | null
   areas: { areaId: string }[]
   createdAt: string
@@ -67,7 +69,7 @@ export default function Campaigns() {
   const { data, isLoading } = useQuery({
     queryKey: ['campaigns', statusFilter, bulanFilter, typeFilter, page],
     queryFn:  () => {
-      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE), includeVerified: '1' })
       if (statusFilter) params.set('status', statusFilter)
       if (bulanFilter)  params.set('bulan',  bulanFilter)
       if (typeFilter)   params.set('campaignType', typeFilter)
@@ -192,17 +194,17 @@ export default function Campaigns() {
         <table className="w-full text-sm">
           <thead className="bg-muted text-muted-foreground text-xs uppercase tracking-wider">
             <tr>
-              {['Name', 'Type', 'Month', 'Status', 'Progress', 'Replies', 'Queue / Failed', 'Already Replied', 'Created', 'Actions'].map((h) => (
+              {['Name', 'Type', 'Month', 'Status', 'Progress', 'Replies', 'Queue / Failed', 'Already Replied', 'Verified Left', 'Created', 'Actions'].map((h) => (
                 <th key={h} className="px-4 py-2.5 text-left font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y">
             {isLoading && (
-              <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
+              <tr><td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
             )}
             {!isLoading && campaigns.length === 0 && (
-              <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
+              <tr><td colSpan={11} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
             {campaigns.map((c) => {
               const progress    = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
@@ -272,6 +274,17 @@ export default function Campaigns() {
                     </span>
                     <span className="text-muted-foreground text-xs ml-1">
                       {c.bulan} · {c.campaignType}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <span
+                      className={`font-semibold ${c.verifiedLeft > 0 ? 'text-sky-600' : 'text-muted-foreground'}`}
+                      title={`${c.verifiedLeft} of ${c.verifiedTotal} verified contacts not yet messaged in this campaign`}
+                    >
+                      {c.verifiedLeft}
+                    </span>
+                    <span className="text-muted-foreground text-xs ml-1">
+                      / {c.verifiedTotal} left
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-muted-foreground text-xs">

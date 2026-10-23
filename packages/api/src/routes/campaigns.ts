@@ -17,6 +17,7 @@ router.get('/', async (req, res) => {
       status,
       bulan,
       campaignType,
+      includeVerified,
       page:  pageStr,
       limit: limitStr,
     } = req.query as Record<string, string | undefined>
@@ -152,10 +153,35 @@ router.get('/', async (req, res) => {
       }),
     )
 
+    // Verified contacts left = contacts in this campaign's areas that are
+    // WA-verified (phoneValid + waChecked) with no message yet for this campaign.
+    // Opt-in via ?includeVerified=1 — pickers that load all campaigns skip it.
+    const wantVerified = includeVerified === '1' || includeVerified === 'true'
+    const verifiedByCampaign = new Map<string, { left: number; total: number }>()
+    if (wantVerified) {
+      await Promise.all(
+        campaigns.map(async (c) => {
+          const areaIds = c.areas.map((a) => a.areaId)
+          const base = {
+            areaId:      { in: areaIds },
+            contactType: c.campaignType,
+            phoneValid:  true,
+            waChecked:   true,
+          }
+          const [left, total] = await Promise.all([
+            db.contact.count({ where: { ...base, messages: { none: { campaignId: c.id } } } }),
+            db.contact.count({ where: base }),
+          ])
+          verifiedByCampaign.set(c.id, { left, total })
+        }),
+      )
+    }
+
     const data = campaigns.map((c) => {
       const target = c.targetRepliesPerArea ?? defaultTarget
       const byArea = repliedByAreaMap.get(`${c.bulan}::${c.campaignType}`) ?? []
       const alreadyRepliedCount = byArea.reduce((sum, a) => sum + Math.min(a.count, target), 0)
+      const verified = verifiedByCampaign.get(c.id) ?? { left: 0, total: 0 }
 
       return {
         ...c,
@@ -165,6 +191,8 @@ router.get('/', async (req, res) => {
         failedCount:          failedCountMap.get(c.id)      ?? 0,
         cancelledCount:       cancelledCountMap.get(c.id)   ?? 0,
         alreadyRepliedCount,
+        verifiedLeft:         verified.left,
+        verifiedTotal:        verified.total,
       }
     })
 

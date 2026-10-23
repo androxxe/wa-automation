@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { AppConfigData } from '@aice/shared'
 import { apiFetch } from '@/lib/utils'
@@ -27,6 +27,55 @@ const JAWABAN_LABELS: Record<string, string> = {
   'null': 'Tidak Jelas',
 }
 
+const CAMPAIGN_EXPORT_COLUMNS = [
+  { key: 'no', label: 'No' },
+  { key: 'storeName', label: 'Nama Toko' },
+  { key: 'phone', label: 'Nomor HP' },
+  { key: 'dept', label: 'Department' },
+  { key: 'area', label: 'Area' },
+  { key: 'agentPhone', label: 'Agent Phone' },
+  { key: 'jawaban', label: 'Jawaban' },
+  { key: 'kategori', label: 'Kategori' },
+  { key: 'status', label: 'Status' },
+  { key: 'dikirimPada', label: 'Dikirim Pada' },
+  { key: 'dibalasPada', label: 'Dibalas Pada' },
+  { key: 'rawResponse', label: 'Raw Response' },
+  { key: 'screenshot', label: 'Screenshot' },
+]
+
+const DEPT_EXPORT_COLUMNS = [
+  { key: 'no', label: 'No' },
+  { key: 'market', label: 'Market' },
+  { key: 'storeName', label: 'Nama Toko' },
+  { key: 'phone', label: 'No HP' },
+  { key: 'owner', label: 'Pemilik Toko' },
+  { key: 'agentPhone', label: 'Agent Phone' },
+  { key: 'jawaban', label: 'Jawaban' },
+  { key: 'kategori', label: 'Kategori' },
+  { key: 'status', label: 'Status' },
+  { key: 'dikirimPada', label: 'Dikirim Pada' },
+  { key: 'dibalasPada', label: 'Dibalas Pada' },
+  { key: 'rawResponse', label: 'Raw Response' },
+  { key: 'screenshot', label: 'Screenshot' },
+]
+
+const ALL_EXPORT_COLUMN_KEYS = [...new Set([...CAMPAIGN_EXPORT_COLUMNS, ...DEPT_EXPORT_COLUMNS].map((c) => c.key))]
+const EXPORT_COLUMNS_KEY = 'export-columns-v1'
+
+function loadSelectedColumns(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPORT_COLUMNS_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw) as string[]
+      const valid = parsed.filter((k) => ALL_EXPORT_COLUMN_KEYS.includes(k))
+      if (valid.length > 0) return new Set(valid)
+    }
+  } catch {
+    // Corrupt prefs — fall through to defaults.
+  }
+  return new Set(ALL_EXPORT_COLUMN_KEYS)
+}
+
 export default function Export() {
   const { data: config } = useQuery<AppConfigData>({
     queryKey: ['config'],
@@ -45,6 +94,18 @@ export default function Export() {
   const [exportType, setExportType] = useState<'campaign' | 'department'>('campaign')
   const [fileFormat, setFileFormat] = useState<'xlsx' | 'zip'>('xlsx')
   const [downloading, setDownloading] = useState(false)
+  const [selectedColumns, setSelectedColumns] = useState<Set<string>>(loadSelectedColumns)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(EXPORT_COLUMNS_KEY, JSON.stringify([...selectedColumns]))
+    } catch {
+      // Storage unavailable — selection just won't persist.
+    }
+  }, [selectedColumns])
+
+  const visibleColumns = exportType === 'campaign' ? CAMPAIGN_EXPORT_COLUMNS : DEPT_EXPORT_COLUMNS
+  const visibleSelectedCount = visibleColumns.filter((c) => selectedColumns.has(c.key)).length
 
   const { data: campaigns = [] } = useQuery<Campaign[]>({
     queryKey: ['campaigns'],
@@ -82,6 +143,25 @@ export default function Export() {
     setSelectedJawabans(newSet)
   }
 
+  const toggleColumn = (key: string) => {
+    const newSet = new Set(selectedColumns)
+    if (newSet.has(key)) {
+      newSet.delete(key)
+    } else {
+      newSet.add(key)
+    }
+    setSelectedColumns(newSet)
+  }
+
+  const selectVisibleColumns = () => {
+    setSelectedColumns((prev) => new Set([...prev, ...visibleColumns.map((c) => c.key)]))
+  }
+
+  const clearVisibleColumns = () => {
+    const visible = new Set(visibleColumns.map((c) => c.key))
+    setSelectedColumns((prev) => new Set([...prev].filter((k) => !visible.has(k))))
+  }
+
   const handleDownloadFiltered = async () => {
     setDownloading(true)
     try {
@@ -105,6 +185,11 @@ export default function Export() {
 
       // File format (zip = xlsx + screenshots folder)
       if (fileFormat === 'zip') params.append('format', 'zip')
+
+      // Column selection (omit when everything is selected)
+      if (selectedColumns.size < ALL_EXPORT_COLUMN_KEYS.length) {
+        params.append('columns', [...selectedColumns].join(','))
+      }
 
       const endpoint =
         exportType === 'campaign'
@@ -317,6 +402,48 @@ export default function Export() {
             ))}
           </div>
         </div>
+
+        {/* Columns to Include */}
+        <div className="rounded-lg border bg-card p-6 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Columns to Include</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {selectedColumns.size} of {ALL_EXPORT_COLUMN_KEYS.length} selected
+                {exportType === 'department' ? ' — Market / Pemilik Toko only apply to department reports' : ''}
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={selectVisibleColumns}
+                className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent"
+              >
+                Select all
+              </button>
+              <button
+                type="button"
+                onClick={clearVisibleColumns}
+                className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {visibleColumns.map((col) => (
+              <label key={col.key} className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={selectedColumns.has(col.key)}
+                  onChange={() => toggleColumn(col.key)}
+                  className="w-4 h-4 rounded"
+                />
+                <span className="text-sm">{col.label}</span>
+              </label>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* Preview */}
@@ -371,7 +498,7 @@ export default function Export() {
         <button
           type="button"
           onClick={handleDownloadFiltered}
-          disabled={downloading || filteredCampaigns.length === 0}
+          disabled={downloading || filteredCampaigns.length === 0 || visibleSelectedCount === 0}
           className="flex-1 px-6 py-3 rounded-md bg-primary text-primary-foreground font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors"
         >
           {downloading ? 'Generating…' : fileFormat === 'zip' ? 'Download ZIP Report' : 'Download XLSX Report'}
