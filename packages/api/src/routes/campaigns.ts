@@ -13,21 +13,63 @@ const CAMPAIGN_STATUSES = ['DRAFT', 'RUNNING', 'PAUSED', 'COMPLETED', 'CANCELLED
 
 router.get('/', async (req, res) => {
   try {
-    const { status } = req.query as Record<string, string | undefined>
+    const {
+      status,
+      bulan,
+      campaignType,
+      page:  pageStr,
+      limit: limitStr,
+    } = req.query as Record<string, string | undefined>
     if (status && !CAMPAIGN_STATUSES.includes(status as (typeof CAMPAIGN_STATUSES)[number])) {
       res.status(400).json({ ok: false, error: 'Invalid campaign status filter' })
       return
     }
 
+    // Pagination is opt-in: callers that omit `page` keep getting every campaign
+    // (campaign pickers on Responses / Export rely on that).
+    const isPaginated = pageStr !== undefined
+    const page  = Math.max(1, Number.parseInt(pageStr ?? '1', 10) || 1)
+    const limit = Math.min(200, Math.max(1, Number.parseInt(limitStr ?? '50', 10) || 50))
+    const skip  = (page - 1) * limit
+
+    const where = {
+      ...(status       ? { status }       : {}),
+      ...(bulan        ? { bulan }        : {}),
+      ...(campaignType ? { campaignType } : {}),
+    }
+
+    const areasInclude = { areas: { include: { area: { include: { department: true } } } } } as const
+    const statsSelect = {
+      id:                   true,
+      status:               true,
+      bulan:                true,
+      campaignType:         true,
+      targetReplyMode:      true,
+      targetRepliesPerArea: true,
+    } as const
+
     const campaigns = await db.campaign.findMany({
-      where: status ? { status } : undefined,
-      include: { areas: { include: { area: { include: { department: true } } } } },
+      where,
+      include: areasInclude,
       orderBy: { createdAt: 'desc' },
+      ...(isPaginated ? { skip, take: limit } : {}),
     })
+
+    // Stats stay global for the active filter, so a second lightweight query is
+    // needed — the page above only holds `limit` rows.
+    const statsRows = isPaginated
+      ? await db.campaign.findMany({
+          where,
+          select:    statsSelect,
+          orderBy:   { createdAt: 'desc' },
+        })
+      : campaigns
+
+    const total = statsRows.length
 
     // Compute live counts from Message records (one query each for all campaigns)
     // to avoid trusting potentially-stale denormalized counters.
-    const campaignIds = campaigns.map((c) => c.id)
+    const campaignIds = statsRows.map((c) => c.id)
     const [replyCounts, statusCounts, qualifyingReplies] = await Promise.all([
       db.message.groupBy({
         by:    ['campaignId'],
@@ -126,7 +168,42 @@ router.get('/', async (req, res) => {
       }
     })
 
-    res.json({ ok: true, data })
+    // Aggregate cards describe the whole filtered set, not just this page.
+    const stats = statsRows.reduce(
+      (acc, c) => {
+        acc.total++
+        if (c.status === 'RUNNING') acc.running++
+        if (c.status === 'PAUSED')  acc.paused++
+        acc.queued  += queueCountMap.get(c.id) ?? 0
+        acc.failed  += failedCountMap.get(c.id) ?? 0
+        acc.replies += replyCountMap.get(c.id) ?? 0
+        acc.qualify += countQualifying(c.targetReplyMode, jawabanByCampaign.get(c.id))
+        return acc
+      },
+      { total: 0, running: 0, paused: 0, queued: 0, failed: 0, replies: 0, qualify: 0 },
+    )
+
+    // Facet options ignore the bulan / campaignType filters so the dropdowns
+    // never lose options after the first selection.
+    const facetsWhere = status ? { status } : undefined
+    const [monthFacets, typeFacets] = await Promise.all([
+      db.campaign.groupBy({ by: ['bulan'],        where: facetsWhere, orderBy: { bulan: 'asc' } }),
+      db.campaign.groupBy({ by: ['campaignType'], where: facetsWhere, orderBy: { campaignType: 'asc' } }),
+    ])
+
+    res.json({
+      ok: true,
+      data,
+      total,
+      page:  isPaginated ? page : 1,
+      limit: isPaginated ? limit : total,
+      pages: isPaginated ? Math.max(1, Math.ceil(total / limit)) : 1,
+      stats,
+      facets: {
+        months: monthFacets.map((m) => m.bulan),
+        types:  typeFacets.map((t) => t.campaignType),
+      },
+    })
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err) })
   }

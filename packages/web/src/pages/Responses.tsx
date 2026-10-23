@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { apiFetch } from '@/lib/utils'
+import Pagination from '@/components/Pagination'
 import ReplyConversationModal from '@/components/ReplyConversationModal'
 import type { AppConfigData, ReplyCategory, ConversationEntry } from '@aice/shared'
 
@@ -395,6 +396,7 @@ export default function Responses() {
   const [filterJawaban,      setFilterJawaban]       = useState('')
   const [filterConversation, setFilterConversation]  = useState('')
   const [page,               setPage]                = useState(1)
+  const [pageSize,           setPageSize]            = useState(50)
   const [screenshot,       setScreenshot]        = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, { category: string; jawaban: string }>>({})
   const [pollingPhone, setPollingPhone] = useState<string | null>(null)
@@ -411,9 +413,9 @@ export default function Responses() {
   })
 
   const repliesQuery = useQuery<RepliesResponse>({
-    queryKey: ['replies', filterCampaignId, filterCampaignType, filterBulan, filterCategory, filterJawaban, filterConversation, page],
+    queryKey: ['replies', filterCampaignId, filterCampaignType, filterBulan, filterCategory, filterJawaban, filterConversation, page, pageSize],
     queryFn: () => {
-      const params = new URLSearchParams({ page: String(page), limit: '50' })
+      const params = new URLSearchParams({ page: String(page), limit: String(pageSize) })
       if (filterCampaignId)   params.set('campaignId',   filterCampaignId)
       if (filterCampaignType) params.set('campaignType', filterCampaignType)
       if (filterBulan)        params.set('bulan',        filterBulan)
@@ -429,6 +431,11 @@ export default function Responses() {
   const replies = data?.replies ?? []
   const stats   = data?.stats ?? { total: 0, confirmed: 0, denied: 0, question: 0, unclear: 0, invalid: 0, other: 0 }
   const pages   = data?.pages ?? 1
+
+  // Replies can disappear (re-poll / refetch), leaving `page` past the end.
+  useEffect(() => {
+    if (data && data.pages > 0 && page > data.pages) setPage(data.pages)
+  }, [data, page])
 
   // Live lookup so the modal reflects refetched data (conversation updates after send)
   const replyTarget = replyTargetId ? replies.find((r) => r.id === replyTargetId) ?? null : null
@@ -794,32 +801,28 @@ export default function Responses() {
       </div>
 
       {/* Pagination */}
-      {pages > 1 && (
-        <div className="flex items-center justify-between text-sm text-muted-foreground">
-          <span>
-            {data ? `${(page - 1) * 50 + 1}–${Math.min(page * 50, data.total)} of ${data.total} replies` : ''}
-          </span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              disabled={page <= 1}
-              className="px-3 py-1 rounded-md border disabled:opacity-40 hover:bg-accent"
-            >
-              ‹ Prev
-            </button>
-            <span className="px-2">Page {page} / {pages}</span>
-            <button
-              type="button"
-              onClick={() => setPage((p) => Math.min(pages, p + 1))}
-              disabled={page >= pages}
-              className="px-3 py-1 rounded-md border disabled:opacity-40 hover:bg-accent"
-            >
-              Next ›
-            </button>
-          </div>
-        </div>
-      )}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="flex items-center gap-2 text-sm text-muted-foreground">
+          Rows per page
+          <select
+            value={pageSize}
+            onChange={(e) => { setPageSize(Number(e.target.value)); setPage(1) }}
+            className="text-sm rounded-md border bg-background px-2 py-1"
+          >
+            {[25, 50, 100, 200].map((size) => (
+              <option key={size} value={size}>{size}</option>
+            ))}
+          </select>
+        </label>
+        <Pagination
+          page={page}
+          pages={pages}
+          total={data?.total ?? 0}
+          limit={pageSize}
+          onPageChange={setPage}
+          itemLabel="replies"
+        />
+      </div>
 
       {/* Screenshot modal */}
       {screenshot && (

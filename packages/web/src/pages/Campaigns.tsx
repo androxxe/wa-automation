@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { apiFetch } from '@/lib/utils'
+import { apiFetch, apiFetchEnvelope } from '@/lib/utils'
+import Pagination from '@/components/Pagination'
 import { TYPE_BADGE } from '@/lib/typeBadges'
 import type { CampaignStatus } from '@aice/shared'
 
@@ -23,6 +24,31 @@ interface Campaign {
   createdAt: string
 }
 
+interface CampaignStats {
+  total:    number
+  running:  number
+  paused:   number
+  queued:   number
+  failed:   number
+  replies:  number
+  qualify:  number
+}
+
+interface CampaignsMeta {
+  total:  number
+  page:   number
+  limit:  number
+  pages:  number
+  stats:  CampaignStats
+  facets: { months: string[]; types: string[] }
+}
+
+const PAGE_SIZE = 50
+
+const EMPTY_STATS: CampaignStats = {
+  total: 0, running: 0, paused: 0, queued: 0, failed: 0, replies: 0, qualify: 0,
+}
+
 const STATUS_COLORS: Record<CampaignStatus, string> = {
   DRAFT:     'bg-gray-100 text-gray-600',
   RUNNING:   'bg-green-100 text-green-700',
@@ -36,11 +62,36 @@ export default function Campaigns() {
   const [statusFilter, setStatusFilter] = useState<'' | CampaignStatus>('')
   const [bulanFilter, setBulanFilter] = useState('')
   const [typeFilter,  setTypeFilter]  = useState('')
+  const [page,        setPage]        = useState(1)
 
-  const { data: campaigns = [], isLoading } = useQuery<Campaign[]>({
-    queryKey: ['campaigns', statusFilter],
-    queryFn:  () => apiFetch<Campaign[]>(`/api/campaigns${statusFilter ? `?status=${statusFilter}` : ''}`),
+  const { data, isLoading } = useQuery({
+    queryKey: ['campaigns', statusFilter, bulanFilter, typeFilter, page],
+    queryFn:  () => {
+      const params = new URLSearchParams({ page: String(page), limit: String(PAGE_SIZE) })
+      if (statusFilter) params.set('status', statusFilter)
+      if (bulanFilter)  params.set('bulan',  bulanFilter)
+      if (typeFilter)   params.set('campaignType', typeFilter)
+      return apiFetchEnvelope<Campaign[], CampaignsMeta>(`/api/campaigns?${params}`)
+    },
+    placeholderData: (prev) => prev,
   })
+
+  const campaigns = data?.data ?? []
+  const total     = data?.total ?? 0
+  const pages     = data?.pages ?? 1
+  const stats     = data?.stats ?? EMPTY_STATS
+  const uniqueMonths = data?.facets.months ?? []
+  const uniqueTypes  = data?.facets.types  ?? []
+
+  // Filters reset to page 1, but the set can also shrink after a cancel.
+  useEffect(() => {
+    const lastPage = data?.pages
+    if (lastPage !== undefined && lastPage > 0 && page > lastPage) setPage(lastPage)
+  }, [data?.pages, page])
+
+  function updateFilter<T>(setter: (value: T) => void) {
+    return (value: T) => { setter(value); setPage(1) }
+  }
 
   const cancelMutation = useMutation({
     mutationFn: (id: string) =>
@@ -53,35 +104,13 @@ export default function Campaigns() {
     cancelMutation.mutate(id)
   }
 
-  const uniqueMonths = Array.from(new Set(campaigns.map((c) => c.bulan))).sort()
-  const uniqueTypes  = Array.from(new Set(campaigns.map((c) => c.campaignType))).sort()
-
-  const filteredCampaigns = campaigns.filter((c) =>
-    (!bulanFilter || c.bulan === bulanFilter) &&
-    (!typeFilter  || c.campaignType === typeFilter)
-  )
-
-  const stats = filteredCampaigns.reduce(
-    (acc, c) => {
-      acc.total++
-      if (c.status === 'RUNNING') acc.running++
-      if (c.status === 'PAUSED') acc.paused++
-      acc.queued += c.queuedCount
-      acc.failed += c.failedCount
-      acc.replies += c.replyCount
-      acc.qualify += c.qualifyingReplyCount
-      return acc
-    },
-    { total: 0, running: 0, paused: 0, queued: 0, failed: 0, replies: 0, qualify: 0 },
-  )
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight">Campaigns</h2>
           <p className="text-muted-foreground">
-            {filteredCampaigns.length} total{[statusFilter, bulanFilter, typeFilter].filter(Boolean).length > 0
+            {total} total{[statusFilter, bulanFilter, typeFilter].filter(Boolean).length > 0
               ? ` (${[statusFilter, bulanFilter, typeFilter].filter(Boolean).join(' · ')})`
               : ''}
           </p>
@@ -99,7 +128,7 @@ export default function Campaigns() {
         <select
           id="campaign-status-filter"
           value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value as '' | CampaignStatus)}
+          onChange={(e) => updateFilter(setStatusFilter)(e.target.value as '' | CampaignStatus)}
           className="text-sm rounded-md border bg-background px-3 py-1.5"
         >
           <option value="">All</option>
@@ -112,7 +141,7 @@ export default function Campaigns() {
         <select
           id="campaign-type-filter"
           value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value)}
+          onChange={(e) => updateFilter(setTypeFilter)(e.target.value)}
           className="text-sm rounded-md border bg-background px-3 py-1.5"
         >
           <option value="">All Types</option>
@@ -123,7 +152,7 @@ export default function Campaigns() {
         <select
           id="campaign-month-filter"
           value={bulanFilter}
-          onChange={(e) => setBulanFilter(e.target.value)}
+          onChange={(e) => updateFilter(setBulanFilter)(e.target.value)}
           className="text-sm rounded-md border bg-background px-3 py-1.5"
         >
           <option value="">All Months</option>
@@ -134,7 +163,7 @@ export default function Campaigns() {
         {(statusFilter || typeFilter || bulanFilter) && (
           <button
             type="button"
-            onClick={() => { setStatusFilter(''); setTypeFilter(''); setBulanFilter('') }}
+            onClick={() => { setStatusFilter(''); setTypeFilter(''); setBulanFilter(''); setPage(1) }}
             className="text-xs text-muted-foreground hover:text-foreground underline"
           >
             Clear filters
@@ -172,10 +201,10 @@ export default function Campaigns() {
             {isLoading && (
               <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">Loading...</td></tr>
             )}
-            {!isLoading && filteredCampaigns.length === 0 && (
+            {!isLoading && campaigns.length === 0 && (
               <tr><td colSpan={10} className="px-4 py-8 text-center text-muted-foreground">No campaigns yet</td></tr>
             )}
-            {filteredCampaigns.map((c) => {
+            {campaigns.map((c) => {
               const progress    = c.totalCount > 0 ? Math.round((c.sentCount / c.totalCount) * 100) : 0
               const totalTarget = c.targetRepliesPerArea ? c.targetRepliesPerArea * c.areas.length : null
               const targetMet   = totalTarget !== null && c.qualifyingReplyCount >= totalTarget
@@ -269,6 +298,15 @@ export default function Campaigns() {
           </tbody>
         </table>
       </div>
+
+      <Pagination
+        page={page}
+        pages={pages}
+        total={total}
+        limit={PAGE_SIZE}
+        onPageChange={setPage}
+        itemLabel="campaigns"
+      />
     </div>
   )
 }
