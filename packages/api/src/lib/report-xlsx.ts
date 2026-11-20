@@ -370,11 +370,12 @@ export async function buildCampaignReportXlsx(campaignId: string, options?: Repo
  *
  * Similar structure to buildCampaignReportXlsx but includes all campaigns.
  */
-export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; campaignType?: string }, options?: ReportXlsxOptions): Promise<Buffer> {
+export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; campaignType?: string; campaignIds?: string[] }, options?: ReportXlsxOptions): Promise<Buffer> {
   const campaigns = await db.campaign.findMany({
     where: {
       ...(filters?.bulan && { bulan: filters.bulan }),
       ...(filters?.campaignType && { campaignType: filters.campaignType }),
+      ...(filters?.campaignIds && filters.campaignIds.length > 0 && { id: { in: filters.campaignIds } }),
     },
     include: { areas: { include: { area: { include: { department: true } } } } },
     orderBy: { bulan: 'desc' },
@@ -625,6 +626,7 @@ export async function buildAllCampaignsReportXlsx(filters?: { bulan?: string; ca
 interface DepartmentReportFilters {
   bulan?: string
   campaignType?: string
+  campaignIds?: string[] // explicit campaign selection
   categories?: string[] // claude categories to include
   jawabans?: (0 | 1 | null)[] // jawaban values (0, 1, null=Tidak Jelas)
 }
@@ -642,6 +644,7 @@ export async function buildDepartmentReportXlsx(filters?: DepartmentReportFilter
   const campaignFilters: Record<string, unknown> = {
     ...(filters?.bulan && { bulan: filters?.bulan }),
     ...(filters?.campaignType && { campaignType: filters?.campaignType }),
+    ...(filters?.campaignIds && filters.campaignIds.length > 0 && { id: { in: filters.campaignIds } }),
   }
 
   // Fetch all departments with their campaigns and data

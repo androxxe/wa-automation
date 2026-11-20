@@ -15,6 +15,16 @@ function parseColumnsQuery(query: Record<string, string | string[] | undefined>)
   return parseReportColumns(query.columns)
 }
 
+// `campaignIds` query param: comma-separated and/or repeated. Returns undefined when
+// absent (no explicit selection). Returns string[] otherwise.
+function parseCampaignIdsQuery(query: Record<string, string | string[] | undefined>): string[] | undefined {
+  const raw = query.campaignIds
+  if (!raw) return undefined
+  const list = Array.isArray(raw) ? raw : [raw]
+  const ids = list.flatMap((v) => v.split(',')).map((v) => v.trim()).filter(Boolean)
+  return ids.length > 0 ? [...new Set(ids)] : undefined
+}
+
 // Map the shared column-selection error to a 400; callers fall through to 500 otherwise.
 function isColumnError(err: unknown): boolean {
   return err instanceof Error && err.message === 'No valid columns selected'
@@ -153,9 +163,12 @@ router.get('/report-xlsx-filtered', async (req, res) => {
   const { bulan, campaignType, format } = req.query as Record<string, string | undefined>
   try {
     const columns  = parseColumnsQuery(req.query as Record<string, string | string[] | undefined>)
+    const campaignIds = parseCampaignIdsQuery(req.query as Record<string, string | string[] | undefined>)
     const date     = new Date().toISOString().slice(0, 10)
     let filename   = 'laporan_'
-    if (bulan && campaignType) {
+    if (campaignIds && campaignIds.length === 1) {
+      filename += `campaign_${campaignIds[0]}_${date}.xlsx`
+    } else if (bulan && campaignType) {
       filename += `${bulan}_${campaignType}_${date}.xlsx`
     } else if (bulan) {
       filename += `${bulan}_${date}.xlsx`
@@ -167,7 +180,7 @@ router.get('/report-xlsx-filtered', async (req, res) => {
     await sendReport(
       res,
       filename,
-      (options) => buildAllCampaignsReportXlsx({ bulan, campaignType }, { ...options, columns }),
+      (options) => buildAllCampaignsReportXlsx({ bulan, campaignType, campaignIds }, { ...options, columns }),
       format,
     )
   } catch (err) {
@@ -193,6 +206,8 @@ router.get('/report-xlsx-dept', async (req, res) => {
       })
       : undefined
 
+    const campaignIds = parseCampaignIdsQuery(req.query as Record<string, string | string[] | undefined>)
+
     const date = new Date().toISOString().slice(0, 10)
     let filename = 'laporan_departemen_'
     if (bulan && campaignType) {
@@ -212,6 +227,7 @@ router.get('/report-xlsx-dept', async (req, res) => {
       (options) => buildDepartmentReportXlsx({
         bulan: bulan as string | undefined,
         campaignType: campaignType as string | undefined,
+        campaignIds,
         categories: categoryArray as string[] | undefined,
         jawabans: jawabanArray as (0 | 1 | null)[] | undefined,
       }, { ...options, columns }),

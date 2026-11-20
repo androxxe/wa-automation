@@ -85,6 +85,8 @@ export default function Export() {
 
   const [selectedMonth, setSelectedMonth] = useState<string>('')
   const [selectedType, setSelectedType] = useState<string>('')
+  const [selectedCampaignIds, setSelectedCampaignIds] = useState<Set<string>>(new Set())
+  const [campaignSearch, setCampaignSearch] = useState<string>('')
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(
     new Set(CATEGORIES)
   )
@@ -123,6 +125,26 @@ export default function Export() {
     return true
   })
 
+  // Default to all filtered campaigns selected whenever bulan/type/campaign list changes
+  const filteredIdKey = filteredCampaigns.map((c) => c.id).sort().join(',')
+  useEffect(() => {
+    setSelectedCampaignIds(new Set(filteredIdKey ? filteredIdKey.split(',') : []))
+  }, [filteredIdKey])
+
+  // Explicitly chosen campaigns to export (subset of filtered)
+  const exportCampaigns = filteredCampaigns.filter((c) => selectedCampaignIds.has(c.id))
+  const isCampaignSubset = exportCampaigns.length < filteredCampaigns.length
+
+  // Search within bulan/type-filtered campaigns (name, bulan, type)
+  const campaignQuery = campaignSearch.trim().toLowerCase()
+  const visibleCampaigns = campaignQuery
+    ? filteredCampaigns.filter((c) =>
+        c.name.toLowerCase().includes(campaignQuery)
+        || c.bulan.toLowerCase().includes(campaignQuery)
+        || c.campaignType.toLowerCase().includes(campaignQuery)
+      )
+    : filteredCampaigns
+
   const toggleCategory = (category: string) => {
     const newSet = new Set(selectedCategories)
     if (newSet.has(category)) {
@@ -153,6 +175,25 @@ export default function Export() {
     setSelectedColumns(newSet)
   }
 
+  const toggleCampaign = (id: string) => {
+    const newSet = new Set(selectedCampaignIds)
+    if (newSet.has(id)) {
+      newSet.delete(id)
+    } else {
+      newSet.add(id)
+    }
+    setSelectedCampaignIds(newSet)
+  }
+
+  const selectAllCampaigns = () => {
+    setSelectedCampaignIds((prev) => new Set([...prev, ...visibleCampaigns.map((c) => c.id)]))
+  }
+
+  const clearCampaigns = () => {
+    const visibleIds = new Set(visibleCampaigns.map((c) => c.id))
+    setSelectedCampaignIds((prev) => new Set([...prev].filter((id) => !visibleIds.has(id))))
+  }
+
   const selectVisibleColumns = () => {
     setSelectedColumns((prev) => new Set([...prev, ...visibleColumns.map((c) => c.key)]))
   }
@@ -168,6 +209,13 @@ export default function Export() {
       const params = new URLSearchParams()
       if (selectedMonth) params.append('bulan', selectedMonth)
       if (selectedType) params.append('campaignType', selectedType)
+
+      // Explicit campaign selection (omit when all filtered are selected)
+      if (isCampaignSubset && exportCampaigns.length > 0) {
+        exportCampaigns.forEach((c) => {
+          params.append('campaignIds', c.id)
+        })
+      }
 
       // Add category filters
       if (selectedCategories.size > 0 && selectedCategories.size < CATEGORIES.length) {
@@ -205,7 +253,7 @@ export default function Export() {
 
       const blob = await res.blob()
       const url = URL.createObjectURL(blob)
-      const filename = buildFilename(selectedMonth, selectedType, exportType, fileFormat)
+      const filename = buildFilename(selectedMonth, selectedType, exportType, fileFormat, exportCampaigns)
       const a = document.createElement('a')
       a.href = url
       a.download = filename
@@ -224,11 +272,21 @@ export default function Export() {
     month?: string,
     type?: string,
     exportTypeParam?: string,
-    format: 'xlsx' | 'zip' = 'xlsx'
+    format: 'xlsx' | 'zip' = 'xlsx',
+    selected?: Campaign[]
   ): string => {
     const date = new Date().toISOString().slice(0, 10)
     const ext = format === 'zip' ? 'zip' : 'xlsx'
     const prefix = exportTypeParam === 'department' ? 'laporan_departemen_' : 'laporan_'
+
+    if (selected && selected.length === 1) {
+      const slug = selected[0].name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'campaign'
+      return `${prefix}${slug}_${date}.${ext}`
+    }
+    if (selected && selected.length > 1 && filteredCampaigns.length > selected.length) {
+      const base = month && type ? `${month}_${type}` : (month ?? type ?? 'campaign')
+      return `${prefix}${base}_${selected.length}campaigns_${date}.${ext}`
+    }
 
     if (!month && !type) return `${prefix}semua_campaign_${date}.${ext}`
     if (month && !type) return `${prefix}${month}_${date}.${ext}`
@@ -355,6 +413,79 @@ export default function Export() {
         </div>
       </div>
 
+      {/* Campaign Selection */}
+      {filteredCampaigns.length > 0 && (
+        <div className="rounded-lg border bg-card p-6 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-medium">Select Campaigns (Optional)</p>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {exportCampaigns.length} of {filteredCampaigns.length} selected
+                {campaignQuery ? ` — ${visibleCampaigns.length} shown` : ''}
+                {isCampaignSubset ? ' — only checked campaigns will be exported' : ''}
+              </p>
+            </div>
+            <div className="flex gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={selectAllCampaigns}
+                className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent"
+              >
+                {campaignQuery ? `Select visible (${visibleCampaigns.length})` : 'Select all'}
+              </button>
+              <button
+                type="button"
+                onClick={clearCampaigns}
+                className="text-xs px-3 py-1.5 rounded-md border hover:bg-accent"
+              >
+                {campaignQuery ? 'Clear visible' : 'Clear'}
+              </button>
+            </div>
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={campaignSearch}
+              onChange={(e) => setCampaignSearch(e.target.value)}
+              placeholder="Cari nama campaign…"
+              className="w-full text-sm rounded-md border bg-background pl-3 pr-9 py-2"
+            />
+            {campaignSearch && (
+              <button
+                type="button"
+                onClick={() => setCampaignSearch('')}
+                aria-label="Clear campaign search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground text-sm px-1"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+          {visibleCampaigns.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-60 overflow-y-auto">
+              {visibleCampaigns.map((c) => (
+                <label key={c.id} className="flex items-center gap-2 cursor-pointer text-xs p-2 bg-muted/30 rounded">
+                  <input
+                    type="checkbox"
+                    checked={selectedCampaignIds.has(c.id)}
+                    onChange={() => toggleCampaign(c.id)}
+                    className="w-4 h-4 rounded shrink-0"
+                  />
+                  <span className="font-medium truncate">{c.name}</span>
+                  <span className="text-muted-foreground ml-auto shrink-0">
+                    {c.bulan} · {c.campaignType}
+                  </span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground text-center py-4">
+              Tidak ada campaign cocok dengan “{campaignSearch.trim()}”
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Advanced Filters */}
       <div className="space-y-4">
         {/* Category Filter */}
@@ -453,7 +584,7 @@ export default function Export() {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
             <div className="p-3 rounded border bg-muted/50">
               <p className="text-xs text-muted-foreground">Campaigns</p>
-              <p className="text-lg font-semibold">{filteredCampaigns.length}</p>
+              <p className="text-lg font-semibold">{exportCampaigns.length}</p>
             </div>
             <div className="p-3 rounded border bg-muted/50">
               <p className="text-xs text-muted-foreground">Month(s)</p>
@@ -470,11 +601,11 @@ export default function Export() {
           </div>
         </div>
 
-        {filteredCampaigns.length > 0 && (
+        {exportCampaigns.length > 0 && (
           <div>
             <p className="text-xs text-muted-foreground mb-2">Campaigns to export:</p>
             <div className="space-y-1 max-h-40 overflow-y-auto">
-              {filteredCampaigns.map((c) => (
+              {exportCampaigns.map((c) => (
                 <div key={c.id} className="text-xs flex items-center justify-between p-2 bg-muted/30 rounded">
                   <span className="font-medium">{c.name}</span>
                   <span className="text-muted-foreground">
@@ -486,9 +617,11 @@ export default function Export() {
           </div>
         )}
 
-        {filteredCampaigns.length === 0 && (
+        {exportCampaigns.length === 0 && (
           <p className="text-xs text-muted-foreground text-center py-4">
-            No campaigns match the selected filters
+            {filteredCampaigns.length === 0
+              ? 'No campaigns match the selected filters'
+              : 'No campaigns selected — check at least one campaign above'}
           </p>
         )}
       </div>
@@ -498,7 +631,7 @@ export default function Export() {
         <button
           type="button"
           onClick={handleDownloadFiltered}
-          disabled={downloading || filteredCampaigns.length === 0 || visibleSelectedCount === 0}
+          disabled={downloading || exportCampaigns.length === 0 || visibleSelectedCount === 0}
           className="flex-1 px-6 py-3 rounded-md bg-primary text-primary-foreground font-medium disabled:opacity-50 hover:bg-primary/90 transition-colors"
         >
           {downloading ? 'Generating…' : fileFormat === 'zip' ? 'Download ZIP Report' : 'Download XLSX Report'}
